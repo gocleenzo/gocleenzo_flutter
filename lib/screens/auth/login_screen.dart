@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
 import '../../utils/theme.dart';
 import '../../widgets/auth_widgets.dart';
@@ -23,18 +24,15 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  final _supabase  = Supabase.instance.client;
   final _phoneCtrl = TextEditingController();
   final _nameCtrl  = TextEditingController();
 
-  // steps: 'phone' → 'otp' → 'profile' (new users only)
-  String _step     = 'phone';
-  String _otp      = '';
-  String _gender   = '';   // 'Male' | 'Female' | 'Other'
-  bool   _loading  = false;
-  bool   _isNewUser = false;
-  String _error    = '';
-
-  // Supabase user id cached after OTP verify
+  String  _step     = 'phone'; // 'phone' → 'otp' → 'profile'
+  String  _otp      = '';
+  String  _gender   = '';
+  bool    _loading  = false;
+  String  _error    = '';
   String? _userId;
 
   @override
@@ -44,7 +42,7 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // ── STEP 1 : send OTP ─────────────────────────────────────────────────
+  // ── STEP 1 : send OTP ────────────────────────────────────────
   Future<void> _sendOtp() async {
     if (_phoneCtrl.text.length < 10) return;
     setState(() { _loading = true; _error = ''; });
@@ -58,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // ── STEP 2 : verify OTP, detect new vs existing ───────────────────────
+  // ── STEP 2 : verify OTP ──────────────────────────────────────
   Future<void> _verifyOtp() async {
     if (_otp.length < 6) return;
     setState(() { _loading = true; _error = ''; });
@@ -73,11 +71,11 @@ class _LoginScreenState extends State<LoginScreen> {
       if (!mounted) return;
 
       if (profile == null) {
-        // ── NEW USER → ask name + gender
-        setState(() { _isNewUser = true; _step = 'profile'; });
+        // New user → collect name + gender
+        setState(() { _step = 'profile'; });
       } else {
-        // ── EXISTING USER → route by role
-        _navigateByRole(profile['role'] ?? 'customer');
+        // Existing customer → check if they have a saved address
+        await _goToNextScreen(user.id);
       }
     } catch (_) {
       setState(() => _error = 'Invalid OTP. Please try again.');
@@ -86,7 +84,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  // ── STEP 3 : save profile (new users only) ────────────────────────────
+  // ── STEP 3 : save profile (new users) ────────────────────────
   Future<void> _saveProfile() async {
     if (_nameCtrl.text.trim().isEmpty) {
       setState(() => _error = 'Please enter your name');
@@ -102,7 +100,8 @@ class _LoginScreenState extends State<LoginScreen> {
         'gender':    _gender.isEmpty ? null : _gender,
       });
       if (!mounted) return;
-      context.go('/services');
+      // Brand new user — definitely no address yet
+      context.go('/location-gate');
     } catch (_) {
       setState(() => _error = 'Something went wrong. Please try again.');
     } finally {
@@ -110,247 +109,235 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  void _navigateByRole(String role) {
-    if (role == 'worker') {
-      context.go('/worker/dashboard');
-    } else if (role == 'owner') {
-      context.go('/admin-overview');
-    } else {
-      context.go('/services');
+  // ── Check address → route accordingly ────────────────────────
+  Future<void> _goToNextScreen(String userId) async {
+    try {
+      final addresses = await _supabase
+          .from('addresses')
+          .select('id')
+          .eq('user_id', userId)
+          .limit(1);
+
+      if (!mounted) return;
+
+      if ((addresses as List).isEmpty) {
+        // No saved address → set location first
+        context.go('/location-gate');
+      } else {
+        // Has address → go to services
+        context.go('/services');
+      }
+    } catch (_) {
+      // On error just go to services
+      if (mounted) context.go('/services');
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════
+  // ─────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Column(
-        children: [
-          // ── Scrolling cards hero ──────────────────────────────────────
-          SizedBox(
-            height: MediaQuery.of(context).size.height * 0.45,
-            child: Stack(
-              children: [
-                _ScrollingCards(),
-                Positioned(
-                  bottom: 0, left: 0, right: 0,
-                  child: Container(
-                    height: 80,
-                    decoration: const BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.bottomCenter,
-                        end: Alignment.topCenter,
-                        colors: [Colors.white, Colors.transparent],
-                      ),
-                    ),
+      body: Column(children: [
+
+        // ── Scrolling cards hero ──────────────────────────────
+        SizedBox(
+          height: MediaQuery.of(context).size.height * 0.45,
+          child: Stack(children: [
+            _ScrollingCards(),
+            Positioned(
+              bottom: 0, left: 0, right: 0,
+              child: Container(
+                height: 80,
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.bottomCenter,
+                    end: Alignment.topCenter,
+                    colors: [Colors.white, Colors.transparent],
+                  ),
+                ),
+              ),
+            ),
+          ]),
+        ),
+
+        // ── Form area ─────────────────────────────────────────
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: Column(children: [
+              const SizedBox(height: 8),
+              const BrandLogo(size: 48),
+              const SizedBox(height: 4),
+              Text('Log in or Sign up',
+                  style: TextStyle(color: AppColors.gray400,
+                      fontSize: 13, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 24),
+
+              // ── Phone step ──────────────────────────────────
+              if (_step == 'phone') ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('MOBILE NUMBER',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
+                          color: AppColors.gray400, letterSpacing: 1.5)),
+                ),
+                const SizedBox(height: 8),
+                PhoneInput(controller: _phoneCtrl, onSubmit: _sendOtp),
+                const SizedBox(height: 12),
+                ErrorBox(message: _error),
+                const SizedBox(height: 12),
+                ValueListenableBuilder(
+                  valueListenable: _phoneCtrl,
+                  builder: (_, val, __) => CyanButton(
+                    label: 'Proceed',
+                    icon: Icons.arrow_forward,
+                    loading: _loading,
+                    onPressed: val.text.length == 10 ? _sendOtp : null,
                   ),
                 ),
               ],
-            ),
-          ),
 
-          // ── Form area ─────────────────────────────────────────────────
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              child: Column(
-                children: [
-                  const SizedBox(height: 8),
-                  const BrandLogo(size: 48),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Log in or Sign up',
-                    style: TextStyle(
-                      color: AppColors.gray400,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
+              // ── OTP step ────────────────────────────────────
+              if (_step == 'otp') ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: GestureDetector(
+                    onTap: () => setState(() { _step = 'phone'; _error = ''; }),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.arrow_back_ios, size: 16, color: AppColors.cyan),
+                      Text('Back', style: TextStyle(
+                          color: AppColors.cyan, fontWeight: FontWeight.w700)),
+                    ]),
                   ),
-                  const SizedBox(height: 24),
+                ),
+                const SizedBox(height: 16),
+                Text('Enter the 6-digit code sent to',
+                    style: TextStyle(color: AppColors.gray500, fontSize: 13)),
+                const SizedBox(height: 4),
+                Text('+91 ${_phoneCtrl.text}',
+                    style: TextStyle(color: AppColors.cyan,
+                        fontWeight: FontWeight.w900, fontSize: 14)),
+                const SizedBox(height: 16),
+                OtpInputRow(
+                  onCompleted: (v) { setState(() => _otp = v); _verifyOtp(); },
+                  onChange:    (v) => setState(() => _otp = v),
+                ),
+                const SizedBox(height: 12),
+                ErrorBox(message: _error),
+                const SizedBox(height: 12),
+                CyanButton(
+                  label: 'Verify & Continue',
+                  icon: Icons.check_circle_outline,
+                  loading: _loading,
+                  onPressed: _otp.length == 6 ? _verifyOtp : null,
+                ),
+                const SizedBox(height: 8),
+                TextButton(
+                  onPressed: _sendOtp,
+                  child: Text('Resend OTP',
+                      style: TextStyle(
+                          color: AppColors.cyan, fontWeight: FontWeight.w600)),
+                ),
+              ],
 
-                  // ── Phone step ─────────────────────────────────────────
-                  if (_step == 'phone') ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('MOBILE NUMBER',
-                          style: TextStyle(fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: AppColors.gray400,
-                              letterSpacing: 1.5)),
-                    ),
-                    const SizedBox(height: 8),
-                    PhoneInput(controller: _phoneCtrl, onSubmit: _sendOtp),
-                    const SizedBox(height: 12),
-                    ErrorBox(message: _error),
-                    const SizedBox(height: 12),
-                    ValueListenableBuilder(
-                      valueListenable: _phoneCtrl,
-                      builder: (_, val, __) => CyanButton(
-                        label: 'Proceed',
-                        icon: Icons.arrow_forward,
-                        loading: _loading,
-                        onPressed: val.text.length == 10 ? _sendOtp : null,
-                      ),
-                    ),
-                  ],
-
-                  // ── OTP step ───────────────────────────────────────────
-                  if (_step == 'otp') ...[
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: GestureDetector(
-                        onTap: () => setState(() { _step = 'phone'; _error = ''; }),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: [
-                          Icon(Icons.arrow_back_ios, size: 16, color: AppColors.cyan),
-                          Text('Back', style: TextStyle(
-                              color: AppColors.cyan, fontWeight: FontWeight.w700)),
-                        ]),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Text('Enter the 6-digit code sent to',
-                        style: TextStyle(color: AppColors.gray500, fontSize: 13)),
-                    const SizedBox(height: 4),
-                    Text('+91 ${_phoneCtrl.text}',
-                        style: TextStyle(color: AppColors.cyan,
-                            fontWeight: FontWeight.w900, fontSize: 14)),
-                    const SizedBox(height: 16),
-                    OtpInputRow(
-                      onCompleted: (v) { setState(() => _otp = v); _verifyOtp(); },
-                      onChange:    (v) => setState(() => _otp = v),
-                    ),
-                    const SizedBox(height: 12),
-                    ErrorBox(message: _error),
-                    const SizedBox(height: 12),
-                    CyanButton(
-                      label: 'Verify & Continue',
-                      icon: Icons.check_circle_outline,
-                      loading: _loading,
-                      onPressed: _otp.length == 6 ? _verifyOtp : null,
-                    ),
-                    const SizedBox(height: 8),
-                    TextButton(
-                      onPressed: _sendOtp,
-                      child: Text('Resend OTP',
-                          style: TextStyle(
-                              color: AppColors.cyan, fontWeight: FontWeight.w600)),
-                    ),
-                  ],
-
-                  // ── Profile step (new users only) ──────────────────────
-                  if (_step == 'profile') ...[
-                    const SizedBox(height: 4),
-                    Text("What's your name?",
-                        style: GoogleFonts.nunito(
-                            fontSize: 22, fontWeight: FontWeight.w900,
-                            color: const Color(0xFF0F172A))),
-                    const SizedBox(height: 20),
-
-                    // Name field
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('FULL NAME',
-                          style: TextStyle(fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: AppColors.gray400,
-                              letterSpacing: 1.5)),
-                    ),
-                    const SizedBox(height: 8),
-                    _nameField(),
-                    const SizedBox(height: 20),
-
-                    // Gender selector
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: Text('GENDER (optional)',
-                          style: TextStyle(fontSize: 11,
-                              fontWeight: FontWeight.w900,
-                              color: AppColors.gray400,
-                              letterSpacing: 1.5)),
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: ['Male', 'Female', 'Other'].map((g) {
-                        final selected = _gender == g;
-                        return GestureDetector(
-                          onTap: () {
-                            HapticFeedback.selectionClick();
-                            setState(() => _gender = selected ? '' : g);
-                          },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 150),
-                            margin: const EdgeInsets.only(right: 10),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: selected
-                                  ? AppColors.cyan.withOpacity(0.10)
-                                  : Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: selected
-                                    ? AppColors.cyan : const Color(0xFFDDE3EB),
-                                width: selected ? 2.0 : 1.5,
-                              ),
-                            ),
-                            child: Text(g,
-                                style: TextStyle(
-                                  color: selected
-                                      ? AppColors.cyan
-                                      : const Color(0xFF64748B),
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w700,
-                                )),
-                          ),
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 20),
-                    ErrorBox(message: _error),
-                    const SizedBox(height: 8),
-                    ValueListenableBuilder(
-                      valueListenable: _nameCtrl,
-                      builder: (_, val, __) => CyanButton(
-                        label: 'Continue',
-                        icon: Icons.arrow_forward,
-                        loading: _loading,
-                        onPressed: val.text.trim().isNotEmpty
-                            ? _saveProfile : null,
-                      ),
-                    ),
-                  ],
-
-                  const SizedBox(height: 16),
-                  RichText(
-                    textAlign: TextAlign.center,
-                    text: TextSpan(
-                      style: TextStyle(color: AppColors.gray400, fontSize: 11),
-                      children: [
-                        const TextSpan(text: 'By proceeding, I accept the '),
-                        WidgetSpan(
-                          child: GestureDetector(
-                            onTap: () => context.push('/terms'),
-                            child: Text('Terms of use',
-                                style: TextStyle(color: AppColors.cyan,
-                                    fontWeight: FontWeight.w600, fontSize: 11)),
+              // ── Profile step (new users) ─────────────────────
+              if (_step == 'profile') ...[
+                const SizedBox(height: 4),
+                Text("What's your name?",
+                    style: GoogleFonts.nunito(fontSize: 22,
+                        fontWeight: FontWeight.w900,
+                        color: const Color(0xFF0F172A))),
+                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('FULL NAME',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
+                          color: AppColors.gray400, letterSpacing: 1.5)),
+                ),
+                const SizedBox(height: 8),
+                _nameField(),
+                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('GENDER (optional)',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
+                          color: AppColors.gray400, letterSpacing: 1.5)),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: ['Male', 'Female', 'Other'].map((g) {
+                    final selected = _gender == g;
+                    return GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() => _gender = selected ? '' : g);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 150),
+                        margin: const EdgeInsets.only(right: 10),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 20, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: selected
+                              ? AppColors.cyan.withValues(alpha: 0.10)
+                              : Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: selected
+                                ? AppColors.cyan : const Color(0xFFDDE3EB),
+                            width: selected ? 2.0 : 1.5,
                           ),
                         ),
-                        const TextSpan(text: ' & Privacy policy'),
-                      ],
-                    ),
+                        child: Text(g, style: TextStyle(
+                          color: selected ? AppColors.cyan : const Color(0xFF64748B),
+                          fontSize: 13, fontWeight: FontWeight.w700,
+                        )),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 20),
+                ErrorBox(message: _error),
+                const SizedBox(height: 8),
+                ValueListenableBuilder(
+                  valueListenable: _nameCtrl,
+                  builder: (_, val, __) => CyanButton(
+                    label: 'Continue',
+                    icon: Icons.arrow_forward,
+                    loading: _loading,
+                    onPressed: val.text.trim().isNotEmpty ? _saveProfile : null,
                   ),
-                  const SizedBox(height: 24),
-                ],
+                ),
+              ],
+
+              const SizedBox(height: 16),
+              RichText(
+                textAlign: TextAlign.center,
+                text: TextSpan(
+                  style: TextStyle(color: AppColors.gray400, fontSize: 11),
+                  children: [
+                    const TextSpan(text: 'By proceeding, I accept the '),
+                    WidgetSpan(
+                      child: GestureDetector(
+                        onTap: () => context.push('/terms'),
+                        child: Text('Terms of use',
+                            style: TextStyle(color: AppColors.cyan,
+                                fontWeight: FontWeight.w600, fontSize: 11)),
+                      ),
+                    ),
+                    const TextSpan(text: ' & Privacy policy'),
+                  ],
+                ),
               ),
-            ),
+              const SizedBox(height: 24),
+            ]),
           ),
-        ],
-      ),
+        ),
+      ]),
     );
   }
 
-  // ── Name input field ────────────────────────────────────────────────────
   Widget _nameField() => Container(
     decoration: BoxDecoration(
       color: AppColors.cyanBg,
@@ -365,9 +352,8 @@ class _LoginScreenState extends State<LoginScreen> {
         child: TextField(
           controller: _nameCtrl,
           textCapitalization: TextCapitalization.words,
-          style: GoogleFonts.nunito(
-              fontWeight: FontWeight.w700, fontSize: 15,
-              color: const Color(0xFF0F172A)),
+          style: GoogleFonts.nunito(fontWeight: FontWeight.w700,
+              fontSize: 15, color: const Color(0xFF0F172A)),
           decoration: InputDecoration(
             border: InputBorder.none,
             hintText: 'Your full name',
@@ -391,7 +377,7 @@ class _LoginScreenState extends State<LoginScreen> {
   );
 }
 
-// ── Auto-scrolling cards widget (unchanged) ─────────────────────────────────
+// ── Auto-scrolling cards ─────────────────────────────────────────
 class _ScrollingCards extends StatefulWidget {
   @override
   State<_ScrollingCards> createState() => _ScrollingCardsState();
@@ -453,8 +439,8 @@ class _ScrollingCardsState extends State<_ScrollingCards>
                       begin: Alignment.bottomCenter,
                       end: Alignment.topCenter,
                       colors: [
-                        Colors.black.withOpacity(0.35),
-                        Colors.transparent
+                        Colors.black.withValues(alpha: 0.35),
+                        Colors.transparent,
                       ],
                     ),
                     borderRadius: const BorderRadius.vertical(

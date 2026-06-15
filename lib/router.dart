@@ -13,6 +13,10 @@ import 'screens/customer/account_screen.dart';
 import 'screens/customer/offers_screen.dart';
 import 'screens/customer/help_screen.dart';
 import 'screens/customer/terms_screen.dart';
+import 'screens/customer/location_gate_screen.dart';
+import 'screens/customer/location_search_screen.dart';
+import 'screens/customer/location_picker_screen.dart';
+import 'screens/customer/address_confirm_screen.dart';
 import 'screens/worker/worker_dashboard_screen.dart';
 import 'screens/worker/worker_job_detail_screen.dart';
 import 'screens/worker/worker_earnings_screen.dart';
@@ -32,8 +36,18 @@ final router = GoRouter(
   initialLocation: '/',
   redirect: (context, state) {
     final user   = Supabase.instance.client.auth.currentUser;
-    final isAuth = ['/', '/login'].contains(state.matchedLocation);
-    if (user == null && !isAuth) return '/login';
+    final loc    = state.matchedLocation;
+    final isAuth = ['/', '/login'].contains(loc);
+
+    // Allow location screens without redirecting
+    final isLocationFlow = [
+      '/location-gate',
+      '/location-search',
+      '/location-picker',
+      '/address-confirm',
+    ].contains(loc);
+
+    if (user == null && !isAuth && !isLocationFlow) return '/login';
     return null;
   },
   routes: [
@@ -41,6 +55,51 @@ final router = GoRouter(
     GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
     GoRoute(path: '/terms', builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/help',  builder: (_, __) => const HelpScreen()),
+
+    // ── Location Flow ───────────────────────────────────────
+    GoRoute(
+      path: '/location-gate',
+      builder: (_, __) => const LocationGateScreen(),
+    ),
+    GoRoute(
+      path: '/location-search',
+      builder: (_, state) {
+        final extra = state.extra as Map<String, dynamic>? ?? {};
+        return LocationSearchScreen(
+          isOnboarding: extra['isOnboarding'] as bool? ?? false,
+        );
+      },
+    ),
+    GoRoute(
+      path: '/location-picker',
+      builder: (_, state) {
+        final e = state.extra as Map<String, dynamic>? ?? {};
+        return LocationPickerScreen(
+          initialLat:         e['lat']          as double?,
+          initialLng:         e['lng']          as double?,
+          initialArea:        e['area']         as String?,
+          initialCity:        e['city']         as String?,
+          initialPincode:     e['pincode']      as String?,
+          initialFullAddress: e['full_address'] as String?,
+          isOnboarding:       e['isOnboarding'] as bool? ?? false,
+        );
+      },
+    ),
+    GoRoute(
+      path: '/address-confirm',
+      builder: (_, state) {
+        final e = state.extra as Map<String, dynamic>;
+        return AddressConfirmScreen(
+          lat:          e['lat']          as double,
+          lng:          e['lng']          as double,
+          area:         e['area']         as String,
+          city:         e['city']         as String,
+          pincode:      e['pincode']      as String,
+          fullAddress:  e['full_address'] as String,
+          isOnboarding: e['isOnboarding'] as bool? ?? false,
+        );
+      },
+    ),
 
     // ── Customer Shell ──────────────────────────────────────
     ShellRoute(
@@ -61,7 +120,7 @@ final router = GoRouter(
       ),
     ),
 
-    // Booking flow (instant or schedule)
+    // Booking flow
     GoRoute(
       path: '/booking-flow',
       builder: (_, state) {
