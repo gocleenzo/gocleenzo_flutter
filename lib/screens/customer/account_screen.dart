@@ -1,20 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
-import '../../utils/theme.dart';
-import '../../widgets/auth_widgets.dart';
-
-const _cleaningCards = [
-  {'emoji': '🧹', 'label': 'Deep Cleaning',     'color': 0xFFE0F9FF},
-  {'emoji': '🚿', 'label': 'Bathroom Cleaning',  'color': 0xFFDBEAFE},
-  {'emoji': '🍳', 'label': 'Kitchen Cleaning',   'color': 0xFFFEF3C7},
-  {'emoji': '🏠', 'label': 'Full Home Cleaning', 'color': 0xFFD1FAE5},
-  {'emoji': '🪟', 'label': 'Window Cleaning',    'color': 0xFFEDE9FE},
-  {'emoji': '🛋',  'label': 'Sofa Cleaning',      'color': 0xFFFCE7F3},
-];
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key});
@@ -24,446 +10,322 @@ class AccountScreen extends StatefulWidget {
 }
 
 class _AccountScreenState extends State<AccountScreen> {
-  final _supabase  = Supabase.instance.client;
-  final _phoneCtrl = TextEditingController();
-  final _nameCtrl  = TextEditingController();
-
-  String  _step     = 'phone'; // 'phone' → 'otp' → 'profile'
-  String  _otp      = '';
-  String  _gender   = '';
-  bool    _loading  = false;
-  String  _error    = '';
-  String? _userId;
+  Map<String, dynamic>? _profile;
+  int  _addressCount = 0;
+  int  _bookingCount = 0;
+  bool _loading = true;
 
   @override
-  void dispose() {
-    _phoneCtrl.dispose();
-    _nameCtrl.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _load();
   }
 
-  // ── STEP 1 : send OTP ────────────────────────────────────────
-  Future<void> _sendOtp() async {
-    if (_phoneCtrl.text.length < 10) return;
-    setState(() { _loading = true; _error = ''; });
-    try {
-      await SupabaseService.sendOtp(_phoneCtrl.text);
-      setState(() => _step = 'otp');
-    } catch (_) {
-      setState(() => _error = 'Failed to send OTP. Please try again.');
-    } finally {
-      setState(() => _loading = false);
-    }
-  }
-
-  // ── STEP 2 : verify OTP ──────────────────────────────────────
-  Future<void> _verifyOtp() async {
-    if (_otp.length < 6) return;
-    setState(() { _loading = true; _error = ''; });
-
-    AuthResponse res;
-    try {
-      res = await SupabaseService.verifyOtp(_phoneCtrl.text, _otp);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() { _error = 'Invalid OTP. Please try again.'; _loading = false; });
-      return;
-    }
-
-    final user = res.user;
+  Future<void> _load() async {
+    final user = SupabaseService.currentUser;
     if (user == null) {
-      if (!mounted) return;
-      setState(() { _error = 'Verification failed. Please try again.'; _loading = false; });
+      if (mounted) context.go('/login');
       return;
     }
-    _userId = user.id;
 
-    Map<String, dynamic>? profile;
     try {
-      profile = await SupabaseService.getUserProfile(user.id);
-    } catch (_) {
-      profile = null;
-    }
+      _profile = await SupabaseService.getUserProfile(user.id);
+    } catch (_) {}
 
-    if (!mounted) return;
+    try {
+      final addresses = await SupabaseService.getAddresses(user.id);
+      _addressCount = addresses.length;
+    } catch (_) {}
 
-    final fullName = profile?['full_name'];
-    final needsProfile = profile == null ||
-        fullName == null ||
-        (fullName is String && fullName.trim().isEmpty);
+    try {
+      final bookings = await SupabaseService.getCustomerBookings(user.id);
+      _bookingCount = bookings.length;
+    } catch (_) {}
 
-    if (needsProfile) {
-      setState(() { _step = 'profile'; _loading = false; });
-    } else {
-      setState(() => _loading = false);
-      await _goToNextScreen(user.id);
-    }
+    if (mounted) setState(() => _loading = false);
   }
 
-  // ── STEP 3 : save profile (new users) ────────────────────────
-  Future<void> _saveProfile() async {
-    if (_nameCtrl.text.trim().isEmpty) {
-      setState(() => _error = 'Please enter your name');
-      return;
-    }
-    setState(() { _loading = true; _error = ''; });
+  Future<void> _signOut() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('Sign out?',
+            style: TextStyle(fontWeight: FontWeight.w800)),
+        content: const Text('You will need to log in again to book services.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel',
+                style: TextStyle(color: Color(0xFF64748B))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Sign out',
+                style: TextStyle(
+                    color: Color(0xFFEF4444), fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
     try {
-      await SupabaseService.createUser({
-        'id':        _userId,
-        'full_name': _nameCtrl.text.trim(),
-        'phone':     '+91${_phoneCtrl.text}',
-        'role':      'customer',
-        'gender':    _gender.isEmpty ? null : _gender,
-      });
-      if (!mounted) return;
-      context.go('/location-gate');
-    } catch (_) {
-      setState(() => _error = 'Something went wrong. Please try again.');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  // ── Check address → route accordingly ────────────────────────
-  Future<void> _goToNextScreen(String userId) async {
-    try {
-      final addresses = await _supabase
-          .from('addresses')
-          .select('id')
-          .eq('user_id', userId)
-          .limit(1);
-
-      if (!mounted) return;
-
-      if ((addresses as List).isEmpty) {
-        context.go('/location-gate');
-      } else {
-        context.go('/services');
-      }
-    } catch (_) {
-      if (mounted) context.go('/services');
-    }
+      await SupabaseService.signOut();
+    } catch (_) {}
+    if (mounted) context.go('/login');
   }
 
   // ─────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    if (_loading) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF1F5F9),
+        body: Center(child: CircularProgressIndicator(color: Color(0xFF0891B2))),
+      );
+    }
+
+    final name  = (_profile?['full_name'] as String?)?.trim();
+    final phone = (_profile?['phone'] as String?) ?? '';
+    final displayName = (name == null || name.isEmpty) ? 'My Profile' : name;
+    final initial = (name != null && name.isNotEmpty)
+        ? name[0].toUpperCase()
+        : '🙂';
+
     return Scaffold(
-      backgroundColor: Colors.white,
-      body: Column(children: [
+      backgroundColor: const Color(0xFFF1F5F9),
+      body: SingleChildScrollView(
+        child: Column(children: [
 
-        SizedBox(
-          height: MediaQuery.of(context).size.height * 0.45,
-          child: Stack(children: [
-            _ScrollingCards(),
-            Positioned(
-              bottom: 0, left: 0, right: 0,
-              child: Container(
-                height: 80,
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [Colors.white, Colors.transparent],
-                  ),
-                ),
+          // ── Cyan gradient header ────────────────────────────
+          Container(
+            width: double.infinity,
+            padding: EdgeInsets.fromLTRB(
+                20, MediaQuery.of(context).padding.top + 16, 20, 24),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF06B6D4), Color(0xFF0E7490)],
               ),
             ),
-          ]),
-        ),
-
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: Column(children: [
-              const SizedBox(height: 8),
-              const BrandLogo(size: 48),
-              const SizedBox(height: 4),
-              Text('Log in or Sign up',
-                  style: TextStyle(color: AppColors.gray400,
-                      fontSize: 13, fontWeight: FontWeight.w600)),
-              const SizedBox(height: 24),
-
-              if (_step == 'phone') ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('MOBILE NUMBER',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
-                ),
-                const SizedBox(height: 8),
-                PhoneInput(controller: _phoneCtrl, onSubmit: _sendOtp),
-                const SizedBox(height: 12),
-                ErrorBox(message: _error),
-                const SizedBox(height: 12),
-                ValueListenableBuilder(
-                  valueListenable: _phoneCtrl,
-                  builder: (_, val, __) => CyanButton(
-                    label: 'Proceed',
-                    icon: Icons.arrow_forward,
-                    loading: _loading,
-                    onPressed: val.text.length == 10 ? _sendOtp : null,
-                  ),
-                ),
-              ],
-
-              if (_step == 'otp') ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: GestureDetector(
-                    onTap: () => setState(() { _step = 'phone'; _error = ''; }),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.arrow_back_ios, size: 16, color: AppColors.cyan),
-                      Text('Back', style: TextStyle(
-                          color: AppColors.cyan, fontWeight: FontWeight.w700)),
-                    ]),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Text('Enter the 6-digit code sent to',
-                    style: TextStyle(color: AppColors.gray500, fontSize: 13)),
-                const SizedBox(height: 4),
-                Text('+91 ${_phoneCtrl.text}',
-                    style: TextStyle(color: AppColors.cyan,
-                        fontWeight: FontWeight.w900, fontSize: 14)),
-                const SizedBox(height: 16),
-                OtpInputRow(
-                  onCompleted: (v) { setState(() => _otp = v); _verifyOtp(); },
-                  onChange:    (v) => setState(() => _otp = v),
-                ),
-                const SizedBox(height: 12),
-                ErrorBox(message: _error),
-                const SizedBox(height: 12),
-                CyanButton(
-                  label: 'Verify & Continue',
-                  icon: Icons.check_circle_outline,
-                  loading: _loading,
-                  onPressed: _otp.length == 6 ? _verifyOtp : null,
-                ),
-                const SizedBox(height: 8),
-                TextButton(
-                  onPressed: _sendOtp,
-                  child: Text('Resend OTP',
-                      style: TextStyle(
-                          color: AppColors.cyan, fontWeight: FontWeight.w600)),
-                ),
-              ],
-
-              if (_step == 'profile') ...[
-                const SizedBox(height: 4),
-                Text("What's your name?",
-                    style: GoogleFonts.nunito(fontSize: 22,
-                        fontWeight: FontWeight.w900,
-                        color: const Color(0xFF0F172A))),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('My Profile',
+                    style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800)),
                 const SizedBox(height: 20),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('FULL NAME',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
-                ),
-                const SizedBox(height: 8),
-                _nameField(),
-                const SizedBox(height: 20),
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('GENDER (optional)',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
-                ),
-                const SizedBox(height: 10),
-                Row(
-                  children: ['Male', 'Female', 'Other'].map((g) {
-                    final selected = _gender == g;
-                    return GestureDetector(
-                      onTap: () {
-                        HapticFeedback.selectionClick();
-                        setState(() => _gender = selected ? '' : g);
-                      },
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 150),
-                        margin: const EdgeInsets.only(right: 10),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: selected
-                              ? AppColors.cyan.withValues(alpha: 0.10)
-                              : Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: selected
-                                ? AppColors.cyan : const Color(0xFFDDE3EB),
-                            width: selected ? 2.0 : 1.5,
-                          ),
-                        ),
-                        child: Text(g, style: TextStyle(
-                          color: selected ? AppColors.cyan : const Color(0xFF64748B),
-                          fontSize: 13, fontWeight: FontWeight.w700,
-                        )),
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 20),
-                ErrorBox(message: _error),
-                const SizedBox(height: 8),
-                ValueListenableBuilder(
-                  valueListenable: _nameCtrl,
-                  builder: (_, val, __) => CyanButton(
-                    label: 'Continue',
-                    icon: Icons.arrow_forward,
-                    loading: _loading,
-                    onPressed: val.text.trim().isNotEmpty ? _saveProfile : null,
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 16),
-              RichText(
-                textAlign: TextAlign.center,
-                text: TextSpan(
-                  style: TextStyle(color: AppColors.gray400, fontSize: 11),
-                  children: [
-                    const TextSpan(text: 'By proceeding, I accept the '),
-                    WidgetSpan(
-                      child: GestureDetector(
-                        onTap: () => context.push('/terms'),
-                        child: Text('Terms of use',
-                            style: TextStyle(color: AppColors.cyan,
-                                fontWeight: FontWeight.w600, fontSize: 11)),
-                      ),
+                Row(children: [
+                  Container(
+                    width: 64, height: 64,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.20),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(color: Colors.white24, width: 1.5),
                     ),
-                    const TextSpan(text: ' & Privacy policy'),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-            ]),
-          ),
-        ),
-      ]),
-    );
-  }
-
-  Widget _nameField() => Container(
-    decoration: BoxDecoration(
-      color: AppColors.cyanBg,
-      borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: AppColors.cyanLight, width: 2),
-    ),
-    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-    child: Row(children: [
-      const Text('👤', style: TextStyle(fontSize: 18)),
-      const SizedBox(width: 8),
-      Expanded(
-        child: TextField(
-          controller: _nameCtrl,
-          textCapitalization: TextCapitalization.words,
-          style: GoogleFonts.nunito(fontWeight: FontWeight.w700,
-              fontSize: 15, color: const Color(0xFF0F172A)),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            hintText: 'Your full name',
-            hintStyle: TextStyle(
-                color: AppColors.cyanLight, fontWeight: FontWeight.w700),
-            isDense: true,
-            contentPadding: EdgeInsets.zero,
-          ),
-        ),
-      ),
-      ValueListenableBuilder(
-        valueListenable: _nameCtrl,
-        builder: (_, val, __) => val.text.isNotEmpty
-            ? GestureDetector(
-                onTap: () => _nameCtrl.clear(),
-                child: Icon(Icons.cancel_rounded,
-                    size: 18, color: AppColors.cyanLight))
-            : const SizedBox.shrink(),
-      ),
-    ]),
-  );
-}
-
-// ── Auto-scrolling cards ─────────────────────────────────────────
-class _ScrollingCards extends StatefulWidget {
-  @override
-  State<_ScrollingCards> createState() => _ScrollingCardsState();
-}
-
-class _ScrollingCardsState extends State<_ScrollingCards>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _ctrl;
-  late ScrollController    _scroll;
-
-  @override
-  void initState() {
-    super.initState();
-    _scroll = ScrollController();
-    _ctrl   = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 18),
-    )..repeat();
-    _ctrl.addListener(() {
-      if (!_scroll.hasClients) return;
-      final maxScroll = _scroll.position.maxScrollExtent;
-      _scroll.jumpTo(_ctrl.value * maxScroll / 2);
-    });
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final doubled = [..._cleaningCards, ..._cleaningCards];
-    return SingleChildScrollView(
-      controller: _scroll,
-      scrollDirection: Axis.horizontal,
-      physics: const NeverScrollableScrollPhysics(),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-      child: Row(
-        children: doubled.map((card) {
-          return Container(
-            width: 160,
-            margin: const EdgeInsets.only(right: 12),
-            decoration: BoxDecoration(
-              color: Color(card['color'] as int),
-              borderRadius: BorderRadius.circular(24),
-            ),
-            child: Stack(children: [
-              Center(child: Text(card['emoji'] as String,
-                  style: const TextStyle(fontSize: 64))),
-              Positioned(
-                bottom: 0, left: 0, right: 0,
-                child: Container(
-                  padding: const EdgeInsets.fromLTRB(12, 24, 12, 12),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.bottomCenter,
-                      end: Alignment.topCenter,
-                      colors: [
-                        Colors.black.withValues(alpha: 0.35),
-                        Colors.transparent,
+                    alignment: Alignment.center,
+                    child: Text(initial,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800)),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(displayName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 20,
+                                fontWeight: FontWeight.w800)),
+                        const SizedBox(height: 2),
+                        Text(phone,
+                            style: TextStyle(
+                                color: Colors.white.withOpacity(0.85),
+                                fontSize: 13)),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: const [
+                            Icon(Icons.circle, size: 8, color: Color(0xFF4ADE80)),
+                            SizedBox(width: 6),
+                            Text('Active member',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600)),
+                          ]),
+                        ),
                       ],
                     ),
-                    borderRadius: const BorderRadius.vertical(
-                        bottom: Radius.circular(24)),
                   ),
-                  child: Text(card['label'] as String,
-                      style: GoogleFonts.nunito(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w900,
-                          fontSize: 13)),
+                ]),
+              ],
+            ),
+          ),
+
+          // ── Stats row ───────────────────────────────────────
+          Transform.translate(
+            offset: const Offset(0, -18),
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                      color: Colors.black.withOpacity(0.05),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4)),
+                ],
+              ),
+              child: Row(children: [
+                _stat('📋', _bookingCount == 0 ? '—' : '$_bookingCount', 'Bookings'),
+                _divider(),
+                _stat('📍', '$_addressCount', 'Addresses'),
+                _divider(),
+                _stat('🎟', '0', 'Coupons'),
+              ]),
+            ),
+          ),
+
+          // ── Menu items ──────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(children: [
+              _tile(Icons.location_on_outlined, 'Saved Addresses',
+                  '$_addressCount address${_addressCount == 1 ? '' : 'es'} saved',
+                  () => context.go('/location-gate')),
+              const SizedBox(height: 12),
+              _tile(Icons.receipt_long_outlined, 'My Bookings',
+                  'View all past & upcoming', () => context.go('/bookings')),
+              const SizedBox(height: 12),
+              _tile(Icons.local_offer_outlined, 'Offers & Coupons',
+                  'Save more on every order', () => context.go('/offers')),
+              const SizedBox(height: 12),
+              _tile(Icons.help_outline, 'Help & Support',
+                  'Get answers & contact us', () => context.push('/help')),
+              const SizedBox(height: 12),
+              _tile(Icons.description_outlined, 'Terms & Privacy',
+                  'Legal information', () => context.push('/terms')),
+              const SizedBox(height: 20),
+
+              // Sign out
+              GestureDetector(
+                onTap: _signOut,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: const Color(0xFFFECACA)),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: const [
+                      Icon(Icons.logout, color: Color(0xFFEF4444), size: 20),
+                      SizedBox(width: 8),
+                      Text('Sign Out',
+                          style: TextStyle(
+                              color: Color(0xFFEF4444),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15)),
+                    ],
+                  ),
                 ),
               ),
+              const SizedBox(height: 16),
+              const Text('Cleenzo v1.0 · Made in Mumbai',
+                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12)),
+              const SizedBox(height: 24),
             ]),
-          );
-        }).toList(),
+          ),
+        ]),
       ),
     );
   }
+
+  // ── Helpers ──────────────────────────────────────────────────
+  Widget _stat(String emoji, String value, String label) => Expanded(
+        child: Column(children: [
+          Text(emoji, style: const TextStyle(fontSize: 20)),
+          const SizedBox(height: 6),
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF0F172A))),
+          const SizedBox(height: 2),
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 12, color: Color(0xFF94A3B8))),
+        ]),
+      );
+
+  Widget _divider() => Container(
+        width: 1, height: 36, color: const Color(0xFFE2E8F0));
+
+  Widget _tile(IconData icon, String title, String subtitle,
+          VoidCallback onTap) =>
+      GestureDetector(
+        onTap: onTap,
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.04),
+                  blurRadius: 10,
+                  offset: const Offset(0, 2)),
+            ],
+          ),
+          child: Row(children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: const Color(0xFFE0F7FA),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(icon, color: const Color(0xFF0891B2), size: 22),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFF0F172A))),
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: const TextStyle(
+                          fontSize: 12, color: Color(0xFF94A3B8))),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: Color(0xFFCBD5E1)),
+          ]),
+        ),
+      );
 }
