@@ -19,20 +19,36 @@ class BookingDetailScreen extends StatefulWidget {
   State<BookingDetailScreen> createState() => _BookingDetailScreenState();
 }
 
-class _BookingDetailScreenState extends State<BookingDetailScreen> {
-  final _supabase  = Supabase.instance.client;
+class _BookingDetailScreenState extends State<BookingDetailScreen>
+    with TickerProviderStateMixin {
+  final _supabase = Supabase.instance.client;
   Map<String, dynamic>? _booking;
   bool _loading = true;
 
   // OTP
-  final _otpCtrl   = TextEditingController();
-  bool   _otpVerifying = false;
+  final _otpCtrl = TextEditingController();
+  final _otpFocus = FocusNode();
+  bool _otpVerifying = false;
+  bool _otpSuccess = false; // brief "verified" state before reload
   String? _otpError;
   String? _workerOtp; // cached worker OTP
 
+  // OTP animations
+  late final AnimationController _caretCtrl; // blinking cursor in active box
+  late final AnimationController _pulseCtrl; // "live" dot in OTP header
+
+  // ── OTP section palette — CYAN to match the app theme ──
+  static const _otpAccent   = Color(0xFF06B6D4); // primary accent
+  static const _otpAccentDk = Color(0xFF0891B2); // gradient end
+  static const _otpTint     = Color(0xFFE0F7FB); // filled box wash
+  static const _otpBorder   = Color(0xFFDDE7EC); // idle border
+  static const _otpInk      = Color(0xFF0E2A33); // heading text
+  static const _otpGreen    = Color(0xFF10B981); // verified
+  static const _otpRed      = Color(0xFFF2545B); // error
+
   // Timer
   Timer? _timer;
-  int    _elapsedSeconds = 0;
+  int _elapsedSeconds = 0;
 
   static const _statusColor = {
     'pending':      Color(0xFFF59E0B),
@@ -57,6 +73,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   @override
   void initState() {
     super.initState();
+    _caretCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 600))
+      ..repeat(reverse: true);
+    _pulseCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 2100))
+      ..repeat();
     _load();
     _subscribeToBooking();
   }
@@ -64,6 +86,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _caretCtrl.dispose();
+    _pulseCtrl.dispose();
+    _otpFocus.dispose();
     _otpCtrl.dispose();
     _supabase.removeAllChannels();
     super.dispose();
@@ -94,6 +119,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
           .select('*, services(name, base_price), addresses(label, flat_no, building, area, city)')
           .eq('id', widget.bookingId)
           .single();
+      // Preload worker OTP for accepted bookings so we know how many
+      // input boxes to render (OTP length is variable).
+      if (data['status'] == 'accepted' && data['worker_id'] != null) {
+        await _loadWorkerOtp(data['worker_id'] as String);
+      }
       if (mounted) {
         setState(() { _booking = data; _loading = false; });
         if ((data['status'] == 'in_progress') && data['work_started_at'] != null) {
@@ -107,8 +137,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
   void _startTimer(String workStartedAt) {
     _timer?.cancel();
-    final start = DateTime.parse(workStartedAt);
-    _elapsedSeconds = DateTime.now().difference(start).inSeconds;
+    final start = DateTime.parse(workStartedAt).toUtc();
+    final elapsed = DateTime.now().toUtc().difference(start).inSeconds;
+    _elapsedSeconds = elapsed < 0 ? 0 : elapsed;
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() => _elapsedSeconds++);
     });
@@ -143,7 +174,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     final workerId = b['worker_id'] as String?;
     if (workerId == null) return;
 
-    if (_workerOtp == null) await _loadWorkerOtp(workerId);
+    if (_workerOtp == null) {
+      await _loadWorkerOtp(workerId);
+      // OTP length may now be known — refresh box count.
+      if (mounted) setState(() {});
+    }
     final workerOtp = _workerOtp;
 
     if (workerOtp == null || workerOtp.isEmpty) {
@@ -162,15 +197,19 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
     // ✅ Correct — auto start
     setState(() { _otpVerifying = true; _otpError = null; });
     try {
-      final now = DateTime.now().toIso8601String();
+      final now = DateTime.now().toUtc().toIso8601String();
       await _supabase.from('bookings').update({
         'status':          'in_progress',
         'work_started_at': now,
         'otp_verified_at': now,
       }).eq('id', widget.bookingId);
       HapticFeedback.mediumImpact();
+      // Brief success flash before the card swaps to the in-progress banner.
+      if (mounted) setState(() => _otpSuccess = true);
+      await Future.delayed(const Duration(milliseconds: 650));
       _otpCtrl.clear();
       await _load();
+      if (mounted) setState(() { _otpVerifying = false; _otpSuccess = false; });
     } catch (e) {
       setState(() { _otpError = 'Failed to start. Try again.'; _otpVerifying = false; });
     }
@@ -362,135 +401,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
 
                 // ── OTP Entry (accepted + worker assigned) ─────
                 if (status == 'accepted' && workerId != null) ...[
-                  Container(
-                    margin: const EdgeInsets.only(bottom: 16),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: _otpError != null
-                            ? const Color(0xFFFCA5A5)
-                            : const Color(0xFFE0E7FF)),
-                      boxShadow: [BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.05),
-                          blurRadius: 10, offset: const Offset(0, 3))],
-                    ),
-                    child: Column(children: [
-                      // Header
-                      Container(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-                        decoration: const BoxDecoration(
-                          color: Color(0xFFF5F3FF),
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(20),
-                            topRight: Radius.circular(20))),
-                        child: Row(children: [
-                          Container(
-                            width: 40, height: 40,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFEDE9FE),
-                              borderRadius: BorderRadius.circular(12)),
-                            child: const Center(child: Text('🔐', style: TextStyle(fontSize: 20))),
-                          ),
-                          const SizedBox(width: 12),
-                          const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                            Text('Worker has arrived?',
-                                style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: Color(0xFF1E1B4B))),
-                            SizedBox(height: 2),
-                            Text('Enter the OTP your worker tells you',
-                                style: TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
-                          ])),
-                        ]),
-                      ),
-                      const Divider(height: 1, color: Color(0xFFE0E7FF)),
-                      Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(children: [
-                          // OTP text field — no button, auto verifies
-                          TextField(
-                            controller: _otpCtrl,
-                            keyboardType: TextInputType.number,
-                            maxLength: 6,
-                            enabled: !_otpVerifying,
-                            onChanged: _onOtpChanged,
-                            style: const TextStyle(
-                              fontSize: 28,
-                              fontWeight: FontWeight.w900,
-                              letterSpacing: 10,
-                              color: Color(0xFF1E1B4B),
-                            ),
-                            decoration: InputDecoration(
-                              counterText: '',
-                              hintText: '• • • •',
-                              hintStyle: const TextStyle(
-                                color: Color(0xFFD1D5DB),
-                                letterSpacing: 10,
-                                fontSize: 28,
-                              ),
-                              filled: true,
-                              fillColor: const Color(0xFFF5F3FF),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: const BorderSide(color: Color(0xFFE0E7FF)),
-                              ),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: const BorderSide(color: Color(0xFFE0E7FF)),
-                              ),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(14),
-                                borderSide: const BorderSide(color: Color(0xFF7C3AED), width: 1.5),
-                              ),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
-                              suffixIcon: _otpVerifying
-                                  ? const Padding(
-                                      padding: EdgeInsets.all(14),
-                                      child: SizedBox(
-                                        width: 20, height: 20,
-                                        child: CircularProgressIndicator(
-                                            color: Color(0xFF7C3AED), strokeWidth: 2.5)))
-                                  : null,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Text(
-                            _otpVerifying
-                                ? '⏳ Starting work…'
-                                : 'Work starts automatically when correct OTP is entered',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: _otpVerifying
-                                  ? const Color(0xFF7C3AED)
-                                  : const Color(0xFF9CA3AF),
-                              fontWeight: _otpVerifying ? FontWeight.w600 : FontWeight.normal,
-                            ),
-                          ),
-                          if (_otpError != null) ...[
-                            const SizedBox(height: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFFFEF2F2),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: const Color(0xFFFCA5A5)),
-                              ),
-                              child: Row(children: [
-                                const Icon(Icons.error_outline_rounded,
-                                    color: Color(0xFFDC2626), size: 16),
-                                const SizedBox(width: 8),
-                                Expanded(child: Text(_otpError!,
-                                    style: const TextStyle(
-                                      color: Color(0xFFDC2626),
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.w600))),
-                              ]),
-                            ),
-                          ],
-                        ]),
-                      ),
-                    ]),
-                  ),
+                  _buildOtpCard(),
                 ],
 
                 // ── Completed banner ───────────────────────────
@@ -580,6 +491,269 @@ class _BookingDetailScreenState extends State<BookingDetailScreen> {
         ),
       ]),
     );
+  }
+
+  // ════════════════════════════════════════════════════════════
+  //  OTP CARD  (UI only — verification stays in _onOtpChanged)
+  // ════════════════════════════════════════════════════════════
+  Widget _buildOtpCard() {
+    final otpLen = (_workerOtp != null && _workerOtp!.isNotEmpty)
+        ? _workerOtp!.length.clamp(4, 6)
+        : 4;
+    final boxW   = otpLen <= 4 ? 60.0 : 46.0;
+    final fontSz = otpLen <= 4 ? 26.0 : 22.0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: _otpError != null ? const Color(0xFFFCA5A5) : const Color(0xFFEEF1F6)),
+        boxShadow: [BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 18, offset: const Offset(0, 6))],
+      ),
+      child: Column(children: [
+
+        // ── Header strip ──────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [Color(0xFFECFEFF), Color(0xFFCFFAFE)]),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(22), topRight: Radius.circular(22)),
+          ),
+          child: Row(children: [
+            // Cyan gradient key icon
+            Container(
+              width: 48, height: 48,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  colors: [_otpAccent, _otpAccentDk]),
+                borderRadius: BorderRadius.circular(15),
+                boxShadow: [BoxShadow(
+                    color: _otpAccent.withValues(alpha: 0.38),
+                    blurRadius: 14, offset: const Offset(0, 6))],
+              ),
+              child: const Icon(Icons.vpn_key_rounded, color: Colors.white, size: 24),
+            ),
+            const SizedBox(width: 13),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                const Text('Professional has arrived',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w900, fontSize: 16.5,
+                      color: _otpInk, letterSpacing: 0.2)),
+                const SizedBox(width: 9),
+                _liveDot(),
+              ]),
+              const SizedBox(height: 4),
+              Text('Enter the $otpLen-digit code your Professioanl shares',
+                  style: const TextStyle(
+                      color: Color(0xFF52666E), fontSize: 12.5, fontWeight: FontWeight.w500)),
+            ])),
+          ]),
+        ),
+
+        // ── Boxes + status ────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+          child: Column(children: [
+
+            // The boxes: visible row + transparent capture field
+            SizedBox(
+              height: 64,
+              child: Stack(children: [
+                Positioned.fill(
+                  child: AnimatedBuilder(
+                    animation: Listenable.merge([_otpCtrl, _otpFocus]),
+                    builder: (context, _) {
+                      final text = _otpCtrl.text;
+                      final focused = _otpFocus.hasFocus;
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          for (int i = 0; i < otpLen; i++) ...[
+                            if (i > 0) const SizedBox(width: 10),
+                            _otpBox(i, text, focused, boxW, fontSz),
+                          ],
+                        ],
+                      );
+                    },
+                  ),
+                ),
+                Positioned.fill(
+                  child: Opacity(
+                    opacity: 0.0,
+                    child: TextField(
+                      controller: _otpCtrl,
+                      focusNode: _otpFocus,
+                      keyboardType: TextInputType.number,
+                      enabled: !_otpVerifying && !_otpSuccess,
+                      onChanged: _onOtpChanged,
+                      showCursor: false,
+                      cursorWidth: 0,
+                      inputFormatters: [
+                        FilteringTextInputFormatter.digitsOnly,
+                        LengthLimitingTextInputFormatter(otpLen),
+                      ],
+                      decoration: const InputDecoration(
+                        counterText: '', border: InputBorder.none),
+                    ),
+                  ),
+                ),
+              ]),
+            ),
+
+            const SizedBox(height: 16),
+            _otpStatusLine(),
+
+            if (_otpError != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                ),
+                child: Row(children: [
+                  const Icon(Icons.error_outline_rounded, color: Color(0xFFDC2626), size: 16),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text(_otpError!,
+                      style: const TextStyle(
+                        color: Color(0xFFDC2626), fontSize: 12, fontWeight: FontWeight.w600))),
+                ]),
+              ),
+            ],
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  // One OTP box
+  Widget _otpBox(int i, String text, bool focused, double boxW, double fontSz) {
+    final filled   = i < text.length;
+    final isActive = focused && i == text.length && !_otpVerifying && !_otpSuccess && _otpError == null;
+    final hasError = _otpError != null;
+
+    Color borderColor, bgColor, textColor;
+    if (_otpSuccess) {
+      borderColor = _otpGreen; bgColor = const Color(0xFFE9FBF3); textColor = _otpGreen;
+    } else if (hasError) {
+      borderColor = _otpRed; bgColor = const Color(0xFFFFF3F4); textColor = _otpRed;
+    } else if (isActive) {
+      borderColor = _otpAccent; bgColor = Colors.white; textColor = _otpAccent;
+    } else if (filled) {
+      borderColor = _otpAccent; bgColor = _otpTint; textColor = _otpAccentDk;
+    } else {
+      borderColor = _otpBorder; bgColor = const Color(0xFFFBFCFE); textColor = _otpInk;
+    }
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 170),
+      curve: Curves.easeOut,
+      width: boxW, height: 64,
+      alignment: Alignment.center,
+      transform: isActive
+          ? (Matrix4.identity()..translate(0.0, -2.0))
+          : Matrix4.identity(),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor, width: 1.6),
+        boxShadow: isActive
+            ? [
+                BoxShadow(color: _otpAccent.withValues(alpha: 0.18),
+                    blurRadius: 18, offset: const Offset(0, 8)),
+                BoxShadow(color: _otpAccent.withValues(alpha: 0.14),
+                    blurRadius: 0, spreadRadius: 3),
+              ]
+            : const [],
+      ),
+      child: filled
+          ? TweenAnimationBuilder<double>(
+              key: ValueKey('otp_${i}_${text[i]}'),
+              tween: Tween(begin: 0.6, end: 1.0),
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutBack,
+              builder: (_, v, child) => Transform.scale(scale: v, child: child),
+              child: Text(text[i],
+                  style: TextStyle(fontSize: fontSz, fontWeight: FontWeight.w900, color: textColor)),
+            )
+          : (isActive
+              ? FadeTransition(
+                  opacity: _caretCtrl,
+                  child: Container(
+                    width: 2, height: 28,
+                    decoration: BoxDecoration(
+                      color: _otpAccent, borderRadius: BorderRadius.circular(2)),
+                  ),
+                )
+              : const SizedBox.shrink()),
+    );
+  }
+
+  // Animated "live" dot — signals the worker is here right now
+  Widget _liveDot() {
+    return SizedBox(
+      width: 9, height: 9,
+      child: AnimatedBuilder(
+        animation: _pulseCtrl,
+        builder: (context, _) {
+          final t = _pulseCtrl.value;
+          return Stack(clipBehavior: Clip.none, alignment: Alignment.center, children: [
+            Opacity(
+              opacity: (1 - t) * 0.6,
+              child: Transform.scale(
+                scale: 1 + t * 1.8,
+                child: Container(
+                  width: 9, height: 9,
+                  decoration: const BoxDecoration(
+                      color: Color(0xFF22C55E), shape: BoxShape.circle)),
+              ),
+            ),
+            Container(
+              width: 7, height: 7,
+              decoration: const BoxDecoration(
+                  color: Color(0xFF22C55E), shape: BoxShape.circle)),
+          ]);
+        },
+      ),
+    );
+  }
+
+  // Status line below the boxes
+  Widget _otpStatusLine() {
+    if (_otpSuccess) {
+      return Row(mainAxisAlignment: MainAxisAlignment.center, children: const [
+        Icon(Icons.check_circle_rounded, color: _otpGreen, size: 16),
+        SizedBox(width: 7),
+        Text('Verified — work has started',
+            style: TextStyle(fontSize: 12, color: _otpGreen, fontWeight: FontWeight.w700)),
+      ]);
+    }
+    if (_otpVerifying) {
+      return Row(mainAxisAlignment: MainAxisAlignment.center, children: const [
+        SizedBox(width: 14, height: 14,
+            child: CircularProgressIndicator(strokeWidth: 2.2, color: _otpAccent)),
+        SizedBox(width: 9),
+        Text('Verifying code…',
+            style: TextStyle(fontSize: 12, color: _otpAccent, fontWeight: FontWeight.w600)),
+      ]);
+    }
+    return Row(mainAxisAlignment: MainAxisAlignment.center, children: const [
+      SizedBox(width: 5, height: 5,
+          child: DecoratedBox(decoration: BoxDecoration(color: _otpAccent, shape: BoxShape.circle))),
+      SizedBox(width: 8),
+      Text('Work starts automatically once the code is verified',
+          style: TextStyle(fontSize: 11, color: Color(0xFF9CA3AF))),
+    ]);
   }
 
   Widget _infoCard({required String icon, required String label,
