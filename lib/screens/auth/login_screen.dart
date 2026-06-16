@@ -57,30 +57,48 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // ── STEP 2 : verify OTP ──────────────────────────────────────
+  // OTP verification and profile lookup are kept SEPARATE so that a
+  // profile lookup failure (e.g. no row yet for a brand-new user, or an
+  // RLS error) is treated as "new user" instead of "invalid OTP".
   Future<void> _verifyOtp() async {
     if (_otp.length < 6) return;
     setState(() { _loading = true; _error = ''; });
+
+    // 1) Verify the OTP. A failure here genuinely means a bad code.
+    AuthResponse res;
     try {
-      final res  = await SupabaseService.verifyOtp(_phoneCtrl.text, _otp);
-      final user = res.user;
-      if (user == null) throw Exception('Verification failed');
-      _userId = user.id;
-
-      final profile = await SupabaseService.getUserProfile(user.id);
-
-      if (!mounted) return;
-
-      if (profile == null) {
-        // New user → collect name + gender
-        setState(() { _step = 'profile'; });
-      } else {
-        // Existing customer → check if they have a saved address
-        await _goToNextScreen(user.id);
-      }
+      res = await SupabaseService.verifyOtp(_phoneCtrl.text, _otp);
     } catch (_) {
-      setState(() => _error = 'Invalid OTP. Please try again.');
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      if (!mounted) return;
+      setState(() { _error = 'Invalid OTP. Please try again.'; _loading = false; });
+      return;
+    }
+
+    final user = res.user;
+    if (user == null) {
+      if (!mounted) return;
+      setState(() { _error = 'Verification failed. Please try again.'; _loading = false; });
+      return;
+    }
+    _userId = user.id;
+
+    // 2) Look up the profile SEPARATELY. Any error here = treat as new user.
+    Map<String, dynamic>? profile;
+    try {
+      profile = await SupabaseService.getUserProfile(user.id);
+    } catch (_) {
+      profile = null; // no profile yet (or RLS block) → treat as new user
+    }
+
+    if (!mounted) return;
+
+    if (profile == null) {
+      // New user → collect name + gender
+      setState(() { _step = 'profile'; _loading = false; });
+    } else {
+      // Existing customer → check if they have a saved address
+      setState(() => _loading = false);
+      await _goToNextScreen(user.id);
     }
   }
 

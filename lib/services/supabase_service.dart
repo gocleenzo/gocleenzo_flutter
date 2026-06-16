@@ -32,12 +32,14 @@ class SupabaseService {
   static User? get currentUser => _client.auth.currentUser;
 
   // ── Users ───────────────────────────────────────────────────
+  // Uses maybeSingle() so a brand-new user (no row yet) returns null
+  // instead of throwing. The login flow relies on null == "new user".
   static Future<Map<String, dynamic>?> getUserProfile(String userId) async {
     final res = await _client
         .from('users')
         .select()
         .eq('id', userId)
-        .single();
+        .maybeSingle();
     return res;
   }
 
@@ -45,8 +47,10 @@ class SupabaseService {
     await _client.from('users').update(data).eq('id', userId);
   }
 
+  // Upsert (not insert): a row may already exist if an auth trigger created
+  // one on signup. Upsert inserts a new row OR updates the existing one by id.
   static Future<void> createUser(Map<String, dynamic> data) async {
-    await _client.from('users').insert(data);
+    await _client.from('users').upsert(data);
   }
 
   // ── Services ────────────────────────────────────────────────
@@ -64,7 +68,7 @@ class SupabaseService {
         .from('services')
         .select()
         .eq('id', id)
-        .single();
+        .maybeSingle();
     return res;
   }
 
@@ -108,7 +112,7 @@ class SupabaseService {
           worker:users!worker_id ( full_name, phone )
         ''')
         .eq('id', id)
-        .single();
+        .maybeSingle();
     return res;
   }
 
