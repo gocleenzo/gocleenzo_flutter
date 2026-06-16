@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/theme.dart';
+import 'review_popup.dart';
 
 class BookingDetailScreen extends StatefulWidget {
   final String bookingId;
@@ -24,6 +25,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   final _supabase = Supabase.instance.client;
   Map<String, dynamic>? _booking;
   bool _loading = true;
+
+  // Compulsory review popup — show once when the job is completed & unreviewed
+  bool _reviewPrompted = false;
 
   // OTP
   final _otpCtrl = TextEditingController();
@@ -49,6 +53,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   // Timer
   Timer? _timer;
   int _elapsedSeconds = 0;
+
+  // Statuses we treat as "the job is finished" → trigger the review popup.
+  // Add yours here if the worker app writes something other than 'completed'.
+  static const _completedStatuses = {'completed', 'done', 'finished', 'work_done'};
 
   static const _statusColor = {
     'pending':      Color(0xFFF59E0B),
@@ -129,10 +137,63 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         if ((data['status'] == 'in_progress') && data['work_started_at'] != null) {
           _startTimer(data['work_started_at'] as String);
         }
+        // Once the job is finished, force the review popup.
+        final status = (data['status'] as String?)?.toLowerCase() ?? '';
+        debugPrint('[review] booking=${widget.bookingId} status=$status');
+        if (_completedStatuses.contains(status)) {
+          _maybePromptReview(data);
+        }
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
+  }
+
+  // ── Compulsory review prompt ─────────────────────────────────
+  Future<void> _maybePromptReview(Map<String, dynamic> b) async {
+    if (_reviewPrompted) return;
+    _reviewPrompted = true;
+
+    final uid = _supabase.auth.currentUser?.id;
+    debugPrint('[review] completed booking=${widget.bookingId} uid=$uid '
+        'worker=${b['worker_id']} service=${b['service_id']}');
+    if (uid == null) { _reviewPrompted = false; return; }
+
+    // Has this booking already been reviewed? Use a list query (never throws
+    // like maybeSingle can) so a duplicate or RLS quirk can't hide the popup.
+    bool alreadyReviewed = false;
+    try {
+      final rows = await _supabase
+          .from('reviews')
+          .select('id')
+          .eq('booking_id', widget.bookingId)
+          .limit(1);
+      alreadyReviewed = (rows as List).isNotEmpty;
+      debugPrint('[review] existing rows=${(rows as List).length}');
+    } catch (e) {
+      debugPrint('[review] check failed (showing popup anyway): $e');
+    }
+    if (alreadyReviewed) {
+      debugPrint('[review] already reviewed — skipping');
+      return;
+    }
+
+    if (!mounted) { _reviewPrompted = false; return; }
+    await Future.delayed(const Duration(milliseconds: 400));
+    if (!mounted) { _reviewPrompted = false; return; }
+
+    final svc = b['services'] as Map<String, dynamic>?;
+    debugPrint('[review] showing popup now');
+    final result = await showReviewPopup(
+      context,
+      bookingId: widget.bookingId,
+      workerId: b['worker_id'] as String?,
+      serviceId: b['service_id'] as String?,
+      serviceName: svc?['name'] as String?,
+    );
+    debugPrint('[review] popup closed result=$result');
+    // Refresh so the "already reviewed" state is reflected if they reopen.
+    if (mounted && result == true) _load();
   }
 
   void _startTimer(String workStartedAt) {
@@ -429,6 +490,29 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                       ])),
                     ]),
                   ),
+                  // Manual fallback button — if the auto popup didn't appear,
+                  // the customer can still open it from here.
+                  GestureDetector(
+                    onTap: () {
+                      _reviewPrompted = false;
+                      _maybePromptReview(b);
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFF06B6D4), width: 1.6),
+                      ),
+                      child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        Icon(Icons.star_rounded, color: Color(0xFFF59E0B), size: 20),
+                        SizedBox(width: 8),
+                        Text('Rate this service',
+                            style: TextStyle(color: Color(0xFF0891B2), fontWeight: FontWeight.w800, fontSize: 14)),
+                      ]),
+                    ),
+                  ),
                 ],
 
                 // ── Info cards ─────────────────────────────────
@@ -527,7 +611,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               topLeft: Radius.circular(22), topRight: Radius.circular(22)),
           ),
           child: Row(children: [
-            // Cyan gradient key icon
             Container(
               width: 48, height: 48,
               decoration: BoxDecoration(
@@ -564,7 +647,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
           child: Column(children: [
 
-            // The boxes: visible row + transparent capture field
             SizedBox(
               height: 64,
               child: Stack(children: [
@@ -636,7 +718,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // One OTP box
   Widget _otpBox(int i, String text, bool focused, double boxW, double fontSz) {
     final filled   = i < text.length;
     final isActive = focused && i == text.length && !_otpVerifying && !_otpSuccess && _otpError == null;
@@ -699,7 +780,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // Animated "live" dot — signals the worker is here right now
   Widget _liveDot() {
     return SizedBox(
       width: 9, height: 9,
@@ -728,7 +808,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // Status line below the boxes
   Widget _otpStatusLine() {
     if (_otpSuccess) {
       return Row(mainAxisAlignment: MainAxisAlignment.center, children: const [

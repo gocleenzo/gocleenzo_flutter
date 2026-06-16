@@ -22,14 +22,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   late AnimationController _anim;
   late Animation<double>   _fade;
 
+  // Reviews are READ-ONLY here now. Customers leave reviews via the
+  // compulsory popup after a job completes (see review_popup.dart).
   List<Map<String, dynamic>> _reviews      = [];
   Map<String, dynamic>?      _reviewStats;
   bool   _reviewsLoading = true;
-  bool   _submitting     = false;
-
-  int    _draftStars  = 0;
-  final  _draftCtrl   = TextEditingController();
-  String? _myReviewId;
 
   RealtimeChannel? _reviewChannel;
 
@@ -72,7 +69,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   @override
   void dispose() {
     _anim.dispose();
-    _draftCtrl.dispose();
     _reviewChannel?.unsubscribe();
     super.dispose();
   }
@@ -95,7 +91,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
 
   Future<void> _loadReviews() async {
     try {
-      final uid = _supabase.auth.currentUser?.id;
       final results = await Future.wait([
         _supabase
             .from('reviews_with_user')
@@ -110,20 +105,10 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
             .maybeSingle(),
       ]);
       if (!mounted) return;
-      final reviewList = (results[0] as List).cast<Map<String, dynamic>>();
-      final stats      = results[1] as Map<String, dynamic>?;
-      final myReview   = uid != null
-          ? reviewList.where((r) => r['user_id'] == uid).firstOrNull
-          : null;
       setState(() {
-        _reviews        = reviewList;
-        _reviewStats    = stats;
+        _reviews        = (results[0] as List).cast<Map<String, dynamic>>();
+        _reviewStats    = results[1] as Map<String, dynamic>?;
         _reviewsLoading = false;
-        if (myReview != null) {
-          _myReviewId = myReview['id'] as String;
-          _draftStars = myReview['stars'] as int;
-          _draftCtrl.text = myReview['text'] as String;
-        }
       });
     } catch (_) {
       if (mounted) setState(() => _reviewsLoading = false);
@@ -146,60 +131,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
         )
         .subscribe();
   }
-
-  Future<void> _submitReview() async {
-    final uid = _supabase.auth.currentUser?.id;
-    if (uid == null) { _showSnack('Please log in to leave a review'); return; }
-    if (_draftStars == 0) { _showSnack('Please select a star rating'); return; }
-    if (_draftCtrl.text.trim().length < 5) { _showSnack('Review must be at least 5 characters'); return; }
-    setState(() => _submitting = true);
-    try {
-      if (_myReviewId != null) {
-        await _supabase.from('reviews').update({
-          'stars': _draftStars,
-          'text':  _draftCtrl.text.trim(),
-        }).eq('id', _myReviewId!);
-        _showSnack('✅ Review updated!');
-      } else {
-        await _supabase.from('reviews').insert({
-          'service_id': widget.serviceId,
-          'user_id':    uid,
-          'stars':      _draftStars,
-          'text':       _draftCtrl.text.trim(),
-        });
-        _showSnack('🎉 Review submitted!');
-      }
-      FocusScope.of(context).unfocus();
-    } catch (e) {
-      _showSnack('Error: ${e.toString()}');
-    } finally {
-      if (mounted) setState(() => _submitting = false);
-    }
-  }
-
-  Future<void> _deleteReview() async {
-    if (_myReviewId == null) return;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete review?'),
-        content: const Text('This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
-    if (confirm != true) return;
-    await _supabase.from('reviews').delete().eq('id', _myReviewId!);
-    if (mounted) setState(() { _myReviewId = null; _draftStars = 0; _draftCtrl.clear(); });
-    _showSnack('Review deleted');
-  }
-
-  void _showSnack(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
 
   void _navigate(String type) {
     Navigator.push(context, MaterialPageRoute(
@@ -346,7 +277,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
         title: const SizedBox.shrink(),
         background: Stack(fit: StackFit.expand, children: [
 
-          // ── Background: real image OR gradient ──────────────
           if (imgUrl != null)
             Image.asset(
               'assets/$imgUrl',
@@ -370,7 +300,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
               ),
             ),
 
-          // ── Dark overlay for readability ─────────────────────
           Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -383,7 +312,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
             ),
           ),
 
-          // ── Decorative circles (shown only when no image) ────
           if (imgUrl == null) ...[
             Positioned(top: -60, right: -60,
               child: Container(width: 260, height: 260,
@@ -398,7 +326,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
             Positioned(right: -20, bottom: 40,
               child: Text(emoji, style: TextStyle(
                   fontSize: 180, color: Colors.white.withOpacity(0.13)))),
-            // Emoji circle (only for gradient/no-image fallback)
             Center(child: Column(
                 mainAxisAlignment: MainAxisAlignment.center, children: [
               const SizedBox(height: 40),
@@ -419,7 +346,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
             ])),
           ],
 
-          // ── Bottom label area (always shown) ─────────────────
           Positioned(
             left: 0, right: 0, bottom: 0,
             child: Container(
@@ -614,7 +540,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     );
   }
 
-  // ── REVIEWS ──────────────────────────────────────────────────────────────
+  // ── REVIEWS (READ-ONLY) ───────────────────────────────────────────────────
   Widget _buildReviews() {
     if (_reviewsLoading) {
       return const Padding(
@@ -688,8 +614,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
       ),
 
       const SizedBox(height: 20),
-      _buildWriteReviewCard(),
-      const SizedBox(height: 20),
 
       if (_reviews.isEmpty)
         const Center(child: Padding(
@@ -697,7 +621,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
           child: Column(children: [
             Text('💬', style: TextStyle(fontSize: 38)),
             SizedBox(height: 10),
-            Text('No reviews yet — be the first!',
+            Text('No reviews yet',
                 style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
           ]),
         ))
@@ -709,116 +633,6 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   String _starKey(int star) =>
       ['zero', 'one', 'two', 'three', 'four', 'five'][star];
 
-  Widget _buildWriteReviewCard() {
-    final isLoggedIn = _supabase.auth.currentUser != null;
-    final isEditing  = _myReviewId != null;
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          const Icon(Icons.rate_review_rounded, size: 18,
-              color: Color(0xFF0891B2)),
-          const SizedBox(width: 8),
-          Text(isEditing ? 'Edit your review' : 'Write a review',
-              style: const TextStyle(fontSize: 14,
-                  fontWeight: FontWeight.w800, color: Color(0xFF0F172A))),
-          const Spacer(),
-          if (isEditing)
-            GestureDetector(
-              onTap: _deleteReview,
-              child: const Icon(Icons.delete_outline_rounded,
-                  size: 18, color: Color(0xFFEF4444)),
-            ),
-        ]),
-        const SizedBox(height: 12),
-        Row(children: List.generate(5, (i) {
-          final filled = i < _draftStars;
-          return GestureDetector(
-            onTap: isLoggedIn
-                ? () {
-                    setState(() => _draftStars = i + 1);
-                    HapticFeedback.lightImpact();
-                  }
-                : null,
-            child: Padding(
-              padding: const EdgeInsets.only(right: 6),
-              child: Icon(
-                filled ? Icons.star_rounded : Icons.star_border_rounded,
-                color: filled
-                    ? const Color(0xFFF59E0B) : const Color(0xFFCBD5E1),
-                size: 32,
-              ),
-            ),
-          );
-        })),
-        const SizedBox(height: 12),
-        TextField(
-          controller:  _draftCtrl,
-          enabled:     isLoggedIn,
-          maxLines:    3,
-          maxLength:   300,
-          style: const TextStyle(fontSize: 13, color: Color(0xFF0F172A)),
-          decoration: InputDecoration(
-            hintText: isLoggedIn
-                ? 'Share your experience with this service...'
-                : 'Log in to leave a review',
-            hintStyle: const TextStyle(
-                color: Color(0xFF94A3B8), fontSize: 13),
-            filled:        true,
-            fillColor:     Colors.white,
-            border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-            enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(color: Color(0xFFE2E8F0))),
-            focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: const BorderSide(
-                    color: Color(0xFF0891B2), width: 2)),
-            contentPadding: const EdgeInsets.all(12),
-            counterStyle: const TextStyle(
-                fontSize: 10, color: Color(0xFF94A3B8)),
-          ),
-        ),
-        const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity, height: 44,
-          child: ElevatedButton(
-            onPressed: isLoggedIn && !_submitting ? _submitReview : null,
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF0891B2),
-              disabledBackgroundColor: const Color(0xFFCBD5E1),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-              elevation: 0,
-            ),
-            child: _submitting
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(
-                        color: Colors.white, strokeWidth: 2))
-                : Text(
-                    isEditing ? 'Update Review' : 'Submit Review',
-                    style: const TextStyle(color: Colors.white,
-                        fontWeight: FontWeight.w800, fontSize: 13),
-                  ),
-          ),
-        ),
-        if (!isLoggedIn) ...[
-          const SizedBox(height: 8),
-          const Center(child: Text('You must be logged in to review',
-              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11))),
-        ],
-      ]),
-    );
-  }
-
   Widget _buildReviewCard(Map<String, dynamic> r) {
     final uid      = _supabase.auth.currentUser?.id;
     final isOwn    = r['user_id'] == uid;
@@ -826,16 +640,16 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     final initials = fullName.trim().split(' ')
         .where((w) => w.isNotEmpty).take(2)
         .map((w) => w[0].toUpperCase()).join();
-    final stars    = (r['stars'] as num).toInt();
-    final text     = r['text'] as String;
+    final stars    = (r['stars'] as num?)?.toInt() ?? 0;
+    final text     = (r['text'] as String?) ?? '';
     final createdAt = DateTime.tryParse(r['created_at'] as String? ?? '');
     final dateStr  = createdAt != null ? _formatDate(createdAt) : '';
     final colors   = [
       0xFF06B6D4, 0xFF7C3AED, 0xFFDB2777,
       0xFF059669, 0xFFD97706, 0xFFDC2626
     ];
-    final avatarColor =
-        Color(colors[fullName.codeUnitAt(0) % colors.length]);
+    final avatarColor = Color(colors[
+        fullName.isEmpty ? 0 : fullName.codeUnitAt(0) % colors.length]);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
@@ -885,9 +699,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
           ])),
           _stars(stars, 12),
         ]),
-        const SizedBox(height: 8),
-        Text(text, style: const TextStyle(
-            color: Color(0xFF64748B), fontSize: 13, height: 1.6)),
+        if (text.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text(text, style: const TextStyle(
+              color: Color(0xFF64748B), fontSize: 13, height: 1.6)),
+        ],
       ]),
     );
   }
