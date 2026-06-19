@@ -1,9 +1,8 @@
-import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
 import 'screens/splash_screen.dart';
 import 'screens/auth/login_screen.dart';
+import 'screens/customer/customer_shell.dart';
 import 'screens/customer/services_screen.dart';
 import 'screens/customer/service_detail_screen.dart';
 import 'screens/customer/booking_flow_screen.dart';
@@ -17,20 +16,6 @@ import 'screens/customer/location_gate_screen.dart';
 import 'screens/customer/location_search_screen.dart';
 import 'screens/customer/location_picker_screen.dart';
 import 'screens/customer/address_confirm_screen.dart';
-import 'screens/worker/worker_dashboard_screen.dart';
-import 'screens/worker/worker_job_detail_screen.dart';
-import 'screens/worker/worker_earnings_screen.dart';
-import 'screens/worker/worker_history_screen.dart';
-import 'screens/worker/worker_profile_screen.dart';
-import 'screens/admin/admin_overview_screen.dart';
-import 'screens/admin/admin_bookings_screen.dart';
-import 'screens/admin/admin_workers_screen.dart';
-import 'screens/admin/admin_complaints_screen.dart';
-import 'screens/admin/admin_promos_screen.dart';
-import 'screens/admin/admin_reports_screen.dart';
-import 'screens/customer/customer_shell.dart';
-import 'screens/worker/worker_shell.dart';
-import 'screens/admin/admin_shell.dart';
 
 final router = GoRouter(
   initialLocation: '/',
@@ -39,7 +24,6 @@ final router = GoRouter(
     final loc    = state.matchedLocation;
     final isAuth = ['/', '/login'].contains(loc);
 
-    // Allow location screens without redirecting
     final isLocationFlow = [
       '/location-gate',
       '/location-search',
@@ -101,9 +85,9 @@ final router = GoRouter(
       },
     ),
 
-    // ── Customer Shell ──────────────────────────────────────
+    // ── Customer Shell (uses go_router ShellRoute) ──────────
     ShellRoute(
-      builder: (_, __, child) => CustomerShell(child: child),
+      builder: (context, state, child) => CustomerShell(child: child),
       routes: [
         GoRoute(path: '/services',  builder: (_, __) => const ServicesScreen()),
         GoRoute(path: '/bookings',  builder: (_, __) => const BookingsScreen()),
@@ -140,55 +124,6 @@ final router = GoRouter(
       builder: (_, state) => BookingDetailScreen(
         bookingId: state.pathParameters['id']!,
       ),
-    ),
-
-    // ── Worker Shell ────────────────────────────────────────
-    ShellRoute(
-      builder: (_, __, child) => WorkerShell(child: child),
-      routes: [
-        GoRoute(
-            path: '/worker/dashboard',
-            builder: (_, __) => const WorkerDashboardScreen()),
-        GoRoute(
-            path: '/worker/earnings',
-            builder: (_, __) => const WorkerEarningsScreen()),
-        GoRoute(
-            path: '/worker/history',
-            builder: (_, __) => const WorkerHistoryScreen()),
-        GoRoute(
-            path: '/worker/profile',
-            builder: (_, __) => const WorkerProfileScreen()),
-      ],
-    ),
-    GoRoute(
-      path: '/worker/jobs/:id',
-      builder: (_, state) =>
-          WorkerJobDetailScreen(id: state.pathParameters['id']!),
-    ),
-
-    // ── Admin Shell ─────────────────────────────────────────
-    ShellRoute(
-      builder: (_, __, child) => AdminShell(child: child),
-      routes: [
-        GoRoute(
-            path: '/admin-overview',
-            builder: (_, __) => const AdminOverviewScreen()),
-        GoRoute(
-            path: '/admin-bookings',
-            builder: (_, __) => const AdminBookingsScreen()),
-        GoRoute(
-            path: '/admin-workers',
-            builder: (_, __) => const AdminWorkersScreen()),
-        GoRoute(
-            path: '/admin-complaints',
-            builder: (_, __) => const AdminComplaintsScreen()),
-        GoRoute(
-            path: '/admin-promos',
-            builder: (_, __) => const AdminPromosScreen()),
-        GoRoute(
-            path: '/admin-reports',
-            builder: (_, __) => const AdminReportsScreen()),
-      ],
     ),
   ],
 );

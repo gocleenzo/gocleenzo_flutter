@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../../utils/theme.dart';
 
 class CustomerShell extends StatelessWidget {
   final Widget child;
@@ -31,7 +30,7 @@ class CustomerShell extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.08), blurRadius: 20, offset: const Offset(0, -4)),
+            BoxShadow(color: Colors.black.withValues(alpha: 0.08), blurRadius: 20, offset: const Offset(0, -4)),
           ],
         ),
         child: SafeArea(
@@ -78,4 +77,4 @@ class CustomerShell extends StatelessWidget {
       ),
     );
   }
-}   
+}
