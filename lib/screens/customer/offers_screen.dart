@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../utils/theme.dart';
 
 class OffersScreen extends StatefulWidget {
   const OffersScreen({super.key});
@@ -9,14 +10,21 @@ class OffersScreen extends StatefulWidget {
   State<OffersScreen> createState() => _OffersScreenState();
 }
 
-class _OffersScreenState extends State<OffersScreen> {
+class _OffersScreenState extends State<OffersScreen>
+    with TickerProviderStateMixin {
   final _supabase  = Supabase.instance.client;
   final _promoCtrl = TextEditingController();
   final _focusNode = FocusNode();
 
+  late AnimationController _headerAnimCtrl;
+  late AnimationController _shimmerCtrl;
+  late Animation<double>   _headerFade;
+  late Animation<Offset>   _headerSlide;
+  late Animation<double>   _shimmerAnim;
+
   List<Map<String, dynamic>> _promos       = [];
-  List<Map<String, dynamic>> _usedPromos   = []; // promos this user already used (with full details)
-  Set<String>                _usedPromoIds = {}; // promo ids this user already used
+  List<Map<String, dynamic>> _usedPromos   = [];
+  Set<String>                _usedPromoIds = {};
   String? _copiedCode;
   String? _promoMsg;
   bool    _promoSuccess = false;
@@ -26,12 +34,35 @@ class _OffersScreenState extends State<OffersScreen> {
   String? get _userId => _supabase.auth.currentUser?.id;
 
   @override
-  void initState() { super.initState(); _load(); }
+  void initState() {
+    super.initState();
+
+    _headerAnimCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 700));
+    _headerFade  = CurvedAnimation(parent: _headerAnimCtrl, curve: Curves.easeOut);
+    _headerSlide = Tween<Offset>(begin: const Offset(0, -0.3), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _headerAnimCtrl, curve: Curves.easeOutCubic));
+
+    _shimmerCtrl = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 1400))..repeat();
+    _shimmerAnim = Tween<double>(begin: -2, end: 2).animate(
+      CurvedAnimation(parent: _shimmerCtrl, curve: Curves.easeInOut));
+
+    _headerAnimCtrl.forward();
+    _load();
+  }
 
   @override
-  void dispose() { _promoCtrl.dispose(); _focusNode.dispose(); super.dispose(); }
+  void dispose() {
+    _promoCtrl.dispose();
+    _focusNode.dispose();
+    _headerAnimCtrl.dispose();
+    _shimmerCtrl.dispose();
+    super.dispose();
+  }
 
-  // ── Helpers ─────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────
+
   int? _effectiveLimit(Map<String, dynamic> p) {
     if (p['usage_limit'] != null) return (p['usage_limit'] as num).toInt();
     if (p['max_uses']    != null) return (p['max_uses']    as num).toInt();
@@ -56,8 +87,8 @@ class _OffersScreenState extends State<OffersScreen> {
     return (p['used_count'] as num? ?? 0).toInt() >= limit;
   }
 
-  // Has THIS user already used this promo?
-  bool _isUsedByMe(Map<String, dynamic> p) => _usedPromoIds.contains(p['id'].toString());
+  bool _isUsedByMe(Map<String, dynamic> p) =>
+      _usedPromoIds.contains(p['id'].toString());
 
   bool _isExpiringSoon(Map<String, dynamic> p) {
     if (p['valid_until'] == null) return false;
@@ -68,7 +99,9 @@ class _OffersScreenState extends State<OffersScreen> {
   String _discountLabel(Map<String, dynamic> p) {
     final type  = p['discount_type'] as String? ?? 'percent';
     final value = (p['discount_value'] as num? ?? 0).toDouble();
-    return type == 'percent' ? '${value.toStringAsFixed(0)}%' : '₹${value.toStringAsFixed(0)}';
+    return type == 'percent'
+        ? '${value.toStringAsFixed(0)}%'
+        : '₹${value.toStringAsFixed(0)}';
   }
 
   String _expiryLabel(Map<String, dynamic> p) {
@@ -83,14 +116,15 @@ class _OffersScreenState extends State<OffersScreen> {
   }
 
   String _dateLabel(DateTime d) {
-    const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const m = ['Jan','Feb','Mar','Apr','May','Jun',
+                'Jul','Aug','Sep','Oct','Nov','Dec'];
     return '${d.day} ${m[d.month - 1]} ${d.year}';
   }
 
-  // ── Load promos + this user's usage ─────────────────────────
+  // ── Load ──────────────────────────────────────────────────────
+
   Future<void> _load() async {
     try {
-      // 1. Load all active promo codes
       final promoData = await _supabase
           .from('promo_codes')
           .select('*')
@@ -99,9 +133,8 @@ class _OffersScreenState extends State<OffersScreen> {
 
       final allActive = (promoData as List).cast<Map<String, dynamic>>();
 
-      // 2. Load which promos THIS user has already used (with used_at timestamp)
       Set<String> usedIds = {};
-      Map<String, String> usedAtMap = {}; // promoId → used_at
+      Map<String, String> usedAtMap = {};
       List<Map<String, dynamic>> usedPromos = [];
 
       if (_userId != null) {
@@ -117,21 +150,18 @@ class _OffersScreenState extends State<OffersScreen> {
           usedAtMap[u['promo_id'].toString()] = u['used_at'].toString();
         }
 
-        // Fetch full promo details for used ones (even if expired/exhausted)
         if (usedIds.isNotEmpty) {
           final usedPromoData = await _supabase
               .from('promo_codes')
               .select('*')
               .inFilter('id', usedIds.toList());
           usedPromos = (usedPromoData as List).cast<Map<String, dynamic>>();
-          // Attach used_at to each used promo for display
           for (final p in usedPromos) {
             p['_used_at'] = usedAtMap[p['id'].toString()];
           }
         }
       }
 
-      // 3. Available = active promos NOT used by this user, not expired, not exhausted
       final available = allActive
           .where((p) =>
               !usedIds.contains(p['id'].toString()) &&
@@ -140,18 +170,21 @@ class _OffersScreenState extends State<OffersScreen> {
               !_isNotStarted(p))
           .toList();
 
-      if (mounted) setState(() {
-        _promos       = available;
-        _usedPromos   = usedPromos;
-        _usedPromoIds = usedIds;
-        _loading      = false;
-      });
+      if (mounted) {
+        setState(() {
+          _promos       = available;
+          _usedPromos   = usedPromos;
+          _usedPromoIds = usedIds;
+          _loading      = false;
+        });
+      }
     } catch (_) {
       if (mounted) setState(() { _promos = []; _loading = false; });
     }
   }
 
-  // ── Copy code ────────────────────────────────────────────────
+  // ── Copy ──────────────────────────────────────────────────────
+
   Future<void> _copyCode(String code) async {
     await Clipboard.setData(ClipboardData(text: code));
     setState(() => _copiedCode = code);
@@ -160,7 +193,8 @@ class _OffersScreenState extends State<OffersScreen> {
     });
   }
 
-  // ── Apply promo — validates + checks per-user usage ─────────
+  // ── Apply ─────────────────────────────────────────────────────
+
   Future<void> _applyPromo() async {
     final input = _promoCtrl.text.trim().toUpperCase();
     if (input.isEmpty) return;
@@ -168,7 +202,6 @@ class _OffersScreenState extends State<OffersScreen> {
     setState(() { _applying = true; _promoMsg = null; });
 
     try {
-      // 1. Fetch promo from Supabase
       final result = await _supabase
           .from('promo_codes')
           .select('*')
@@ -178,29 +211,20 @@ class _OffersScreenState extends State<OffersScreen> {
       if (result == null) {
         _showMsg(false, '❌ Invalid promo code. Please check and try again.'); return;
       }
-
-      // 2. Check active
       if (result['is_active'] != true) {
         _showMsg(false, '⏸ This promo code is currently paused.'); return;
       }
-
-      // 3. Check valid_from
       if (_isNotStarted(result)) {
         final d = DateTime.parse(result['valid_from'].toString());
         _showMsg(false, '⏰ This promo starts on ${_dateLabel(d)}. Check back then!'); return;
       }
-
-      // 4. Check expiry
       if (_isExpired(result)) {
         _showMsg(false, '⏰ This promo code has expired.'); return;
       }
-
-      // 5. Check global usage exhausted
       if (_isExhausted(result)) {
         _showMsg(false, '✕ This promo code has been fully used up.'); return;
       }
 
-      // 6. ✅ Check if THIS user already used it
       if (_userId != null) {
         final existing = await _supabase
             .from('promo_usage')
@@ -216,26 +240,19 @@ class _OffersScreenState extends State<OffersScreen> {
         }
       }
 
-      // 7. ✅ All checks passed — record usage + increment used_count
       if (_userId != null) {
-        // record usage for this user
         await _supabase.from('promo_usage').insert({
           'promo_id': result['id'].toString(),
           'user_id':  _userId!,
         });
-
-        // increment global used_count
         final currentUsed = (result['used_count'] as num? ?? 0).toInt();
         await _supabase
             .from('promo_codes')
             .update({ 'used_count': currentUsed + 1 })
             .eq('id', result['id'].toString());
-
-        // mark locally as used
         setState(() => _usedPromoIds.add(result['id'].toString()));
       }
 
-      // 8. Build success message
       final discType  = result['discount_type'] as String? ?? 'percent';
       final discValue = (result['discount_value'] as num? ?? 0).toDouble();
       final minOrder  = result['min_order_amount'] != null
@@ -256,10 +273,7 @@ class _OffersScreenState extends State<OffersScreen> {
       if (minOrder != null) msg += '\n📋 Min order: ₹${minOrder.toStringAsFixed(0)}';
 
       _showMsg(true, msg);
-
-      // reload to reflect updated counts
       _load();
-
     } catch (e) {
       _showMsg(false, '❌ Could not verify code. Check your connection.');
     }
@@ -276,315 +290,493 @@ class _OffersScreenState extends State<OffersScreen> {
     });
   }
 
+  // ── Build ─────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF0F4FF),
-      body: CustomScrollView(
-        slivers: [
-          // ── App Bar ──────────────────────────────────────────
-          SliverAppBar(
-            expandedHeight: 140,
-            pinned: true,
-            backgroundColor: const Color(0xFF6366F1),
-            leading: IconButton(
-              icon: Container(
-                width: 36, height: 36,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.2), shape: BoxShape.circle),
-                child: const Icon(Icons.arrow_back_ios_new, color: Colors.white, size: 16),
-              ),
-              onPressed: () => Navigator.pop(context),
-            ),
-            flexibleSpace: FlexibleSpaceBar(
-              background: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [Color(0xFF6366F1), Color(0xFF4F46E5), Color(0xFF0EA5E9)]),
-                ),
-                child: SafeArea(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 56, 20, 20),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        const Text('CLEENZO REWARDS',
-                          style: TextStyle(color: Color(0xFFC7D2FE), fontSize: 11,
-                              fontWeight: FontWeight.w700, letterSpacing: 2)),
-                        const SizedBox(height: 4),
-                        const Row(children: [
-                          Text('Offers & Coupons ',
-                            style: TextStyle(color: Colors.white,
-                                fontSize: 22, fontWeight: FontWeight.bold)),
-                          Text('🎟', style: TextStyle(fontSize: 20)),
-                        ]),
-                        Text(
-                          _loading
-                              ? 'Loading offers…'
-                              : '${_promos.length} offer${_promos.length == 1 ? '' : 's'} available',
-                          style: const TextStyle(color: Color(0xFFC7D2FE), fontSize: 13),
+      backgroundColor: const Color(0xFFF0FDFF),
+      body: Column(
+        children: [
+          _buildHeader(),
+          Expanded(
+            child: _loading
+                ? _buildShimmerList()
+                : CustomScrollView(
+                    slivers: [
+                      SliverPadding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
+                        sliver: SliverList(
+                          delegate: SliverChildListDelegate([
+                            _buildPromoInput(),
+                            const SizedBox(height: 20),
+                            if (_promos.isEmpty && _usedPromos.isEmpty)
+                              _buildEmptyState()
+                            else
+                              ..._buildPromoList(),
+                          ]),
                         ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          SliverPadding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-            sliver: SliverList(
-              delegate: SliverChildListDelegate([
-
-                // ── Promo Input ──────────────────────────────────
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(24),
-                    border: Border.all(color: const Color(0xFFEEF2FF)),
-                    boxShadow: [BoxShadow(
-                      color: const Color(0xFF6366F1).withOpacity(0.07),
-                      blurRadius: 12)],
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(children: [
-                        Container(
-                          width: 32, height: 32,
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF5F3FF),
-                            borderRadius: BorderRadius.circular(10)),
-                          child: const Center(child: Text('✍️', style: TextStyle(fontSize: 16))),
-                        ),
-                        const SizedBox(width: 10),
-                        const Text('Have a promo code?',
-                          style: TextStyle(color: Color(0xFF374151),
-                              fontSize: 14, fontWeight: FontWeight.w700)),
-                      ]),
-                      const SizedBox(height: 12),
-                      Row(children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _promoCtrl,
-                            focusNode: _focusNode,
-                            textCapitalization: TextCapitalization.characters,
-                            onSubmitted: (_) => _applyPromo(),
-                            onChanged: (_) => setState(() {}),
-                            style: const TextStyle(
-                              color: Color(0xFF4F46E5),
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: 2.5,
-                              fontSize: 15,
-                            ),
-                            decoration: InputDecoration(
-                              hintText: 'e.g. FIRST20',
-                              hintStyle: const TextStyle(
-                                color: Color(0xFFD1D5DB),
-                                fontWeight: FontWeight.normal,
-                                letterSpacing: 0,
-                                fontSize: 14,
-                              ),
-                              filled: true,
-                              fillColor: const Color(0xFFF5F3FF),
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(16),
-                                borderSide: const BorderSide(color: Color(0xFFE0E7FF))),
-                              enabledBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(16),
-                                borderSide: const BorderSide(color: Color(0xFFE0E7FF))),
-                              focusedBorder: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(16),
-                                borderSide: const BorderSide(
-                                    color: Color(0xFF6366F1), width: 1.5)),
-                              contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 16, vertical: 14),
-                              suffixIcon: _promoCtrl.text.isNotEmpty
-                                  ? IconButton(
-                                      icon: const Icon(Icons.close,
-                                          size: 18, color: Color(0xFF9CA3AF)),
-                                      onPressed: () {
-                                        _promoCtrl.clear();
-                                        setState(() { _promoMsg = null; });
-                                      })
-                                  : null,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        GestureDetector(
-                          onTap: _applying ? null : _applyPromo,
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 200),
-                            height: 50,
-                            padding: const EdgeInsets.symmetric(horizontal: 18),
-                            decoration: BoxDecoration(
-                              color: _applying
-                                  ? const Color(0xFF818CF8)
-                                  : const Color(0xFF6366F1),
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [BoxShadow(
-                                color: const Color(0xFF6366F1).withOpacity(0.35),
-                                blurRadius: 12)],
-                            ),
-                            child: Center(
-                              child: _applying
-                                  ? const SizedBox(width: 18, height: 18,
-                                      child: CircularProgressIndicator(
-                                          color: Colors.white, strokeWidth: 2.5))
-                                  : const Text('Apply',
-                                      style: TextStyle(color: Colors.white,
-                                          fontWeight: FontWeight.bold, fontSize: 14)),
-                            ),
-                          ),
-                        ),
-                      ]),
-
-                      // result message
-                      AnimatedSize(
-                        duration: const Duration(milliseconds: 250),
-                        child: _promoMsg != null
-                            ? Container(
-                                margin: const EdgeInsets.only(top: 12),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 14, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: _promoSuccess
-                                      ? const Color(0xFFECFDF5)
-                                      : const Color(0xFFFEF2F2),
-                                  borderRadius: BorderRadius.circular(14),
-                                  border: Border.all(
-                                    color: _promoSuccess
-                                        ? const Color(0xFF6EE7B7)
-                                        : const Color(0xFFFCA5A5)),
-                                ),
-                                child: Text(_promoMsg!,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color: _promoSuccess
-                                        ? const Color(0xFF059669)
-                                        : const Color(0xFFDC2626),
-                                    height: 1.5,
-                                  )),
-                              )
-                            : const SizedBox.shrink(),
                       ),
                     ],
                   ),
-                ),
-                const SizedBox(height: 20),
-
-                if (_loading)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 40),
-                    child: Center(
-                        child: CircularProgressIndicator(color: Color(0xFF6366F1))))
-
-                else if (_promos.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 60),
-                    child: Column(children: [
-                      Text('🎟', style: TextStyle(fontSize: 48)),
-                      SizedBox(height: 12),
-                      Text('No offers right now',
-                        style: TextStyle(color: Color(0xFF374151),
-                            fontSize: 16, fontWeight: FontWeight.bold)),
-                      SizedBox(height: 4),
-                      Text('Check back soon for exciting deals!',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
-                    ]),
-                  )
-
-                else ..._buildPromoList(),
-              ]),
-            ),
           ),
         ],
       ),
     );
   }
 
-  // ── Build promo list (extracted to avoid final-in-spread error) ──
+  // ── Header ────────────────────────────────────────────────────
+
+  Widget _buildHeader() {
+    return SlideTransition(
+      position: _headerSlide,
+      child: FadeTransition(
+        opacity: _headerFade,
+        child: Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [Color(0xFF0891B2), Color(0xFF06B6D4), Color(0xFF22D3EE)],
+            ),
+          ),
+          child: SafeArea(
+            bottom: false,
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                  child: Row(
+                    children: [
+                      // Back button
+                      GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: Container(
+                          width: 40, height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.25), width: 1),
+                          ),
+                          child: const Icon(Icons.arrow_back_ios_new,
+                              color: Colors.white, size: 16),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      // Title
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'CLEENZO REWARDS',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(0.7),
+                                fontSize: 10,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                            const Row(children: [
+                              Text('Offers & Coupons',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w900,
+                                  letterSpacing: -0.3,
+                                )),
+                              SizedBox(width: 6),
+                              Text('🎟', style: TextStyle(fontSize: 20)),
+                            ]),
+                          ],
+                        ),
+                      ),
+                      // Refresh
+                      GestureDetector(
+                        onTap: _load,
+                        child: Container(
+                          width: 40, height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.25), width: 1),
+                          ),
+                          child: const Icon(Icons.refresh_rounded,
+                              color: Colors.white, size: 20),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                // Stats row
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Row(children: [
+                    _statPill('${_promos.length}', 'Available', Icons.local_offer_outlined),
+                    const SizedBox(width: 10),
+                    _statPill('${_usedPromos.length}', 'Used', Icons.check_circle_outline),
+                  ]),
+                ),
+                const SizedBox(height: 14),
+                // Wave bottom
+                ClipPath(
+                  clipper: _WaveClipper(),
+                  child: Container(height: 22, color: const Color(0xFFF0FDFF)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _statPill(String count, String label, IconData icon) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.15),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withOpacity(0.22), width: 1),
+        ),
+        child: Row(children: [
+          Icon(icon, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(count,
+              style: const TextStyle(color: Colors.white,
+                  fontSize: 16, fontWeight: FontWeight.w900)),
+            Text(label,
+              style: TextStyle(color: Colors.white.withOpacity(0.75),
+                  fontSize: 11, fontWeight: FontWeight.w500)),
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  // ── Promo Input ───────────────────────────────────────────────
+
+  Widget _buildPromoInput() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(color: const Color(0xFFE0F7FF), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF06B6D4).withOpacity(0.08),
+            blurRadius: 18, offset: const Offset(0, 5)),
+        ],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        // Label row
+        Row(children: [
+          Container(
+            width: 36, height: 36,
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Center(
+              child: Text('✍️', style: TextStyle(fontSize: 18))),
+          ),
+          const SizedBox(width: 10),
+          const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('Have a promo code?',
+              style: TextStyle(color: Color(0xFF0E4F5C),
+                  fontSize: 14, fontWeight: FontWeight.w800)),
+            Text('Enter your code below to unlock savings',
+              style: TextStyle(color: Color(0xFF64748B), fontSize: 11)),
+          ]),
+        ]),
+        const SizedBox(height: 14),
+        // Input + button
+        Row(children: [
+          Expanded(
+            child: TextField(
+              controller: _promoCtrl,
+              focusNode: _focusNode,
+              textCapitalization: TextCapitalization.characters,
+              onSubmitted: (_) => _applyPromo(),
+              onChanged: (_) => setState(() {}),
+              style: const TextStyle(
+                color: Color(0xFF0891B2),
+                fontWeight: FontWeight.w800,
+                letterSpacing: 2.5,
+                fontSize: 15,
+              ),
+              decoration: InputDecoration(
+                hintText: 'e.g. CLEAN20',
+                hintStyle: const TextStyle(
+                  color: Color(0xFFBAE6FD),
+                  fontWeight: FontWeight.normal,
+                  letterSpacing: 0, fontSize: 14,
+                ),
+                filled: true,
+                fillColor: const Color(0xFFECFEFF),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xFFBAE6FD))),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xFFBAE6FD))),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(
+                      color: Color(0xFF06B6D4), width: 1.5)),
+                contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16, vertical: 14),
+                suffixIcon: _promoCtrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.close,
+                            size: 18, color: Color(0xFF9CA3AF)),
+                        onPressed: () {
+                          _promoCtrl.clear();
+                          setState(() { _promoMsg = null; });
+                        })
+                    : null,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          GestureDetector(
+            onTap: _applying ? null : _applyPromo,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 200),
+              height: 50,
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: _applying
+                      ? [const Color(0xFF67E8F9), const Color(0xFF22D3EE)]
+                      : [const Color(0xFF0891B2), const Color(0xFF06B6D4)]),
+                borderRadius: BorderRadius.circular(16),
+                boxShadow: [BoxShadow(
+                  color: const Color(0xFF06B6D4).withOpacity(0.35),
+                  blurRadius: 12, offset: const Offset(0, 4))],
+              ),
+              child: Center(
+                child: _applying
+                    ? const SizedBox(width: 18, height: 18,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2.5))
+                    : const Text('Apply',
+                        style: TextStyle(color: Colors.white,
+                            fontWeight: FontWeight.w800, fontSize: 14)),
+              ),
+            ),
+          ),
+        ]),
+
+        // Result message
+        AnimatedSize(
+          duration: const Duration(milliseconds: 280),
+          child: _promoMsg != null
+              ? Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 14, vertical: 11),
+                  decoration: BoxDecoration(
+                    color: _promoSuccess
+                        ? const Color(0xFFECFDF5)
+                        : const Color(0xFFFEF2F2),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: _promoSuccess
+                          ? const Color(0xFF6EE7B7)
+                          : const Color(0xFFFCA5A5)),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        _promoSuccess
+                            ? Icons.check_circle_outline_rounded
+                            : Icons.error_outline_rounded,
+                        color: _promoSuccess
+                            ? const Color(0xFF059669)
+                            : const Color(0xFFDC2626),
+                        size: 16,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(_promoMsg!,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: _promoSuccess
+                                ? const Color(0xFF059669)
+                                : const Color(0xFFDC2626),
+                            height: 1.5,
+                          )),
+                      ),
+                    ],
+                  ),
+                )
+              : const SizedBox.shrink(),
+        ),
+      ]),
+    );
+  }
+
+  // ── Promo List ────────────────────────────────────────────────
+
   List<Widget> _buildPromoList() {
     final widgets = <Widget>[];
+    int delay = 0;
 
-    // ── Available promos ──────────────────────────────────────
     if (_promos.isNotEmpty) {
-      widgets.add(const Padding(
-        padding: EdgeInsets.only(bottom: 12, left: 4),
-        child: Text('AVAILABLE FOR YOU',
-          style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 11,
-              fontWeight: FontWeight.w700, letterSpacing: 1.5)),
-      ));
+      widgets.add(_sectionLabel('🎁  AVAILABLE FOR YOU'));
       for (final p in _promos) {
-        widgets.add(Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child: _PromoCard(
-            promo:          p,
-            discountLabel:  _discountLabel(p),
-            expiryLabel:    _expiryLabel(p),
-            expiringSoon:   _isExpiringSoon(p),
-            effectiveLimit: _effectiveLimit(p),
-            usedByMe:       false,
-            usedAt:         null,
-            copiedCode:     _copiedCode,
-            onCopy:         _copyCode,
-            onTapApply: () {
-              _promoCtrl.text = p['code'] as String;
-              setState(() {});
-              _applyPromo();
-            },
-          ),
-        ));
-      }
-    }
-
-    // ── Already used promos ───────────────────────────────────
-    if (_usedPromos.isNotEmpty) {
-      widgets.add(Padding(
-        padding: const EdgeInsets.only(bottom: 12, top: 8, left: 4),
-        child: Row(children: const [
-          Text('ALREADY USED',
-            style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 11,
-                fontWeight: FontWeight.w700, letterSpacing: 1.5)),
-          SizedBox(width: 8),
-          Text('• One use per account',
-            style: TextStyle(color: Color(0xFFD1D5DB), fontSize: 10)),
-        ]),
-      ));
-      for (final p in _usedPromos) {
-        final usedAt = p['_used_at'] as String?;
-        widgets.add(Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child: Opacity(
-            opacity: 0.65,
+        widgets.add(_AnimatedCard(
+          delay: Duration(milliseconds: delay),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 14),
             child: _PromoCard(
               promo:          p,
               discountLabel:  _discountLabel(p),
               expiryLabel:    _expiryLabel(p),
-              expiringSoon:   false,
+              expiringSoon:   _isExpiringSoon(p),
               effectiveLimit: _effectiveLimit(p),
-              usedByMe:       true,
-              usedAt:         usedAt,
-              copiedCode:     null,
-              onCopy:         (_) async {},
-              onTapApply:     () {},
+              usedByMe:       false,
+              copiedCode:     _copiedCode,
+              onCopy:         _copyCode,
+              onTapApply: () {
+                _promoCtrl.text = p['code'] as String;
+                setState(() {});
+                _applyPromo();
+              },
             ),
           ),
         ));
+        delay += 60;
+      }
+    }
+
+    if (_usedPromos.isNotEmpty) {
+      widgets.add(_sectionLabel('✅  ALREADY USED'));
+      for (final p in _usedPromos) {
+        widgets.add(_AnimatedCard(
+          delay: Duration(milliseconds: delay),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Opacity(
+              opacity: 0.65,
+              child: _PromoCard(
+                promo:          p,
+                discountLabel:  _discountLabel(p),
+                expiryLabel:    _expiryLabel(p),
+                expiringSoon:   false,
+                effectiveLimit: _effectiveLimit(p),
+                usedByMe:       true,
+                copiedCode:     null,
+                onCopy:         (_) async {},
+                onTapApply:     () {},
+              ),
+            ),
+          ),
+        ));
+        delay += 60;
       }
     }
 
     return widgets;
   }
+
+  Widget _sectionLabel(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 12, top: 4, left: 4),
+    child: Text(text,
+      style: const TextStyle(
+        color: Color(0xFF0891B2),
+        fontSize: 11,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 1.5,
+      )),
+  );
+
+  // ── Empty State ───────────────────────────────────────────────
+
+  Widget _buildEmptyState() => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 60),
+    child: Column(children: [
+      Stack(alignment: Alignment.center, children: [
+        Container(
+          width: 120, height: 120,
+          decoration: BoxDecoration(
+            color: const Color(0xFFCFFAFE),
+            borderRadius: BorderRadius.circular(40)),
+        ),
+        Container(
+          width: 84, height: 84,
+          decoration: BoxDecoration(
+            color: const Color(0xFFE0F7FF),
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: const Color(0xFFBAE6FD), width: 1.5)),
+        ),
+        const Text('🎟', style: TextStyle(fontSize: 40)),
+      ]),
+      const SizedBox(height: 20),
+      const Text('No offers right now',
+        style: TextStyle(
+          color: Color(0xFF0E7490),
+          fontSize: 18, fontWeight: FontWeight.w900,
+          letterSpacing: -0.3)),
+      const SizedBox(height: 8),
+      const Text('Check back soon for exciting deals!',
+        textAlign: TextAlign.center,
+        style: TextStyle(color: Color(0xFF64748B), fontSize: 13.5, height: 1.5)),
+    ]),
+  );
+
+  // ── Shimmer ───────────────────────────────────────────────────
+
+  Widget _buildShimmerList() {
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
+      itemCount: 4,
+      itemBuilder: (_, __) => Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        height: 120,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(24),
+          boxShadow: [BoxShadow(
+            color: const Color(0xFF06B6D4).withOpacity(0.06),
+            blurRadius: 16, offset: const Offset(0, 4))],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(24),
+          child: AnimatedBuilder(
+            animation: _shimmerAnim,
+            builder: (_, __) => ShaderMask(
+              shaderCallback: (bounds) => LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: const [
+                  Color(0xFFE0F7FF), Color(0xFFF0FDFF),
+                  Color(0xFFBAE6FD), Color(0xFFF0FDFF), Color(0xFFE0F7FF),
+                ],
+                stops: const [0.0, 0.35, 0.5, 0.65, 1.0],
+                transform: _SlidingGradientTransform(_shimmerAnim.value),
+              ).createShader(bounds),
+              child: Container(color: Colors.white),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
-// ── Promo Card ──────────────────────────────────────────────────
+// ── Promo Card ────────────────────────────────────────────────────────────────
+
 class _PromoCard extends StatelessWidget {
   final Map<String, dynamic> promo;
   final String  discountLabel;
@@ -592,7 +784,6 @@ class _PromoCard extends StatelessWidget {
   final bool    expiringSoon;
   final int?    effectiveLimit;
   final bool    usedByMe;
-  final String? usedAt;     // ISO timestamp when this user used it
   final String? copiedCode;
   final Future<void> Function(String) onCopy;
   final VoidCallback onTapApply;
@@ -604,7 +795,6 @@ class _PromoCard extends StatelessWidget {
     required this.expiringSoon,
     required this.effectiveLimit,
     required this.usedByMe,
-    required this.usedAt,
     required this.copiedCode,
     required this.onCopy,
     required this.onTapApply,
@@ -620,54 +810,80 @@ class _PromoCard extends StatelessWidget {
     final maxDisc   = promo['max_discount_amount'];
     final usedCount = (promo['used_count'] as num? ?? 0).toInt();
 
+    // Colors based on state
+    final accentColor = usedByMe
+        ? const Color(0xFF94A3B8)
+        : const Color(0xFF06B6D4);
+    final accentDark  = usedByMe
+        ? const Color(0xFF64748B)
+        : const Color(0xFF0891B2);
+
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [BoxShadow(
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
           color: usedByMe
-              ? Colors.black.withOpacity(0.04)
-              : const Color(0xFF6366F1).withOpacity(0.08),
-          blurRadius: 16, offset: const Offset(0, 4))],
+              ? const Color(0xFFE2E8F0)
+              : const Color(0xFFBAE6FD),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: usedByMe
+                ? Colors.black.withOpacity(0.04)
+                : const Color(0xFF06B6D4).withOpacity(0.09),
+            blurRadius: 18, offset: const Offset(0, 5)),
+        ],
       ),
       child: Column(children: [
         IntrinsicHeight(
           child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            // ── Left discount strip ──────────────────────────
+
+            // ── Left discount strip ───────────────────────────
             Container(
-              width: 88,
-              padding: const EdgeInsets.symmetric(vertical: 22),
+              width: 90,
+              padding: const EdgeInsets.symmetric(vertical: 24),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                   colors: usedByMe
-                      ? [const Color(0xFF94A3B8), const Color(0xFF64748B)]
-                      : [const Color(0xFF6366F1), const Color(0xFF4F46E5)],
+                      ? [const Color(0xFFCBD5E1), const Color(0xFF94A3B8)]
+                      : [const Color(0xFF06B6D4), const Color(0xFF0891B2)],
                 ),
                 borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(20), bottomLeft: Radius.circular(20)),
+                  topLeft: Radius.circular(22),
+                  bottomLeft: Radius.circular(22)),
               ),
               child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                 if (usedByMe) ...[
-                  const Icon(Icons.check_circle_rounded, color: Colors.white, size: 28),
-                  const SizedBox(height: 4),
-                  const Text('USED', style: TextStyle(color: Color(0xFFE2E8F0),
-                      fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                  const Icon(Icons.check_circle_rounded,
+                      color: Colors.white, size: 30),
+                  const SizedBox(height: 5),
+                  const Text('USED',
+                    style: TextStyle(color: Color(0xFFE2E8F0),
+                        fontSize: 10, fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5)),
                 ] else ...[
                   Text(discountLabel,
                     style: const TextStyle(color: Colors.white,
-                        fontSize: 24, fontWeight: FontWeight.w900)),
-                  const Text('OFF', style: TextStyle(color: Color(0xFFC7D2FE),
-                      fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 1)),
+                        fontSize: 24, fontWeight: FontWeight.w900,
+                        letterSpacing: -0.5)),
+                  const Text('OFF',
+                    style: TextStyle(color: Color(0xFFBAE6FD),
+                        fontSize: 10, fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5)),
                   if (isPercent && maxDisc != null) ...[
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 7),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.15),
+                        color: Colors.white.withOpacity(0.18),
                         borderRadius: BorderRadius.circular(6)),
                       child: Text('max ₹$maxDisc',
-                        style: const TextStyle(color: Color(0xFFE0E7FF),
+                        style: const TextStyle(color: Color(0xFFE0F7FF),
                             fontSize: 9, fontWeight: FontWeight.bold)),
                     ),
                   ],
@@ -677,175 +893,222 @@ class _PromoCard extends StatelessWidget {
 
             // notch divider
             Stack(clipBehavior: Clip.none, children: [
-              Container(width: 1, color: const Color(0xFFE0E7FF)),
+              Container(width: 1,
+                color: usedByMe
+                    ? const Color(0xFFE2E8F0)
+                    : const Color(0xFFBAE6FD)),
               Positioned(top: -10, left: -10,
                 child: Container(width: 20, height: 20,
                   decoration: const BoxDecoration(
-                    color: Color(0xFFF0F4FF), shape: BoxShape.circle))),
+                    color: Color(0xFFF0FDFF), shape: BoxShape.circle))),
               Positioned(bottom: -10, left: -10,
                 child: Container(width: 20, height: 20,
                   decoration: const BoxDecoration(
-                    color: Color(0xFFF0F4FF), shape: BoxShape.circle))),
+                    color: Color(0xFFF0FDFF), shape: BoxShape.circle))),
             ]),
 
-            // ── Right content ────────────────────────────────
+            // ── Right content ─────────────────────────────────
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  // used banner
-                  if (usedByMe)
-                    Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF1F5F9),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: const Color(0xFFE2E8F0))),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: const [
-                        Icon(Icons.check_circle_outline_rounded,
-                          size: 12, color: Color(0xFF64748B)),
-                        SizedBox(width: 5),
-                        Text('You\'ve already used this code',
-                          style: TextStyle(color: Color(0xFF64748B),
-                              fontSize: 11, fontWeight: FontWeight.w600)),
-                      ]),
-                    ),
-
-                  // description
-                  if (desc.isNotEmpty)
-                    Text(desc,
-                      style: const TextStyle(color: Color(0xFF111827),
-                          fontSize: 13, fontWeight: FontWeight.bold, height: 1.4),
-                      maxLines: 2, overflow: TextOverflow.ellipsis),
-
-                  // tags
-                  const SizedBox(height: 7),
-                  Wrap(spacing: 6, runSpacing: 4, children: [
-                    if (minOrder != null)
-                      _Tag('Min ₹$minOrder',
-                        const Color(0xFFFFF7ED), const Color(0xFFFED7AA), const Color(0xFFD97706)),
-                    if (effectiveLimit != null && !usedByMe)
-                      _Tag('${effectiveLimit! - usedCount} left',
-                        const Color(0xFFF5F3FF), const Color(0xFFDDD6FE), const Color(0xFF7C3AED)),
-                    if (expiringSoon && !usedByMe)
-                      _Tag('⚡ Ending soon',
-                        const Color(0xFFFEF2F2), const Color(0xFFFCA5A5), const Color(0xFFDC2626)),
-                  ]),
-
-                  // expiry
-                  const SizedBox(height: 6),
-                  Text(expiryLabel,
-                    style: TextStyle(
-                      color: expiringSoon && !usedByMe
-                          ? const Color(0xFFDC2626) : const Color(0xFFD1D5DB),
-                      fontSize: 10,
-                      fontWeight: expiringSoon && !usedByMe
-                          ? FontWeight.bold : FontWeight.normal)),
-
-                  const SizedBox(height: 10),
-
-                  // code chip + buttons
-                  Row(children: [
-                    Flexible(
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Used banner
+                    if (usedByMe)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 8),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
                         decoration: BoxDecoration(
+                          color: const Color(0xFFF1F5F9),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFE2E8F0))),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: const [
+                          Icon(Icons.check_circle_outline_rounded,
+                            size: 12, color: Color(0xFF64748B)),
+                          SizedBox(width: 5),
+                          Text('Already used · one use per account',
+                            style: TextStyle(color: Color(0xFF64748B),
+                                fontSize: 10, fontWeight: FontWeight.w600)),
+                        ]),
+                      ),
+
+                    // Description
+                    if (desc.isNotEmpty)
+                      Text(desc,
+                        style: TextStyle(
                           color: usedByMe
-                              ? const Color(0xFFF8FAFC)
-                              : const Color(0xFFF5F3FF),
-                          border: Border.all(
-                            color: usedByMe
-                                ? const Color(0xFFE2E8F0)
-                                : const Color(0xFFC4B5FD)),
-                          borderRadius: BorderRadius.circular(10)),
-                        child: Text(code,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: usedByMe
-                                ? const Color(0xFF94A3B8)
-                                : const Color(0xFF6366F1),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 1.5,
-                            decoration: usedByMe ? TextDecoration.lineThrough : null)),
-                      ),
-                    ),
-                    if (!usedByMe) ...[
-                      const SizedBox(width: 6),
-                      // copy
-                      GestureDetector(
-                        onTap: () => onCopy(code),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: isCopied
-                                ? const Color(0xFF10B981) : const Color(0xFFEEF2FF),
-                            borderRadius: BorderRadius.circular(10)),
-                          child: Row(mainAxisSize: MainAxisSize.min, children: [
-                            Icon(isCopied ? Icons.check_rounded : Icons.copy_rounded,
-                              color: isCopied ? Colors.white : const Color(0xFF6366F1),
-                              size: 13),
-                            const SizedBox(width: 4),
-                            Text(isCopied ? 'Copied' : 'Copy',
-                              style: TextStyle(
-                                color: isCopied ? Colors.white : const Color(0xFF6366F1),
-                                fontSize: 11, fontWeight: FontWeight.w700)),
-                          ]),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      // apply
-                      GestureDetector(
-                        onTap: onTapApply,
+                              ? const Color(0xFF94A3B8)
+                              : const Color(0xFF0E4F5C),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                          height: 1.4),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
+
+                    const SizedBox(height: 8),
+
+                    // Tags
+                    Wrap(spacing: 6, runSpacing: 4, children: [
+                      if (minOrder != null)
+                        _Tag('Min ₹$minOrder',
+                          const Color(0xFFFFF7ED),
+                          const Color(0xFFFED7AA),
+                          const Color(0xFFD97706)),
+                      if (effectiveLimit != null && !usedByMe)
+                        _Tag('${effectiveLimit! - usedCount} left',
+                          const Color(0xFFECFEFF),
+                          const Color(0xFFBAE6FD),
+                          const Color(0xFF0891B2)),
+                      if (expiringSoon && !usedByMe)
+                        _Tag('⚡ Ending soon',
+                          const Color(0xFFFEF2F2),
+                          const Color(0xFFFCA5A5),
+                          const Color(0xFFDC2626)),
+                    ]),
+
+                    // Expiry
+                    const SizedBox(height: 6),
+                    Text(expiryLabel,
+                      style: TextStyle(
+                        color: expiringSoon && !usedByMe
+                            ? const Color(0xFFDC2626)
+                            : const Color(0xFF94A3B8),
+                        fontSize: 10,
+                        fontWeight: expiringSoon && !usedByMe
+                            ? FontWeight.bold : FontWeight.normal)),
+
+                    const SizedBox(height: 10),
+
+                    // Code chip + buttons
+                    Row(children: [
+                      Flexible(
                         child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF6366F1),
-                            borderRadius: BorderRadius.circular(10),
-                            boxShadow: [BoxShadow(
-                              color: const Color(0xFF6366F1).withOpacity(0.3),
-                              blurRadius: 8)]),
-                          child: const Text('Apply',
-                            style: TextStyle(color: Colors.white,
-                                fontSize: 11, fontWeight: FontWeight.w700)),
+                            color: usedByMe
+                                ? const Color(0xFFF8FAFC)
+                                : const Color(0xFFECFEFF),
+                            border: Border.all(
+                              color: usedByMe
+                                  ? const Color(0xFFE2E8F0)
+                                  : const Color(0xFFBAE6FD)),
+                            borderRadius: BorderRadius.circular(10)),
+                          child: Text(code,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: usedByMe
+                                  ? const Color(0xFF94A3B8)
+                                  : const Color(0xFF0891B2),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 1.5,
+                              decoration: usedByMe
+                                  ? TextDecoration.lineThrough : null)),
                         ),
                       ),
-                    ],
-                  ]),
-                ]),
+                      if (!usedByMe) ...[
+                        const SizedBox(width: 6),
+                        // Copy
+                        GestureDetector(
+                          onTap: () => onCopy(code),
+                          child: AnimatedContainer(
+                            duration: const Duration(milliseconds: 200),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: isCopied
+                                  ? const Color(0xFF10B981)
+                                  : const Color(0xFFECFEFF),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                color: isCopied
+                                    ? const Color(0xFF10B981)
+                                    : const Color(0xFFBAE6FD)),
+                            ),
+                            child: Row(mainAxisSize: MainAxisSize.min, children: [
+                              Icon(
+                                isCopied
+                                    ? Icons.check_rounded
+                                    : Icons.copy_rounded,
+                                color: isCopied
+                                    ? Colors.white
+                                    : const Color(0xFF0891B2),
+                                size: 13),
+                              const SizedBox(width: 4),
+                              Text(isCopied ? 'Copied' : 'Copy',
+                                style: TextStyle(
+                                  color: isCopied
+                                      ? Colors.white
+                                      : const Color(0xFF0891B2),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700)),
+                            ]),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        // Apply
+                        GestureDetector(
+                          onTap: onTapApply,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 13, vertical: 6),
+                            decoration: BoxDecoration(
+                              gradient: const LinearGradient(colors: [
+                                Color(0xFF0891B2), Color(0xFF06B6D4)]),
+                              borderRadius: BorderRadius.circular(10),
+                              boxShadow: [BoxShadow(
+                                color: const Color(0xFF06B6D4).withOpacity(0.35),
+                                blurRadius: 8, offset: const Offset(0, 3))],
+                            ),
+                            child: const Text('Apply',
+                              style: TextStyle(color: Colors.white,
+                                  fontSize: 11, fontWeight: FontWeight.w800)),
+                          ),
+                        ),
+                      ],
+                    ]),
+                  ],
+                ),
               ),
             ),
           ]),
         ),
 
-        // ── Usage bar ──────────────────────────────────────────
+        // ── Usage progress bar ────────────────────────────────
         if (effectiveLimit != null) ...[
-          const Divider(height: 1, color: Color(0xFFF1F5F9)),
+          Divider(height: 1,
+            color: usedByMe
+                ? const Color(0xFFF1F5F9)
+                : const Color(0xFFE0F7FF)),
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 8, 14, 12),
             child: Column(children: [
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text('$usedCount used of $effectiveLimit',
-                  style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 10)),
+                  style: const TextStyle(
+                      color: Color(0xFF94A3B8), fontSize: 10)),
                 Text(
                   '${((usedCount / effectiveLimit!) * 100).clamp(0, 100).toStringAsFixed(0)}% claimed',
                   style: TextStyle(
                     color: (usedCount / effectiveLimit!) > 0.8
-                        ? const Color(0xFFDC2626) : const Color(0xFF9CA3AF),
+                        ? const Color(0xFFDC2626)
+                        : const Color(0xFF0891B2),
                     fontSize: 10, fontWeight: FontWeight.bold)),
               ]),
               const SizedBox(height: 5),
               ClipRRect(
-                borderRadius: BorderRadius.circular(4),
+                borderRadius: BorderRadius.circular(6),
                 child: LinearProgressIndicator(
                   value: (usedCount / effectiveLimit!).clamp(0.0, 1.0),
-                  minHeight: 5,
-                  backgroundColor: const Color(0xFFF1F5F9),
+                  minHeight: 6,
+                  backgroundColor: const Color(0xFFE0F7FF),
                   valueColor: AlwaysStoppedAnimation<Color>(
                     (usedCount / effectiveLimit!) > 0.8
-                        ? const Color(0xFFEF4444) : const Color(0xFF6366F1)),
+                        ? const Color(0xFFEF4444)
+                        : const Color(0xFF06B6D4)),
                 ),
               ),
             ]),
@@ -856,7 +1119,8 @@ class _PromoCard extends StatelessWidget {
   }
 }
 
-// ── Tag chip ────────────────────────────────────────────────────
+// ── Tag chip ──────────────────────────────────────────────────────────────────
+
 class _Tag extends StatelessWidget {
   final String text;
   final Color bg, border, color;
@@ -870,6 +1134,77 @@ class _Tag extends StatelessWidget {
       border: Border.all(color: border),
       borderRadius: BorderRadius.circular(8)),
     child: Text(text,
-      style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold)),
+      style: TextStyle(
+          color: color, fontSize: 10, fontWeight: FontWeight.bold)),
   );
+}
+
+// ── Wave Clipper ──────────────────────────────────────────────────────────────
+
+class _WaveClipper extends CustomClipper<Path> {
+  @override
+  Path getClip(Size size) {
+    final path = Path();
+    path.lineTo(0, 0);
+    path.quadraticBezierTo(
+        size.width / 4, size.height, size.width / 2, size.height * 0.5);
+    path.quadraticBezierTo(
+        3 * size.width / 4, 0, size.width, size.height * 0.5);
+    path.lineTo(size.width, 0);
+    path.close();
+    return path;
+  }
+
+  @override
+  bool shouldReclip(_) => false;
+}
+
+// ── Staggered Animated Card ───────────────────────────────────────────────────
+
+class _AnimatedCard extends StatefulWidget {
+  final Widget child;
+  final Duration delay;
+  const _AnimatedCard({required this.child, required this.delay});
+
+  @override
+  State<_AnimatedCard> createState() => _AnimatedCardState();
+}
+
+class _AnimatedCardState extends State<_AnimatedCard>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _fade;
+  late Animation<Offset> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 500));
+    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _slide = Tween<Offset>(
+        begin: const Offset(0, 0.18), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+    Future.delayed(widget.delay, () { if (mounted) _ctrl.forward(); });
+  }
+
+  @override
+  void dispose() { _ctrl.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) => FadeTransition(
+    opacity: _fade,
+    child: SlideTransition(position: _slide, child: widget.child),
+  );
+}
+
+// ── Shimmer Gradient Transform ────────────────────────────────────────────────
+
+class _SlidingGradientTransform extends GradientTransform {
+  final double slidePercent;
+  const _SlidingGradientTransform(this.slidePercent);
+
+  @override
+  Matrix4? transform(Rect bounds, {TextDirection? textDirection}) =>
+      Matrix4.translationValues(bounds.width * slidePercent, 0, 0);
 }

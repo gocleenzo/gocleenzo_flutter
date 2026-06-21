@@ -1,10 +1,52 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../utils/theme.dart';
-import '../../widgets/booking_type_sheet.dart';
 import 'booking_flow_screen.dart';
 
+// ── Pricing config ────────────────────────────────────────────────────────────
+class _ServicePricing {
+  static const Map<String, Map<String, dynamic>> config = {
+    'Bathroom Cleaning': {
+      'type': 'per_unit', 'unit': 'Bathroom', 'unit_plural': 'Bathrooms',
+      'price_per_unit': 99, 'duration_per_unit': 30, 'min': 1, 'max': 6,
+    },
+    'Fan Cleaning': {
+      'type': 'per_unit', 'unit': 'Fan', 'unit_plural': 'Fans',
+      'price_per_unit': 49, 'duration_per_unit': 15, 'min': 1, 'max': 10,
+    },
+    'Balcony Cleaning': {
+      'type': 'per_unit', 'unit': 'Balcony', 'unit_plural': 'Balconies',
+      'price_per_unit': 79, 'duration_per_unit': 20, 'min': 1, 'max': 4,
+    },
+    'Dusting & Wiping': {
+      'type': 'by_bhk',
+      'prices':    {'1 BHK': 299, '2 BHK': 449, '3 BHK': 599},
+      'durations': {'1 BHK': 60,  '2 BHK': 90,  '3 BHK': 120},
+    },
+    'Sweeping & Mopping': {
+      'type': 'by_bhk',
+      'prices':    {'1 BHK': 249, '2 BHK': 399, '3 BHK': 549},
+      'durations': {'1 BHK': 45,  '2 BHK': 75,  '3 BHK': 105},
+    },
+    'Full House Cleaning': {
+      'type': 'by_bhk',
+      'prices':    {'1 BHK': 599, '2 BHK': 899,  '3 BHK': 1199},
+      'durations': {'1 BHK': 90,  '2 BHK': 150,  '3 BHK': 210},
+    },
+    'Kitchen Cleaning':            {'type': 'fixed', 'duration': 45},
+    'Kitchen Cabinet Cleaning':    {'type': 'fixed', 'duration': 60},
+    'Utensil Cleaning':            {'type': 'fixed', 'duration': 30},
+    'Wardrobe Cleaning':           {'type': 'fixed', 'duration': 45},
+    'Refrigerator Cleaning':       {'type': 'fixed', 'duration': 30},
+    'Pre-Party Express Cleaning':  {'type': 'fixed', 'duration': 60},
+    'After-Party Cleanup':         {'type': 'fixed', 'duration': 90},
+  };
+
+  static Map<String, dynamic> get(String name) =>
+      config[name] ?? {'type': 'fixed', 'duration': 60};
+}
+
+// ── Screen ────────────────────────────────────────────────────────────────────
 class ServiceDetailScreen extends StatefulWidget {
   final String serviceId;
   const ServiceDetailScreen({super.key, required this.serviceId});
@@ -13,96 +55,144 @@ class ServiceDetailScreen extends StatefulWidget {
 }
 
 class _ServiceDetailScreenState extends State<ServiceDetailScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final _supabase = Supabase.instance.client;
+
   Map<String, dynamic>? _service;
-  bool _loading = true;
-  bool _liked   = false;
-  String _tab   = 'about';
-  late AnimationController _anim;
-  late Animation<double>   _fade;
+  bool   _loading = true;
+  bool   _liked   = false;
+  String _tab     = 'about';
 
-  // Reviews are READ-ONLY here now. Customers leave reviews via the
-  // compulsory popup after a job completes (see review_popup.dart).
-  List<Map<String, dynamic>> _reviews      = [];
+  late AnimationController _entranceCtrl;
+  late Animation<double>   _entranceFade;
+  late Animation<Offset>   _entranceSlide;
+
+  // Pricing state
+  int    _quantity    = 1;
+  String _selectedBhk = '2 BHK';
+  bool   _isFirstBooking = false;
+
+  // Reviews
+  List<Map<String, dynamic>> _reviews     = [];
   Map<String, dynamic>?      _reviewStats;
-  bool   _reviewsLoading = true;
-
+  bool             _reviewsLoading = true;
   RealtimeChannel? _reviewChannel;
 
-  static const _whyUs = [
-    {'icon': '🛡️', 'title': 'Fully Insured',  'sub': 'Damage covered',    'bg': 0xFFF5F3FF, 'border': 0xFFDDD6FE, 'text': 0xFF6D28D9},
-    {'icon': '⭐',  'title': 'Top Rated',       'sub': '4.8 / 5 stars',    'bg': 0xFFFFFBEB, 'border': 0xFFFDE68A, 'text': 0xFFB45309},
-    {'icon': '💳',  'title': 'Flexible Pay',    'sub': 'UPI · Card · Cash', 'bg': 0xFFECFDF5, 'border': 0xFFA7F3D0, 'text': 0xFF065F46},
-    {'icon': '🔄',  'title': 'Re-Clean',        'sub': 'If not satisfied',  'bg': 0xFFECFEFF, 'border': 0xFFA5F3FC, 'text': 0xFF155E75},
-  ];
+  // ── Colors ─────────────────────────────────────────────────────
+  static const _cyan   = Color(0xFF06B6D4);
+  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyanLt = Color(0xFFCFFAFE);
+  static const _cyanXl = Color(0xFFECFEFF);
+  static const _ink    = Color(0xFF0F172A);
+  static const _muted  = Color(0xFF64748B);
+  static const _faint  = Color(0xFF94A3B8);
+  static const _border = Color(0xFFE2E8F0);
+  static const _bg     = Color(0xFFF8FAFC);
 
-  static const _cfg = <String, Map<String, dynamic>>{
-  'Bathroom Cleaning':          {'emoji': '🚿', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Kitchen Cleaning':           {'emoji': '🍳', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Kitchen Cabinet Cleaning':   {'emoji': '🗄️', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Fan Cleaning':               {'emoji': '💨', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Balcony Cleaning':           {'emoji': '🌿', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Dusting & Wiping':           {'emoji': '🧹', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Sweeping & Mopping':         {'emoji': '🧺', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Utensil Cleaning':           {'emoji': '🍽️', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Wardrobe Cleaning':          {'emoji': '👔', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Refrigerator Cleaning':      {'emoji': '❄️', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Full House Cleaning':        {'emoji': '🏠', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'Pre-Party Express Cleaning': {'emoji': '🎉', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-  'After-Party Cleanup':        {'emoji': '🧽', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490},
-};
+  static const _emojis = <String, String>{
+    'Bathroom Cleaning':          '🚿',
+    'Kitchen Cleaning':           '🍳',
+    'Kitchen Cabinet Cleaning':   '🗄️',
+    'Fan Cleaning':               '💨',
+    'Balcony Cleaning':           '🌿',
+    'Dusting & Wiping':           '🧹',
+    'Sweeping & Mopping':         '🧺',
+    'Utensil Cleaning':           '🍽️',
+    'Wardrobe Cleaning':          '👔',
+    'Refrigerator Cleaning':      '❄️',
+    'Full House Cleaning':        '🏠',
+    'Pre-Party Express Cleaning': '🎉',
+    'After-Party Cleanup':        '🧽',
+  };
 
-  Map<String, dynamic> _getCfg(String name) =>
-      _cfg[name] ?? {'emoji': '🧹', 'c1': 0xFF06B6D4, 'c2': 0xFF0E7490};
+  // ── Computed values ─────────────────────────────────────────────
+  Map<String, dynamic> get _pricing {
+    if (_service == null) return {'type': 'fixed', 'duration': 60};
+    return _ServicePricing.get(_service!['name'] as String);
+  }
+
+  int get _originalPrice {
+    final p = _pricing;
+    switch (p['type'] as String) {
+      case 'per_unit': return (p['price_per_unit'] as int) * _quantity;
+      case 'by_bhk':  return (p['prices'] as Map)[_selectedBhk] as int;
+      default:         return (_service?['base_price'] as num?)?.toInt() ?? 0;
+    }
+  }
+
+  int get _computedPrice => _isFirstBooking ? 25 : _originalPrice;
+
+  int get _computedDuration {
+    final p = _pricing;
+    switch (p['type'] as String) {
+      case 'per_unit':
+        final mins = (p['duration_per_unit'] as int) * _quantity;
+        return ((mins / 60).ceil()) * 60;
+      case 'by_bhk':
+        final mins = (p['durations'] as Map)[_selectedBhk] as int;
+        return ((mins / 60).ceil()) * 60;
+      default:
+        final raw = (p['duration'] as int?) ??
+            (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
+        return ((raw / 60).ceil()) * 60;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 500));
-    _fade = CurvedAnimation(parent: _anim, curve: Curves.easeOut);
+    _entranceCtrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 550));
+    _entranceFade  = CurvedAnimation(parent: _entranceCtrl, curve: Curves.easeOut);
+    _entranceSlide = Tween<Offset>(
+        begin: const Offset(0, 0.05), end: Offset.zero)
+        .animate(CurvedAnimation(parent: _entranceCtrl, curve: Curves.easeOut));
     _load();
     _loadReviews();
     _subscribeRealtime();
+    _checkFirstBooking();
   }
 
   @override
   void dispose() {
-    _anim.dispose();
+    _entranceCtrl.dispose();
     _reviewChannel?.unsubscribe();
     super.dispose();
   }
 
   Future<void> _load() async {
     try {
-      final data = await _supabase
-          .from('services')
-          .select('*')
-          .eq('id', widget.serviceId)
-          .single();
+      final data = await _supabase.from('services')
+          .select('*').eq('id', widget.serviceId).single();
       if (mounted) {
         setState(() { _service = data; _loading = false; });
-        _anim.forward();
+        _entranceCtrl.forward();
       }
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  Future<void> _checkFirstBooking() async {
+    final uid = _supabase.auth.currentUser?.id;
+    if (uid == null) return;
+    try {
+      final rows = await _supabase.from('bookings').select('id')
+          .eq('customer_id', uid)
+          .inFilter('payment_status', ['paid'])
+          .limit(1);
+      if (mounted) setState(() => _isFirstBooking = (rows as List).isEmpty);
+    } catch (_) {}
+  }
+
   Future<void> _loadReviews() async {
     try {
       final results = await Future.wait([
-        _supabase
-            .from('reviews_with_user')
-            .select('*')
+        _supabase.from('reviews_with_user').select('*')
             .eq('service_id', widget.serviceId)
-            .order('created_at', ascending: false)
-            .limit(50),
-        _supabase
-            .from('service_review_stats')
-            .select('*')
-            .eq('service_id', widget.serviceId)
-            .maybeSingle(),
+            .order('created_at', ascending: false).limit(50),
+        _supabase.from('service_review_stats').select('*')
+            .eq('service_id', widget.serviceId).maybeSingle(),
       ]);
       if (!mounted) return;
       setState(() {
@@ -119,278 +209,206 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     _reviewChannel = _supabase
         .channel('reviews:${widget.serviceId}')
         .onPostgresChanges(
-          event:  PostgresChangeEvent.all,
-          schema: 'public',
-          table:  'reviews',
+          event: PostgresChangeEvent.all, schema: 'public', table: 'reviews',
           filter: PostgresChangeFilter(
-            type:  PostgresChangeFilterType.eq,
-            column:'service_id',
-            value: widget.serviceId,
-          ),
-          callback: (_) => _loadReviews(),
-        )
+              type: PostgresChangeFilterType.eq,
+              column: 'service_id', value: widget.serviceId),
+          callback: (_) => _loadReviews())
         .subscribe();
   }
 
-  void _navigate(String type) {
+  void _navigate(String mode) {
+    if (_service == null) return;
     Navigator.push(context, MaterialPageRoute(
-      builder: (_) => BookingFlowScreen(mode: type, serviceId: _service!['id']),
+      builder: (_) => BookingFlowScreen(
+        mode:             mode,
+        serviceId:        _service!['id'] as String,
+        overridePrice:    _computedPrice,
+        overrideDuration: _computedDuration,
+        selectedBhk:      _pricing['type'] == 'by_bhk' ? _selectedBhk : null,
+        quantity:         _pricing['type'] == 'per_unit' ? _quantity : null,
+        isFirstBooking:   _isFirstBooking,
+      ),
     ));
   }
 
-  // ── BUILD ─────────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(child: CircularProgressIndicator(color: AppTheme.primary)));
+    if (_loading) {
+      return const Scaffold(
+        backgroundColor: _bg,
+        body: Center(child: CircularProgressIndicator(color: _cyan)));
+    }
 
-    if (_service == null) return Scaffold(
-      body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        const Text('🔍', style: TextStyle(fontSize: 50)),
-        const SizedBox(height: 14),
-        const Text('Service not found',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-        const SizedBox(height: 14),
-        ElevatedButton.icon(onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back), label: const Text('Go Back')),
-      ])),
-    );
+    if (_service == null) {
+      return Scaffold(
+        backgroundColor: _bg,
+        body: Center(child: Column(
+            mainAxisAlignment: MainAxisAlignment.center, children: [
+          const Text('🔍', style: TextStyle(fontSize: 48)),
+          const SizedBox(height: 16),
+          const Text('Service not found',
+              style: TextStyle(fontWeight: FontWeight.w700,
+                  fontSize: 16, color: _ink)),
+          const SizedBox(height: 16),
+          TextButton(onPressed: () => Navigator.pop(context),
+              child: const Text('Go back')),
+        ])));
+    }
 
     final svc   = _service!;
     final name  = svc['name'] as String;
-    final cfg   = _getCfg(name);
-    final c1    = Color(cfg['c1'] as int);
-    final c2    = Color(cfg['c2'] as int);
-    final emoji = cfg['emoji'] as String;
-    final price = (svc['base_price'] as num).toInt();
+    final emoji = _emojis[name] ?? '🧹';
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
+      backgroundColor: _bg,
       body: FadeTransition(
-        opacity: _fade,
-        child: Stack(children: [
-          CustomScrollView(
-            physics: const BouncingScrollPhysics(),
-            slivers: [
-              _buildHero(svc, c1, c2, emoji),
-              SliverToBoxAdapter(
-                child: Container(
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                  ),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    _buildSocialProof(svc, c1),
-                    _buildPriceStats(svc, c1, price),
-                    const SizedBox(height: 20),
-                    const Divider(color: Color(0xFFF1F5F9), height: 1),
-                    const SizedBox(height: 6),
-                    _buildTabs(),
-                    AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 220),
-                      transitionBuilder: (child, anim) =>
-                          FadeTransition(opacity: anim, child: child),
-                      child: Padding(
-                        key: ValueKey(_tab),
-                        padding: const EdgeInsets.all(20),
-                        child: _buildTabContent(svc, c1),
-                      ),
-                    ),
-                  ]),
-                ),
-              ),
-              const SliverToBoxAdapter(child: SizedBox(height: 130)),
-            ],
-          ),
-          _buildBottomBar(svc, c1, c2, price),
-        ]),
+        opacity: _entranceFade,
+        child: SlideTransition(
+          position: _entranceSlide,
+          child: Stack(children: [
+            CustomScrollView(
+              physics: const BouncingScrollPhysics(),
+              slivers: [
+                _buildHero(svc, name, emoji),
+                SliverToBoxAdapter(child: _buildBody(svc)),
+                const SliverToBoxAdapter(child: SizedBox(height: 160)),
+              ],
+            ),
+            _buildBottomBar(),
+          ]),
+        ),
       ),
     );
   }
 
-  // ── HERO ─────────────────────────────────────────────────────────────────
-  Widget _buildHero(Map<String, dynamic> svc, Color c1, Color c2, String emoji) {
-    final imgUrl = svc['image_url'] as String?;
+  // ── HERO ──────────────────────────────────────────────────────────────────
+  Widget _buildHero(Map<String, dynamic> svc, String name, String emoji) {
+    final avg = (_reviewStats?['avg_rating'] as num?)?.toDouble() ?? 4.8;
 
     return SliverAppBar(
-      expandedHeight: 340,
+      expandedHeight: 310,
       pinned: true,
-      backgroundColor: c1,
-      automaticallyImplyLeading: false,
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
-      leading: Padding(
-        padding: const EdgeInsets.all(8),
-        child: GestureDetector(
-          onTap: () => Navigator.pop(context),
-          child: Container(
-            decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.30),
-                borderRadius: BorderRadius.circular(12)),
-            child: const Icon(Icons.arrow_back_ios_new_rounded,
-                color: Colors.white, size: 18),
-          ),
-        ),
-      ),
-      actions: [
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: GestureDetector(
-            onTap: () {
-              setState(() => _liked = !_liked);
-              HapticFeedback.lightImpact();
-            },
-            child: Container(
-              width: 40, height: 40, margin: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: _liked ? Colors.red : Colors.black.withOpacity(0.30),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                  _liked ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                  color: Colors.white, size: 20),
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(right: 12),
-          child: GestureDetector(
-            onTap: () {
-              HapticFeedback.lightImpact();
-              ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Share link copied!')));
-            },
-            child: Container(
-              width: 40, height: 40, margin: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.30),
-                  borderRadius: BorderRadius.circular(12)),
-              child: const Icon(Icons.share_outlined,
-                  color: Colors.white, size: 18),
-            ),
-          ),
-        ),
-      ],
+      automaticallyImplyLeading: false,
       flexibleSpace: FlexibleSpaceBar(
         collapseMode: CollapseMode.parallax,
         titlePadding: EdgeInsets.zero,
         title: const SizedBox.shrink(),
         background: Stack(fit: StackFit.expand, children: [
 
-          if (imgUrl != null)
-            Image.asset(
-              'assets/$imgUrl',
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topLeft, end: Alignment.bottomRight,
-                    colors: [c1, c2, c2.withOpacity(0.9)],
-                  ),
-                ),
-              ),
-            )
-          else
-            Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft, end: Alignment.bottomRight,
-                  colors: [c1, c2, c2.withOpacity(0.9)],
-                ),
-              ),
-            ),
+          // Background wash
+          Container(color: const Color(0xFFECFEFF)),
+          Positioned(top: -80, right: -80,
+            child: Container(width: 280, height: 280,
+              decoration: const BoxDecoration(
+                  color: Color(0xFFCFFAFE), shape: BoxShape.circle))),
+          Positioned(bottom: -40, left: -60,
+            child: Container(width: 200, height: 200,
+              decoration: const BoxDecoration(
+                  color: Color(0xFFBAE6FD), shape: BoxShape.circle))),
 
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                colors: [
-                  Colors.black.withOpacity(imgUrl != null ? 0.25 : 0.0),
-                  Colors.black.withOpacity(imgUrl != null ? 0.60 : 0.45),
-                ],
-              ),
-            ),
-          ),
+          // Ghost emoji
+          Positioned(right: 10, bottom: 70,
+            child: Text(emoji, style: TextStyle(
+                fontSize: 130,
+                color: Colors.white.withValues(alpha: 0.18)))),
 
-          if (imgUrl == null) ...[
-            Positioned(top: -60, right: -60,
-              child: Container(width: 260, height: 260,
-                decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.07),
-                    shape: BoxShape.circle))),
-            Positioned(bottom: 60, left: -40,
-              child: Container(width: 180, height: 180,
-                decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.06),
-                    shape: BoxShape.circle))),
-            Positioned(right: -20, bottom: 40,
-              child: Text(emoji, style: TextStyle(
-                  fontSize: 180, color: Colors.white.withOpacity(0.13)))),
-            Center(child: Column(
-                mainAxisAlignment: MainAxisAlignment.center, children: [
-              const SizedBox(height: 40),
-              Container(
-                width: 100, height: 100,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.18),
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                      color: Colors.white.withOpacity(0.35), width: 2),
-                  boxShadow: [BoxShadow(
-                      color: Colors.black.withOpacity(0.15),
-                      blurRadius: 30, spreadRadius: 5)],
-                ),
-                child: Center(child: Text(emoji,
-                    style: const TextStyle(fontSize: 48))),
-              ),
-            ])),
-          ],
-
-          Positioned(
-            left: 0, right: 0, bottom: 0,
+          // Main emoji in glowing circle
+          Positioned(right: 24, top: 72,
             child: Container(
-              padding: const EdgeInsets.fromLTRB(20, 40, 20, 20),
+              width: 108, height: 108,
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                  colors: [Colors.transparent, Colors.black.withOpacity(0.70)],
-                ),
-              ),
+                color: Colors.white,
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(color: _cyan.withValues(alpha: 0.22),
+                      blurRadius: 30, spreadRadius: 4),
+                  BoxShadow(color: _cyan.withValues(alpha: 0.08),
+                      blurRadius: 60, spreadRadius: 12),
+                ]),
+              child: Center(child: Text(emoji,
+                  style: const TextStyle(fontSize: 54))))),
+
+          // Bottom white card
+          Positioned(left: 0, right: 0, bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(
+                    top: Radius.circular(32))),
               child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.22),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                        color: Colors.white.withOpacity(0.3)),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min, children: [
+                // Category pill
+                if ((svc['category'] as String?) != null) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 6),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: _cyanLt,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: _cyan.withValues(alpha: 0.3))),
+                    child: Text(
+                      (svc['category'] as String).toUpperCase(),
+                      style: const TextStyle(color: _cyanDk, fontSize: 9,
+                          fontWeight: FontWeight.w800, letterSpacing: 1.4)),
                   ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(width: 5, height: 5,
-                        decoration: const BoxDecoration(
-                            color: Colors.white,
-                            shape: BoxShape.circle)),
-                    const SizedBox(width: 5),
-                    Text(
-                      (svc['category'] ?? '').toString().toUpperCase(),
-                      style: const TextStyle(color: Colors.white,
-                          fontSize: 9, fontWeight: FontWeight.w900,
-                          letterSpacing: 1.5),
-                    ),
-                  ]),
-                ),
-                const SizedBox(height: 6),
-                Text(svc['name'],
-                    style: const TextStyle(color: Colors.white,
-                        fontSize: 24, fontWeight: FontWeight.w900,
-                        height: 1.15)),
-                const SizedBox(height: 8),
-                Wrap(spacing: 8, runSpacing: 6, children: [
-                  _pill('⏱ ~${(svc['duration_minutes'] as num).toInt()} min'),
-                  _pill('✓ Verified pros'),
-                  _pill('★ 4.8 rated'),
+                ],
+
+                // Service name
+                Text(name, style: const TextStyle(fontSize: 22,
+                    fontWeight: FontWeight.w900, color: _ink, height: 1.2)),
+                const SizedBox(height: 10),
+
+                // Info chips row
+                Row(children: [
+                  _chip('⭐ ${avg.toStringAsFixed(1)}',
+                      const Color(0xFFFFFBEB), const Color(0xFFFDE68A),
+                      const Color(0xFFB45309)),
+                  const SizedBox(width: 8),
+                  _chip('⏱ ~$_computedDuration min',
+                      _cyanXl, _cyan.withValues(alpha: 0.25), _cyanDk),
+                  const SizedBox(width: 8),
+                  _chip('✓ Verified pros',
+                      const Color(0xFFECFDF5),
+                      const Color(0xFF6EE7B7),
+                      const Color(0xFF065F46)),
+                ]),
+              ]),
+            )),
+
+          // Top action buttons
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                _iconBtn(Icons.arrow_back_ios_new_rounded,
+                    () => Navigator.pop(context)),
+                Row(children: [
+                  _iconBtn(
+                    _liked ? Icons.favorite_rounded
+                           : Icons.favorite_border_rounded,
+                    () {
+                      setState(() => _liked = !_liked);
+                      HapticFeedback.lightImpact();
+                    },
+                    iconColor: _liked ? Colors.red : _ink,
+                  ),
+                  const SizedBox(width: 8),
+                  _iconBtn(Icons.ios_share_rounded, () {
+                    HapticFeedback.lightImpact();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Link copied!')));
+                  }),
                 ]),
               ]),
             ),
@@ -400,233 +418,593 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     );
   }
 
-  // ── TABS ─────────────────────────────────────────────────────────────────
-  Widget _buildTabs() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
-      child: Container(
-        padding: const EdgeInsets.all(4),
+  Widget _chip(String label, Color bg, Color borderColor, Color textColor) =>
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-            color: const Color(0xFFF1F5F9),
-            borderRadius: BorderRadius.circular(16)),
-        child: Row(children: ['about', 'includes', 'reviews'].map((t) {
-          final active = _tab == t;
-          return Expanded(
-            child: GestureDetector(
-              onTap: () {
-                setState(() => _tab = t);
-                HapticFeedback.selectionClick();
-              },
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: active ? Colors.white : Colors.transparent,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: active
-                      ? [const BoxShadow(
-                          color: Color(0x14000000),
-                          blurRadius: 8, offset: Offset(0, 2))]
-                      : [],
-                ),
-                child: Center(child: Text(
-                  t[0].toUpperCase() + t.substring(1),
-                  style: TextStyle(
-                    color: active
-                        ? const Color(0xFF0F172A)
-                        : const Color(0xFF94A3B8),
-                    fontSize: 13, fontWeight: FontWeight.w800,
-                  ),
-                )),
-              ),
-            ),
-          );
-        }).toList()),
-      ),
-    );
-  }
+            color: bg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: borderColor)),
+        child: Text(label,
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700,
+                color: textColor)));
 
-  Widget _buildTabContent(Map<String, dynamic> svc, Color accent) {
-    switch (_tab) {
-      case 'about':    return _buildAbout(svc, accent);
-      case 'includes': return _buildIncludes(svc);
-      default:         return _buildReviews();
-    }
-  }
-
-  // ── SOCIAL PROOF ─────────────────────────────────────────────────────────
-  Widget _buildSocialProof(Map<String, dynamic> svc, Color c1) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
-      child: Row(children: [
-        SizedBox(width: 72, height: 28, child: Stack(children: [
-          _avatarCircle('PR', const Color(0xFF06B6D4), 0),
-          _avatarCircle('RK', const Color(0xFF7C3AED), 20),
-          _avatarCircle('SD', const Color(0xFFDB2777), 40),
-        ])),
-        const SizedBox(width: 10),
-        Expanded(child: Text.rich(TextSpan(children: [
-          TextSpan(text: 'Priya, Rahul',
-              style: TextStyle(color: c1, fontSize: 12,
-                  fontWeight: FontWeight.w800)),
-          const TextSpan(text: ' and 400+ others loved this service.',
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 12)),
-        ]))),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+  Widget _iconBtn(IconData icon, VoidCallback onTap, {Color? iconColor}) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 40, height: 40,
           decoration: BoxDecoration(
-              color: c1.withOpacity(0.10),
-              borderRadius: BorderRadius.circular(20)),
-          child: Icon(Icons.location_on_rounded, color: c1, size: 18),
+            color: Colors.white,
+            shape: BoxShape.circle,
+            border: Border.all(color: _border),
+            boxShadow: [BoxShadow(
+                color: Colors.black.withValues(alpha: 0.06),
+                blurRadius: 8, offset: const Offset(0, 2))]),
+          child: Icon(icon, color: iconColor ?? _ink, size: 18)),
+      );
+
+  // ── BODY ──────────────────────────────────────────────────────────────────
+  Widget _buildBody(Map<String, dynamic> svc) {
+    return Container(
+      color: Colors.white,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+        // First booking banner
+        if (_isFirstBooking) _buildFirstBookingBanner(),
+
+        // Pricing selector
+        _buildPricingSelector(),
+
+        // Price display
+        _buildPriceDisplay(),
+
+        const SizedBox(height: 8),
+        Divider(color: _border, height: 1, indent: 20, endIndent: 20),
+
+        // Tabs
+        _buildTabs(),
+
+        // Tab content
+        AnimatedSwitcher(
+          duration: const Duration(milliseconds: 200),
+          transitionBuilder: (child, anim) =>
+              FadeTransition(opacity: anim, child: child),
+          child: Padding(
+            key: ValueKey(_tab),
+            padding: const EdgeInsets.all(20),
+            child: _buildTabContent(svc),
+          ),
         ),
       ]),
     );
   }
 
-  // ── PRICE + STATS ─────────────────────────────────────────────────────────
-  Widget _buildPriceStats(Map<String, dynamic> svc, Color c1, int price) {
-    final avg = _reviewStats != null
-        ? (_reviewStats!['avg_rating'] as num?)?.toDouble() ?? 4.8
-        : 4.8;
-    final total = _reviewStats != null
-        ? (_reviewStats!['total_reviews'] as num?)?.toInt() ?? 0
-        : 0;
+  // ── First booking banner ───────────────────────────────────────────────────
+  Widget _buildFirstBookingBanner() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFECFDF5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF6EE7B7))),
+      child: Row(children: [
+        Container(
+          width: 42, height: 42,
+          decoration: BoxDecoration(
+            color: const Color(0xFF10B981),
+            borderRadius: BorderRadius.circular(12)),
+          child: const Center(child: Text('🎉',
+              style: TextStyle(fontSize: 22)))),
+        const SizedBox(width: 12),
+        const Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('First booking — just ₹25!',
+              style: TextStyle(color: Color(0xFF065F46),
+                  fontWeight: FontWeight.w900, fontSize: 13)),
+          SizedBox(height: 2),
+          Text('No promo code needed. One time only.',
+              style: TextStyle(color: Color(0xFF059669), fontSize: 11)),
+        ])),
+        const Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('₹25', style: TextStyle(color: Color(0xFF059669),
+              fontSize: 22, fontWeight: FontWeight.w900)),
+          Text('only', style: TextStyle(color: Color(0xFF6EE7B7),
+              fontSize: 10)),
+        ]),
+      ]),
+    );
+  }
+
+  // ── Pricing selector ───────────────────────────────────────────────────────
+  Widget _buildPricingSelector() {
+    final p = _pricing;
+    if (p['type'] == 'fixed') return const SizedBox(height: 16);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      child: p['type'] == 'per_unit'
+          ? _buildUnitSelector(p)
+          : _buildBhkSelector(p),
+    );
+  }
+
+  Widget _buildUnitSelector(Map<String, dynamic> p) {
+    final unit       = p['unit'] as String;
+    final unitPlural = p['unit_plural'] as String;
+    final min        = p['min'] as int;
+    final max        = p['max'] as int;
+    final ppu        = p['price_per_unit'] as int;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _cyanXl,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _cyan.withValues(alpha: 0.2))),
+      child: Column(children: [
+        Row(children: [
+          const Icon(Icons.add_circle_outline_rounded,
+              color: _cyanDk, size: 18),
+          const SizedBox(width: 8),
+          Text('How many ${unitPlural.toLowerCase()}?',
+              style: const TextStyle(color: _ink,
+                  fontWeight: FontWeight.w800, fontSize: 14)),
+          const Spacer(),
+          Text('₹$ppu each',
+              style: const TextStyle(color: _cyanDk,
+                  fontSize: 12, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 16),
+        Row(children: [
+          _counterBtn(Icons.remove_rounded, _quantity > min, () {
+            setState(() => _quantity--);
+            HapticFeedback.selectionClick();
+          }),
+          Expanded(child: Column(children: [
+            Text('$_quantity', style: const TextStyle(
+                fontSize: 34, fontWeight: FontWeight.w900, color: _ink)),
+            Text(_quantity == 1 ? unit : unitPlural,
+                style: const TextStyle(color: _muted, fontSize: 12)),
+          ])),
+          _counterBtn(Icons.add_rounded, _quantity < max, () {
+            setState(() => _quantity++);
+            HapticFeedback.selectionClick();
+          }),
+        ]),
+        const SizedBox(height: 12),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: _border)),
+          child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+            Text('$_quantity × ₹$ppu',
+                style: const TextStyle(color: _muted, fontSize: 13)),
+            Text('= ₹$_originalPrice',
+                style: const TextStyle(fontWeight: FontWeight.w900,
+                    fontSize: 15, color: _ink)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _counterBtn(IconData icon, bool enabled, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 48, height: 48,
+        decoration: BoxDecoration(
+          color: enabled ? _cyan : _border,
+          shape: BoxShape.circle,
+          boxShadow: enabled
+              ? [BoxShadow(color: _cyan.withValues(alpha: 0.30),
+                  blurRadius: 12, offset: const Offset(0, 4))]
+              : [],
+        ),
+        child: Icon(icon,
+            color: enabled ? Colors.white : _faint, size: 24)),
+    );
+  }
+
+  Widget _buildBhkSelector(Map<String, dynamic> p) {
+    final prices    = p['prices']    as Map;
+    final durations = p['durations'] as Map;
+    const bhks      = ['1 BHK', '2 BHK', '3 BHK'];
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Padding(
+        padding: EdgeInsets.only(bottom: 10),
+        child: Row(children: [
+          Icon(Icons.apartment_rounded, color: _cyanDk, size: 18),
+          SizedBox(width: 8),
+          Text('Select home size', style: TextStyle(color: _ink,
+              fontWeight: FontWeight.w800, fontSize: 14)),
+        ]),
+      ),
+      Row(children: bhks.map((bhk) {
+        final active = _selectedBhk == bhk;
+        final price  = prices[bhk] as int;
+        final dur    = durations[bhk] as int;
+        return Expanded(child: Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: GestureDetector(
+            onTap: () {
+              setState(() => _selectedBhk = bhk);
+              HapticFeedback.selectionClick();
+            },
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              decoration: BoxDecoration(
+                color: active ? _cyan : Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                    color: active ? _cyan : _border,
+                    width: active ? 0 : 1.5),
+                boxShadow: active
+                    ? [BoxShadow(color: _cyan.withValues(alpha: 0.30),
+                        blurRadius: 14, offset: const Offset(0, 6))]
+                    : [BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 6, offset: const Offset(0, 2))]),
+              child: Column(children: [
+                Text(bhk, style: TextStyle(
+                    fontWeight: FontWeight.w900, fontSize: 13,
+                    color: active ? Colors.white : _ink)),
+                const SizedBox(height: 6),
+                Text('₹$price', style: TextStyle(
+                    fontWeight: FontWeight.w900, fontSize: 18,
+                    color: active ? Colors.white : _cyan)),
+                const SizedBox(height: 3),
+                Text('~${dur}m', style: TextStyle(
+                    fontSize: 10,
+                    color: active
+                        ? Colors.white.withValues(alpha: 0.75)
+                        : _faint)),
+              ]),
+            ),
+          ),
+        ));
+      }).toList()),
+    ]);
+  }
+
+  // ── Price display ──────────────────────────────────────────────────────────
+  Widget _buildPriceDisplay() {
+    final display  = _computedPrice;
+    final original = _originalPrice;
+    final isFirst  = _isFirstBooking;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-          const Text('STARTING FROM',
-              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 9,
-                  fontWeight: FontWeight.w700, letterSpacing: 0.8)),
-          const SizedBox(height: 3),
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(isFirst ? 'FIRST BOOKING PRICE' : 'TOTAL PRICE',
+              style: const TextStyle(color: _faint, fontSize: 9,
+                  fontWeight: FontWeight.w700, letterSpacing: 1.2)),
+          const SizedBox(height: 4),
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text('₹$price', style: const TextStyle(fontSize: 36,
-                fontWeight: FontWeight.w900, color: Color(0xFF0F172A),
-                height: 1)),
-            const SizedBox(width: 8),
-            Padding(padding: const EdgeInsets.only(bottom: 3),
-              child: Text('₹${(price * 1.4).round()}',
-                  style: const TextStyle(fontSize: 14,
-                      color: Color(0xFF94A3B8),
-                      decoration: TextDecoration.lineThrough))),
+            Text('₹$display',
+                style: TextStyle(fontSize: 38, fontWeight: FontWeight.w900,
+                    color: isFirst ? const Color(0xFF10B981) : _ink,
+                    height: 1.0)),
+            const SizedBox(width: 10),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                isFirst ? '₹$original' : '₹${(display * 1.4).round()}',
+                style: const TextStyle(fontSize: 16, color: _faint,
+                    decoration: TextDecoration.lineThrough))),
           ]),
-          const SizedBox(height: 5),
+          const SizedBox(height: 6),
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
                 color: const Color(0xFFECFDF5),
                 borderRadius: BorderRadius.circular(20)),
-            child: Text('Save ₹${(price * 0.4).round()}',
-                style: const TextStyle(color: Color(0xFF065F46),
-                    fontSize: 11, fontWeight: FontWeight.w700)),
+            child: Text(
+              isFirst
+                  ? '🎉 ₹${original - 25} off for first booking'
+                  : 'Save ₹${(display * 0.4).round()}',
+              style: const TextStyle(color: Color(0xFF065F46),
+                  fontSize: 11, fontWeight: FontWeight.w700)),
           ),
         ])),
-        Column(children: [
-          _statChip(
-            avg > 0 ? avg.toStringAsFixed(1) : '–',
-            '⭐⭐⭐⭐⭐',
-            total > 0 ? '$total reviews' : 'No reviews',
-            const Color(0xFFFFFBEB), const Color(0xFFFDE68A),
-            const Color(0xFFB45309),
-          ),
-          const SizedBox(height: 8),
-          _statChip('2K+', '─────', 'Bookings',
-              const Color(0xFFECFEFF), const Color(0xFFA5F3FC),
-              AppTheme.primary),
+        const SizedBox(width: 16),
+        // Rating summary
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Row(children: [
+            const Text('⭐', style: TextStyle(fontSize: 18)),
+            const SizedBox(width: 4),
+            Text(
+              ((_reviewStats?['avg_rating'] as num?)?.toDouble() ?? 4.8)
+                  .toStringAsFixed(1),
+              style: const TextStyle(fontSize: 20,
+                  fontWeight: FontWeight.w900, color: _ink)),
+          ]),
+          Text(
+            _reviewStats != null
+                ? '${(_reviewStats!['total_reviews'] as num?)?.toInt() ?? 0} reviews'
+                : 'No reviews',
+            style: const TextStyle(color: _faint, fontSize: 11)),
+          const SizedBox(height: 4),
+          const Text('2,400+ bookings',
+              style: TextStyle(color: _muted, fontSize: 11,
+                  fontWeight: FontWeight.w600)),
         ]),
       ]),
     );
   }
 
-  // ── REVIEWS (READ-ONLY) ───────────────────────────────────────────────────
+  // ── Tabs ──────────────────────────────────────────────────────────────────
+  Widget _buildTabs() {
+    const tabs = ['about', 'includes', 'reviews'];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Row(children: tabs.map((t) {
+        final active = _tab == t;
+        return GestureDetector(
+          onTap: () {
+            setState(() => _tab = t);
+            HapticFeedback.selectionClick();
+          },
+          child: Padding(
+            padding: const EdgeInsets.only(right: 24),
+            child: Column(children: [
+              const SizedBox(height: 14),
+              Text(t[0].toUpperCase() + t.substring(1),
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: active ? FontWeight.w800 : FontWeight.w500,
+                    color: active ? _ink : _faint)),
+              const SizedBox(height: 10),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                height: 2.5,
+                width: active ? 36 : 0,
+                decoration: BoxDecoration(
+                  color: _cyan,
+                  borderRadius: BorderRadius.circular(2))),
+            ]),
+          ),
+        );
+      }).toList()),
+    );
+  }
+
+  Widget _buildTabContent(Map<String, dynamic> svc) {
+    switch (_tab) {
+      case 'about':    return _buildAbout(svc);
+      case 'includes': return _buildIncludes(svc);
+      default:         return _buildReviews();
+    }
+  }
+
+  // ── About tab ─────────────────────────────────────────────────────────────
+  List<Map<String, dynamic>> _expectItems() {
+    return [
+      {'text': '✓ Verified & background-checked professional',
+        'color': const Color(0xFF0891B2)},
+      {'text': '✓ All equipment provided — no extra cost',
+        'color': const Color(0xFF059669)},
+      {'text': '✓ Eco-friendly, safe cleaning products',
+        'color': const Color(0xFF7C3AED)},
+      {'text': '✓ ~$_computedDuration min estimated duration',
+        'color': const Color(0xFFD97706)},
+    ];
+  }
+
+  Widget _buildAbout(Map<String, dynamic> svc) {
+    final desc = svc['description'] as String? ??
+        'Professional cleaning by verified experts. We bring all equipment '
+        'and eco-friendly products — leaving your space spotless and fresh.';
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(desc, style: const TextStyle(color: _muted,
+          fontSize: 14, height: 1.75)),
+      const SizedBox(height: 24),
+
+      const Text('What to expect', style: TextStyle(
+          fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
+      const SizedBox(height: 14),
+
+      ..._expectItems().map((item) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(children: [
+          Container(width: 6, height: 6,
+            decoration: BoxDecoration(
+                color: item['color'] as Color, shape: BoxShape.circle)),
+          const SizedBox(width: 12),
+          Expanded(child: Text(item['text'] as String,
+              style: const TextStyle(color: _muted, fontSize: 13,
+                  fontWeight: FontWeight.w500))),
+        ]),
+      )),
+
+      const SizedBox(height: 24),
+      const Text('Why Cleenzo', style: TextStyle(
+          fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
+      const SizedBox(height: 14),
+
+      GridView.count(
+        shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
+        crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10,
+        childAspectRatio: 2.6,
+        children: [
+          _whyCard('🛡️', 'Insured',    'Damage covered',
+              const Color(0xFFF5F3FF), const Color(0xFF6D28D9)),
+          _whyCard('⭐', 'Top Rated',  '4.8 / 5 stars',
+              const Color(0xFFFFFBEB), const Color(0xFFB45309)),
+          _whyCard('🔄', 'Re-Clean',   'If not satisfied',
+              const Color(0xFFECFEFF), const Color(0xFF0891B2)),
+          _whyCard('💳', 'Flexible',   'UPI · Card · Cash',
+              const Color(0xFFECFDF5), const Color(0xFF065F46)),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _whyCard(String emoji, String title, String sub,
+      Color bg, Color textColor) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: textColor.withValues(alpha: 0.15))),
+      child: Row(children: [
+        Text(emoji, style: const TextStyle(fontSize: 20)),
+        const SizedBox(width: 10),
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text(title, style: TextStyle(color: textColor,
+              fontSize: 11, fontWeight: FontWeight.w800)),
+          Text(sub, style: const TextStyle(color: _muted, fontSize: 10)),
+        ])),
+      ]),
+    );
+  }
+
+  // ── Includes tab ──────────────────────────────────────────────────────────
+  Widget _buildIncludes(Map<String, dynamic> svc) {
+    final inc = (svc['includes'] as List?)?.cast<String>() ?? [];
+    final exc = (svc['excludes'] as List?)?.cast<String>() ?? [];
+
+    if (inc.isEmpty && exc.isEmpty) {
+      return const Center(child: Padding(
+        padding: EdgeInsets.symmetric(vertical: 40),
+        child: Column(children: [
+          Text('📋', style: TextStyle(fontSize: 40)),
+          SizedBox(height: 12),
+          Text('No details yet',
+              style: TextStyle(color: _faint, fontSize: 13)),
+        ])));
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (inc.isNotEmpty) ...[
+        const Text('Included', style: TextStyle(
+            fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
+        const SizedBox(height: 12),
+        ...inc.map((item) => _includeRow(item, true)),
+        const SizedBox(height: 20),
+      ],
+      if (exc.isNotEmpty) ...[
+        const Text('Not included', style: TextStyle(
+            fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
+        const SizedBox(height: 12),
+        ...exc.map((item) => _includeRow(item, false)),
+      ],
+    ]);
+  }
+
+  Widget _includeRow(String text, bool included) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(children: [
+        Container(
+          width: 24, height: 24,
+          decoration: BoxDecoration(
+            color: included
+                ? const Color(0xFFECFDF5) : const Color(0xFFFEF2F2),
+            shape: BoxShape.circle,
+            border: Border.all(color: included
+                ? const Color(0xFF6EE7B7) : const Color(0xFFFCA5A5))),
+          child: Icon(
+            included ? Icons.check_rounded : Icons.close_rounded,
+            size: 13,
+            color: included
+                ? const Color(0xFF059669) : const Color(0xFFDC2626))),
+        const SizedBox(width: 12),
+        Expanded(child: Text(text,
+            style: TextStyle(
+              color: included ? _muted : _faint,
+              fontSize: 13, fontWeight: FontWeight.w500))),
+      ]),
+    );
+  }
+
+  // ── Reviews tab ───────────────────────────────────────────────────────────
   Widget _buildReviews() {
     if (_reviewsLoading) {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 40),
-        child: Center(child: CircularProgressIndicator(
-            color: AppTheme.primary)),
-      );
+        child: Center(child: CircularProgressIndicator(color: _cyan)));
     }
 
-    final stats      = _reviewStats;
-    final avgRating  = stats != null
-        ? (stats['avg_rating'] as num?)?.toDouble() ?? 0.0 : 0.0;
-    final totalCount = stats != null
-        ? (stats['total_reviews'] as num?)?.toInt() ?? 0 : 0;
+    final avgRating  = (_reviewStats?['avg_rating'] as num?)?.toDouble() ?? 0.0;
+    final totalCount = (_reviewStats?['total_reviews'] as num?)?.toInt() ?? 0;
 
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // Rating summary
-      Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFFBEB),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFFFDE68A)),
-        ),
-        child: Row(children: [
-          Column(children: [
-            Text(
-              avgRating > 0 ? avgRating.toStringAsFixed(1) : '–',
-              style: const TextStyle(fontSize: 46, fontWeight: FontWeight.w900,
-                  color: Color(0xFFB45309), height: 1),
-            ),
-            _stars(avgRating.round(), 13),
-            const SizedBox(height: 4),
-            Text('$totalCount review${totalCount == 1 ? '' : 's'}',
-                style: const TextStyle(color: Color(0xFF92400E),
-                    fontSize: 10, fontWeight: FontWeight.w600)),
-          ]),
-          const SizedBox(width: 20),
-          Expanded(child: Column(
-            children: [5, 4, 3, 2, 1].map((star) {
-              final count = stats != null
-                  ? (stats['${_starKey(star)}_star'] as num?)?.toInt() ?? 0
-                  : 0;
-              final pct = totalCount > 0 ? count / totalCount : 0.0;
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 6),
-                child: Row(children: [
-                  SizedBox(width: 12, child: Text('$star',
-                      style: const TextStyle(color: Color(0xFFB45309),
-                          fontSize: 11, fontWeight: FontWeight.w700))),
-                  const SizedBox(width: 6),
-                  Expanded(child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: pct,
-                      backgroundColor: const Color(0xFFFDE68A),
-                      valueColor: const AlwaysStoppedAnimation(
-                          Color(0xFFF59E0B)),
-                      minHeight: 7,
-                    ),
-                  )),
-                  const SizedBox(width: 6),
-                  SizedBox(width: 20, child: Text('$count',
-                      style: const TextStyle(color: Color(0xFF92400E),
-                          fontSize: 10))),
-                ]),
-              );
-            }).toList(),
-          )),
+      Row(crossAxisAlignment: CrossAxisAlignment.center, children: [
+        Column(children: [
+          Text(avgRating > 0 ? avgRating.toStringAsFixed(1) : '–',
+              style: const TextStyle(fontSize: 52,
+                  fontWeight: FontWeight.w900, color: _ink, height: 1.0)),
+          Row(children: List.generate(5, (i) => Icon(
+            i < avgRating.floor()
+                ? Icons.star_rounded : Icons.star_border_rounded,
+            color: const Color(0xFFF59E0B), size: 14))),
+          const SizedBox(height: 4),
+          Text('$totalCount reviews',
+              style: const TextStyle(color: _faint,
+                  fontSize: 11, fontWeight: FontWeight.w500)),
         ]),
-      ),
+        const SizedBox(width: 24),
+        Expanded(child: Column(
+          children: [5, 4, 3, 2, 1].map((star) {
+            final cnt = (_reviewStats?['${_starKey(star)}_star'] as num?)
+                ?.toInt() ?? 0;
+            final pct = totalCount > 0 ? cnt / totalCount : 0.0;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 5),
+              child: Row(children: [
+                SizedBox(width: 12, child: Text('$star',
+                    style: const TextStyle(color: _faint,
+                        fontSize: 11, fontWeight: FontWeight.w600))),
+                const SizedBox(width: 8),
+                Expanded(child: ClipRRect(
+                  borderRadius: BorderRadius.circular(3),
+                  child: LinearProgressIndicator(
+                    value: pct,
+                    backgroundColor: _border,
+                    valueColor: const AlwaysStoppedAnimation(
+                        Color(0xFFF59E0B)),
+                    minHeight: 6))),
+                const SizedBox(width: 8),
+                SizedBox(width: 20, child: Text('$cnt',
+                    style: const TextStyle(
+                        color: _faint, fontSize: 11))),
+              ]),
+            );
+          }).toList(),
+        )),
+      ]),
 
       const SizedBox(height: 20),
+      const Divider(color: _border, height: 1),
+      const SizedBox(height: 16),
 
       if (_reviews.isEmpty)
         const Center(child: Padding(
           padding: EdgeInsets.symmetric(vertical: 30),
           child: Column(children: [
-            Text('💬', style: TextStyle(fontSize: 38)),
-            SizedBox(height: 10),
+            Text('💬', style: TextStyle(fontSize: 40)),
+            SizedBox(height: 12),
             Text('No reviews yet',
-                style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
-          ]),
-        ))
+                style: TextStyle(color: _faint, fontSize: 13)),
+          ])))
       else
-        ..._reviews.map((r) => _buildReviewCard(r)),
+        Column(children: _reviews.map((r) => _buildReviewCard(r)).toList()),
     ]);
   }
 
@@ -643,358 +1021,159 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     final stars    = (r['stars'] as num?)?.toInt() ?? 0;
     final text     = (r['text'] as String?) ?? '';
     final createdAt = DateTime.tryParse(r['created_at'] as String? ?? '');
-    final dateStr  = createdAt != null ? _formatDate(createdAt) : '';
-    final colors   = [
-      0xFF06B6D4, 0xFF7C3AED, 0xFFDB2777,
-      0xFF059669, 0xFFD97706, 0xFFDC2626
-    ];
-    final avatarColor = Color(colors[
-        fullName.isEmpty ? 0 : fullName.codeUnitAt(0) % colors.length]);
+    const months   = ['Jan','Feb','Mar','Apr','May','Jun',
+        'Jul','Aug','Sep','Oct','Nov','Dec'];
+    final dateStr  = createdAt != null
+        ? '${createdAt.day} ${months[createdAt.month - 1]}' : '';
+    const avatarColors = [_cyan, Color(0xFF7C3AED), Color(0xFFDB2777),
+        Color(0xFF059669), Color(0xFFD97706)];
+    final avatarColor  = avatarColors[
+        fullName.isEmpty ? 0 : fullName.codeUnitAt(0) % avatarColors.length];
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: isOwn ? const Color(0xFFECFEFF) : const Color(0xFFF9FAFB),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isOwn
-              ? const Color(0xFFA5F3FC) : const Color(0xFFF1F5F9),
-          width: isOwn ? 1.5 : 1.0,
-        ),
-      ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Container(
             width: 36, height: 36,
             decoration: BoxDecoration(
-                color: avatarColor,
-                borderRadius: BorderRadius.circular(11)),
+                color: avatarColor.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+                border: Border.all(
+                    color: avatarColor.withValues(alpha: 0.3))),
             child: Center(child: Text(initials,
-                style: const TextStyle(color: Colors.white,
-                    fontWeight: FontWeight.w900, fontSize: 11))),
-          ),
+                style: TextStyle(color: avatarColor,
+                    fontWeight: FontWeight.w900, fontSize: 12)))),
           const SizedBox(width: 10),
           Expanded(child: Column(
               crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
-              Text(fullName, style: const TextStyle(
-                  fontWeight: FontWeight.w800, fontSize: 13)),
+              Text(isOwn ? 'You' : fullName,
+                  style: const TextStyle(fontWeight: FontWeight.w700,
+                      fontSize: 13, color: _ink)),
               if (isOwn) ...[
                 const SizedBox(width: 6),
                 Container(
                   padding: const EdgeInsets.symmetric(
                       horizontal: 6, vertical: 1),
                   decoration: BoxDecoration(
-                      color: const Color(0xFF0891B2),
-                      borderRadius: BorderRadius.circular(6)),
+                    color: _cyanLt,
+                    borderRadius: BorderRadius.circular(6)),
                   child: const Text('You',
-                      style: TextStyle(color: Colors.white,
-                          fontSize: 9, fontWeight: FontWeight.w900)),
-                ),
+                      style: TextStyle(color: _cyanDk, fontSize: 9,
+                          fontWeight: FontWeight.w800))),
               ],
             ]),
-            Text(dateStr, style: const TextStyle(
-                color: Color(0xFF94A3B8), fontSize: 11)),
+            Text(dateStr,
+                style: const TextStyle(color: _faint, fontSize: 11)),
           ])),
-          _stars(stars, 12),
+          Row(children: List.generate(5, (i) => Icon(
+            i < stars ? Icons.star_rounded : Icons.star_border_rounded,
+            color: const Color(0xFFF59E0B), size: 13))),
         ]),
         if (text.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(text, style: const TextStyle(
-              color: Color(0xFF64748B), fontSize: 13, height: 1.6)),
+              color: _muted, fontSize: 13, height: 1.6)),
         ],
+        const SizedBox(height: 12),
+        const Divider(color: _border, height: 1),
       ]),
     );
   }
 
-  String _formatDate(DateTime dt) {
-    const months = [
-      'Jan','Feb','Mar','Apr','May','Jun',
-      'Jul','Aug','Sep','Oct','Nov','Dec'
-    ];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
-  }
+  // ── Bottom bar ────────────────────────────────────────────────────────────
+  Widget _buildBottomBar() {
+    final bottom  = MediaQuery.of(context).padding.bottom;
+    final price   = _computedPrice;
+    final isFirst = _isFirstBooking;
 
-  // ── ABOUT TAB ────────────────────────────────────────────────────────────
-  Widget _buildAbout(Map<String, dynamic> svc, Color accent) {
-    final dur  = (svc['duration_minutes'] as num).toInt();
-    final desc = svc['description'] as String? ??
-        'Professional cleaning by verified experts. We bring all necessary '
-        'equipment and eco-friendly products — leaving your space spotless.';
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      const Text('About this service',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900,
-              color: Color(0xFF0F172A))),
-      const SizedBox(height: 8),
-      Text(desc, style: const TextStyle(
-          color: Color(0xFF64748B), fontSize: 14, height: 1.75)),
-      const SizedBox(height: 22),
-      const Text('What to expect',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800,
-              color: Color(0xFF0F172A))),
-      const SizedBox(height: 12),
-      ...['Verified & background-checked professional',
-          'All cleaning equipment provided',
-          'Eco-friendly cleaning products',
-          '$dur minute estimated duration']
-          .map((item) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Row(children: [
-              Container(width: 22, height: 22,
-                decoration: BoxDecoration(
-                    color: accent, shape: BoxShape.circle),
-                child: const Icon(Icons.check_rounded,
-                    color: Colors.white, size: 13)),
-              const SizedBox(width: 12),
-              Expanded(child: Text(item,
-                  style: const TextStyle(color: Color(0xFF374151),
-                      fontSize: 13, fontWeight: FontWeight.w500))),
-            ]),
-          )),
-      const SizedBox(height: 20),
-      const Text('Why choose us',
-          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800,
-              color: Color(0xFF0F172A))),
-      const SizedBox(height: 12),
-      GridView.count(
-        shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
-        crossAxisCount: 2, crossAxisSpacing: 10, mainAxisSpacing: 10,
-        childAspectRatio: 2.8,
-        children: _whyUs.map((b) => Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: Color(b['bg'] as int),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: Color(b['border'] as int)),
-          ),
-          child: Row(children: [
-            Text(b['icon'] as String,
-                style: const TextStyle(fontSize: 20)),
-            const SizedBox(width: 10),
-            Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text(b['title'] as String, style: TextStyle(
-                  color: Color(b['text'] as int),
-                  fontSize: 11, fontWeight: FontWeight.w800)),
-              Text(b['sub'] as String, style: const TextStyle(
-                  color: Color(0xFF6B7280), fontSize: 10)),
-            ])),
-          ]),
-        )).toList(),
-      ),
-    ]);
-  }
-
-  // ── INCLUDES TAB ─────────────────────────────────────────────────────────
-  Widget _buildIncludes(Map<String, dynamic> svc) {
-    final inc = (svc['includes'] as List?)?.cast<String>() ?? [];
-    final exc = (svc['excludes'] as List?)?.cast<String>() ?? [];
-    if (inc.isEmpty && exc.isEmpty) {
-      return const Center(child: Padding(
-        padding: EdgeInsets.symmetric(vertical: 30),
-        child: Column(children: [
-          Text('📋', style: TextStyle(fontSize: 38)),
-          SizedBox(height: 10),
-          Text('No details yet',
-              style: TextStyle(color: Color(0xFF94A3B8))),
-        ]),
-      ));
-    }
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      if (inc.isNotEmpty) ...[
-        const Text("✅  What's Included",
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900)),
-        const SizedBox(height: 12),
-        ...inc.map((item) => Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.symmetric(
-              horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFFECFDF5),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFA7F3D0)),
-          ),
-          child: Row(children: [
-            Container(width: 22, height: 22,
-              decoration: const BoxDecoration(
-                  color: Color(0xFF10B981), shape: BoxShape.circle),
-              child: const Icon(Icons.check_rounded,
-                  color: Colors.white, size: 13)),
-            const SizedBox(width: 12),
-            Expanded(child: Text(item, style: const TextStyle(
-                color: Color(0xFF065F46),
-                fontSize: 13, fontWeight: FontWeight.w600))),
-          ]),
-        )),
-        const SizedBox(height: 16),
-      ],
-      if (exc.isNotEmpty) ...[
-        const Text("❌  Not Included",
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900)),
-        const SizedBox(height: 12),
-        ...exc.map((item) => Container(
-          margin: const EdgeInsets.only(bottom: 8),
-          padding: const EdgeInsets.symmetric(
-              horizontal: 14, vertical: 12),
-          decoration: BoxDecoration(
-            color: const Color(0xFFFEF2F2),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: const Color(0xFFFECACA)),
-          ),
-          child: Row(children: [
-            Container(width: 22, height: 22,
-              decoration: const BoxDecoration(
-                  color: Color(0xFFEF4444), shape: BoxShape.circle),
-              child: const Icon(Icons.close_rounded,
-                  color: Colors.white, size: 13)),
-            const SizedBox(width: 12),
-            Expanded(child: Text(item, style: const TextStyle(
-                color: Color(0xFF991B1B),
-                fontSize: 13, fontWeight: FontWeight.w600))),
-          ]),
-        )),
-      ],
-    ]);
-  }
-
-  // ── BOTTOM BAR ───────────────────────────────────────────────────────────
-  Widget _buildBottomBar(Map<String, dynamic> svc,
-      Color c1, Color c2, int price) {
-    final bottom = MediaQuery.of(context).padding.bottom;
     return Positioned(
       left: 0, right: 0, bottom: 0,
       child: Container(
-        padding: EdgeInsets.fromLTRB(16, 12, 16, 12 + bottom),
+        padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + bottom),
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius:
-              const BorderRadius.vertical(top: Radius.circular(24)),
+          border: const Border(top: BorderSide(color: _border)),
           boxShadow: [BoxShadow(
-              color: Colors.black.withOpacity(0.10),
-              blurRadius: 24, offset: const Offset(0, -6))],
-        ),
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('STARTING FROM',
-                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 9,
-                      fontWeight: FontWeight.w700, letterSpacing: 0.7)),
-              Text('₹$price', style: const TextStyle(fontSize: 22,
-                  fontWeight: FontWeight.w900, color: Color(0xFF0F172A),
-                  height: 1.1)),
+              color: Colors.black.withValues(alpha: 0.06),
+              blurRadius: 20, offset: const Offset(0, -4))]),
+        child: Row(children: [
+          // Price info
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(isFirst ? 'FIRST BOOKING' : 'TOTAL',
+                style: const TextStyle(color: _faint, fontSize: 9,
+                    fontWeight: FontWeight.w700, letterSpacing: 1.2)),
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text('₹$price',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900,
+                      color: isFirst ? const Color(0xFF10B981) : _ink)),
+              if (isFirst) ...[
+                const SizedBox(width: 6),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text('₹${_originalPrice}',
+                      style: const TextStyle(fontSize: 13, color: _faint,
+                          decoration: TextDecoration.lineThrough))),
+              ],
             ]),
-            Row(children: [
-              _stars(5, 10),
-              const SizedBox(width: 4),
-              const Text('4.8 · 2K+', style: TextStyle(
-                  color: Color(0xFF64748B), fontSize: 11,
-                  fontWeight: FontWeight.w600)),
-            ]),
+            if (_pricing['type'] != 'fixed')
+              Text(
+                _pricing['type'] == 'per_unit'
+                    ? '$_quantity × ${_pricing['unit']}'
+                    : _selectedBhk,
+                style: const TextStyle(color: _cyan, fontSize: 11,
+                    fontWeight: FontWeight.w600)),
           ]),
-          const SizedBox(height: 10),
-          Row(children: [
+          const SizedBox(width: 16),
+
+          // Buttons
+          Expanded(child: Row(children: [
+            // Schedule
             Expanded(child: GestureDetector(
               onTap: () => _navigate('schedule'),
               child: Container(
                 height: 50,
                 decoration: BoxDecoration(
                   color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: c1, width: 2),
-                ),
-                child: Row(
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: _cyan, width: 1.5)),
+                child: const Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                  Icon(Icons.calendar_month_rounded, color: c1, size: 17),
-                  const SizedBox(width: 5),
-                  Text('Schedule', style: TextStyle(
-                      color: c1, fontSize: 13,
-                      fontWeight: FontWeight.w900)),
+                  Icon(Icons.calendar_month_rounded, color: _cyan, size: 16),
+                  SizedBox(width: 5),
+                  Text('Schedule', style: TextStyle(color: _cyan,
+                      fontSize: 13, fontWeight: FontWeight.w800)),
                 ]),
               ),
             )),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
+            // Instant
             Expanded(flex: 2, child: GestureDetector(
               onTap: () => _navigate('instant'),
               child: Container(
                 height: 50,
                 decoration: BoxDecoration(
-                  gradient: LinearGradient(colors: [c1, c2]),
-                  borderRadius: BorderRadius.circular(16),
+                  gradient: const LinearGradient(
+                      colors: [_cyan, _cyanDk]),
+                  borderRadius: BorderRadius.circular(14),
                   boxShadow: [BoxShadow(
-                      color: c1.withOpacity(0.45),
-                      blurRadius: 16, offset: const Offset(0, 5))],
-                ),
+                      color: _cyan.withValues(alpha: 0.40),
+                      blurRadius: 14, offset: const Offset(0, 5))]),
                 child: const Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                   Icon(Icons.bolt_rounded, color: Colors.white, size: 18),
                   SizedBox(width: 4),
-                  Text('Book Instant', style: TextStyle(
-                      color: Colors.white, fontSize: 13,
-                      fontWeight: FontWeight.w900)),
+                  Text('Book Now', style: TextStyle(color: Colors.white,
+                      fontSize: 13, fontWeight: FontWeight.w900)),
                 ]),
               ),
             )),
-          ]),
+          ])),
         ]),
       ),
     );
   }
-
-  // ── HELPERS ──────────────────────────────────────────────────────────────
-  Widget _pill(String text) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-    decoration: BoxDecoration(
-      color: Colors.black.withOpacity(0.20),
-      borderRadius: BorderRadius.circular(20),
-      border: Border.all(color: Colors.white.withOpacity(0.20)),
-    ),
-    child: Text(text, style: const TextStyle(
-        color: Colors.white, fontSize: 11, fontWeight: FontWeight.w700)),
-  );
-
-  Widget _avatarCircle(String initials, Color color, double left) =>
-      Positioned(
-        left: left,
-        child: Container(
-          width: 28, height: 28,
-          decoration: BoxDecoration(
-              color: color, shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2)),
-          child: Center(child: Text(initials,
-              style: const TextStyle(color: Colors.white,
-                  fontSize: 9, fontWeight: FontWeight.w900))),
-        ),
-      );
-
-  Widget _statChip(String val, String mid, String lbl,
-      Color bg, Color border, Color col) =>
-      Container(
-        width: 74,
-        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
-        decoration: BoxDecoration(
-            color: bg, borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: border, width: 1.5)),
-        child: Column(children: [
-          Text(val, style: TextStyle(color: col, fontSize: 20,
-              fontWeight: FontWeight.w900, height: 1)),
-          const SizedBox(height: 2),
-          Text(mid, style: TextStyle(
-              color: col.withOpacity(0.6), fontSize: 9)),
-          const SizedBox(height: 2),
-          Text(lbl, style: TextStyle(color: col, fontSize: 10,
-              fontWeight: FontWeight.w700)),
-        ]),
-      );
-
-  Widget _stars(int n, double size) => Row(
-    mainAxisSize: MainAxisSize.min,
-    children: List.generate(5, (i) => Icon(Icons.star_rounded,
-        color: i < n
-            ? const Color(0xFFF59E0B) : const Color(0xFFE5E7EB),
-        size: size)),
-  );
 }
