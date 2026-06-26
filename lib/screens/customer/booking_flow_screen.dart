@@ -1726,7 +1726,7 @@ class _PromoSheet extends StatelessWidget {
                               ]),
                             ),
                           )),
-                        ],
+                        ],        
                       ],
                     ),
         ),

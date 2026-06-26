@@ -1,4 +1,4 @@
-package com.example.cleenzo
+package com.cubicleventurespvtltd.cleenzoapp
 
 import io.flutter.embedding.android.FlutterActivity
 

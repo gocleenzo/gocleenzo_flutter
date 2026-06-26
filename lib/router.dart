@@ -16,19 +16,21 @@ import 'screens/customer/location_gate_screen.dart';
 import 'screens/customer/location_search_screen.dart';
 import 'screens/customer/location_picker_screen.dart';
 import 'screens/customer/address_confirm_screen.dart';
+import 'screens/customer/saved_addresses_screen.dart';
 
 final router = GoRouter(
   initialLocation: '/',
   redirect: (context, state) {
-    final user   = Supabase.instance.client.auth.currentUser;
-    final loc    = state.matchedLocation;
-    final isAuth = ['/', '/login'].contains(loc);
+    final user = Supabase.instance.client.auth.currentUser;
+    final loc  = state.matchedLocation;
 
+    final isAuth = ['/', '/login'].contains(loc);
     final isLocationFlow = [
       '/location-gate',
       '/location-search',
       '/location-picker',
       '/address-confirm',
+      '/saved-addresses',
     ].contains(loc);
 
     if (user == null && !isAuth && !isLocationFlow) return '/login';
@@ -40,7 +42,13 @@ final router = GoRouter(
     GoRoute(path: '/terms', builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/help',  builder: (_, __) => const HelpScreen()),
 
-    // ── Location Flow ───────────────────────────────────────
+    // ── Saved addresses ─────────────────────────────────────
+    GoRoute(
+      path: '/saved-addresses',
+      builder: (_, __) => const SavedAddressesScreen(),
+    ),
+
+    // ── Location flow ────────────────────────────────────────
     GoRoute(
       path: '/location-gate',
       builder: (_, __) => const LocationGateScreen(),
@@ -85,45 +93,44 @@ final router = GoRouter(
       },
     ),
 
-    // ── Customer Shell (uses go_router ShellRoute) ──────────
+    // ── Customer shell ───────────────────────────────────────
     ShellRoute(
-      builder: (context, state, child) => CustomerShell(child: child),
+      builder: (context, state, child) =>
+          CustomerShell(child: child),
       routes: [
-        GoRoute(path: '/services',  builder: (_, __) => const ServicesScreen()),
-        GoRoute(path: '/bookings',  builder: (_, __) => const BookingsScreen()),
-        GoRoute(path: '/offers',    builder: (_, __) => const OffersScreen()),
-        GoRoute(path: '/account',   builder: (_, __) => const AccountScreen()),
+        GoRoute(path: '/services', builder: (_, __) => const ServicesScreen()),
+        GoRoute(path: '/bookings', builder: (_, __) => const BookingsScreen()),
+        GoRoute(path: '/offers',   builder: (_, __) => const OffersScreen()),
+        GoRoute(path: '/account',  builder: (_, __) => const AccountScreen()),
       ],
     ),
 
-    // Service detail
+    // ── Service detail ───────────────────────────────────────
     GoRoute(
       path: '/services/:id',
       builder: (_, state) => ServiceDetailScreen(
-        serviceId: state.pathParameters['id']!,
-      ),
+          serviceId: state.pathParameters['id']!),
     ),
 
-    // Booking flow
+    // ── Booking flow ─────────────────────────────────────────
     GoRoute(
       path: '/booking-flow',
       builder: (_, state) {
-        final extra     = state.extra as Map<String, dynamic>?;
+        final extra = state.extra as Map<String, dynamic>?;
         if (extra == null) return const ServicesScreen();
-        final mode      = extra['mode']      as String? ?? 'schedule';
-        final serviceId = extra['serviceId'] as String?;
-        final cartItems = extra['cartItems'] as List<Map<String, dynamic>>?;
         return BookingFlowScreen(
-            mode: mode, serviceId: serviceId, cartItems: cartItems);
+          mode:      extra['mode']      as String? ?? 'schedule',
+          serviceId: extra['serviceId'] as String?,
+          cartItems: extra['cartItems'] as List<Map<String, dynamic>>?,
+        );
       },
     ),
 
-    // Booking detail
+    // ── Booking detail ───────────────────────────────────────
     GoRoute(
       path: '/bookings/:id',
       builder: (_, state) => BookingDetailScreen(
-        bookingId: state.pathParameters['id']!,
-      ),
+          bookingId: state.pathParameters['id']!),
     ),
   ],
 );

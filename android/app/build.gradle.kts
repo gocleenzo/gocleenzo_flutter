@@ -5,7 +5,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.cleenzo"
+    namespace = "com.cubicleventurespvtltd.cleenzoapp"
     compileSdk = 36
     ndkVersion = "28.2.13676358"
 
@@ -19,7 +19,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.cleenzo"
+        applicationId = "com.cubicleventurespvtltd.cleenzoapp"
         minSdk = flutter.minSdkVersion
         targetSdk = 36
         versionCode = flutter.versionCode

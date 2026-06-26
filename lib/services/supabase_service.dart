@@ -32,8 +32,6 @@ class SupabaseService {
   static User? get currentUser => _client.auth.currentUser;
 
   // ── Users ───────────────────────────────────────────────────
-  // Uses maybeSingle() so a brand-new user (no row yet) returns null
-  // instead of throwing. The login flow relies on null == "new user".
   static Future<Map<String, dynamic>?> getUserProfile(String userId) async {
     final res = await _client
         .from('users')
@@ -43,12 +41,11 @@ class SupabaseService {
     return res;
   }
 
-  static Future<void> updateUserProfile(String userId, Map<String, dynamic> data) async {
+  static Future<void> updateUserProfile(
+      String userId, Map<String, dynamic> data) async {
     await _client.from('users').update(data).eq('id', userId);
   }
 
-  // Upsert (not insert): a row may already exist if an auth trigger created
-  // one on signup. Upsert inserts a new row OR updates the existing one by id.
   static Future<void> createUser(Map<String, dynamic> data) async {
     await _client.from('users').upsert(data);
   }
@@ -73,11 +70,14 @@ class SupabaseService {
   }
 
   // ── Addresses ───────────────────────────────────────────────
-  static Future<List<Map<String, dynamic>>> getAddresses(String userId) async {
+  // Only returns non-deleted addresses
+  static Future<List<Map<String, dynamic>>> getAddresses(
+      String userId) async {
     final res = await _client
         .from('addresses')
         .select()
         .eq('user_id', userId)
+        .eq('is_deleted', false)          // ← filter soft-deleted
         .order('is_default', ascending: false);
     return List<Map<String, dynamic>>.from(res);
   }
@@ -87,7 +87,8 @@ class SupabaseService {
   }
 
   // ── Bookings ────────────────────────────────────────────────
-  static Future<List<Map<String, dynamic>>> getCustomerBookings(String customerId) async {
+  static Future<List<Map<String, dynamic>>> getCustomerBookings(
+      String customerId) async {
     final res = await _client
         .from('bookings')
         .select('''
@@ -116,7 +117,8 @@ class SupabaseService {
     return res;
   }
 
-  static Future<Map<String, dynamic>> createBooking(Map<String, dynamic> data) async {
+  static Future<Map<String, dynamic>> createBooking(
+      Map<String, dynamic> data) async {
     final res = await _client
         .from('bookings')
         .insert(data)
@@ -126,10 +128,13 @@ class SupabaseService {
   }
 
   static Future<void> updateBookingStatus(String id, String status) async {
-    await _client.from('bookings').update({'status': status}).eq('id', id);
+    await _client
+        .from('bookings')
+        .update({'status': status})
+        .eq('id', id);
   }
 
-  // ── Worker ─────────────────────────────────────────────────
+  // ── Worker ──────────────────────────────────────────────────
   static Future<List<Map<String, dynamic>>> getPendingJobs() async {
     final res = await _client
         .from('bookings')
@@ -153,14 +158,15 @@ class SupabaseService {
         .eq('status', 'pending');
   }
 
-  static Future<void> updateWorkerAvailability(String userId, bool available) async {
+  static Future<void> updateWorkerAvailability(
+      String userId, bool available) async {
     await _client
         .from('workers')
         .update({'is_available': available})
         .eq('user_id', userId);
   }
 
-  // ── Admin ──────────────────────────────────────────────────
+  // ── Admin ───────────────────────────────────────────────────
   static Future<List<Map<String, dynamic>>> getAllBookings() async {
     final res = await _client
         .from('bookings')
@@ -175,8 +181,9 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(res);
   }
 
-  // ── Realtime ───────────────────────────────────────────────
-  static RealtimeChannel subscribeToBookings(void Function() onEvent) {
+  // ── Realtime ─────────────────────────────────────────────────
+  static RealtimeChannel subscribeToBookings(
+      void Function() onEvent) {
     return client
         .channel('bookings-changes')
         .onPostgresChanges(
