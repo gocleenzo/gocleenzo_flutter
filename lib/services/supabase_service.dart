@@ -1,5 +1,6 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'notification_service.dart';
 
 class SupabaseService {
   static final _client = Supabase.instance.client;
@@ -24,6 +25,8 @@ class SupabaseService {
   }
 
   static Future<void> signOut() async {
+    // Clear FCM token before signing out
+    await NotificationService.clearTokenOnLogout();
     await _client.auth.signOut();
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
@@ -32,7 +35,8 @@ class SupabaseService {
   static User? get currentUser => _client.auth.currentUser;
 
   // ── Users ───────────────────────────────────────────────────
-  static Future<Map<String, dynamic>?> getUserProfile(String userId) async {
+  static Future<Map<String, dynamic>?> getUserProfile(
+      String userId) async {
     final res = await _client
         .from('users')
         .select()
@@ -60,7 +64,8 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(res);
   }
 
-  static Future<Map<String, dynamic>?> getServiceById(String id) async {
+  static Future<Map<String, dynamic>?> getServiceById(
+      String id) async {
     final res = await _client
         .from('services')
         .select()
@@ -70,14 +75,13 @@ class SupabaseService {
   }
 
   // ── Addresses ───────────────────────────────────────────────
-  // Only returns non-deleted addresses
   static Future<List<Map<String, dynamic>>> getAddresses(
       String userId) async {
     final res = await _client
         .from('addresses')
         .select()
         .eq('user_id', userId)
-        .eq('is_deleted', false)          // ← filter soft-deleted
+        .eq('is_deleted', false)
         .order('is_default', ascending: false);
     return List<Map<String, dynamic>>.from(res);
   }
@@ -102,7 +106,8 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(res);
   }
 
-  static Future<Map<String, dynamic>?> getBookingById(String id) async {
+  static Future<Map<String, dynamic>?> getBookingById(
+      String id) async {
     final res = await _client
         .from('bookings')
         .select('''
@@ -127,7 +132,8 @@ class SupabaseService {
     return res;
   }
 
-  static Future<void> updateBookingStatus(String id, String status) async {
+  static Future<void> updateBookingStatus(
+      String id, String status) async {
     await _client
         .from('bookings')
         .update({'status': status})
@@ -150,7 +156,8 @@ class SupabaseService {
     return List<Map<String, dynamic>>.from(res);
   }
 
-  static Future<void> acceptJob(String jobId, String workerId) async {
+  static Future<void> acceptJob(
+      String jobId, String workerId) async {
     await _client
         .from('bookings')
         .update({'worker_id': workerId, 'status': 'accepted'})

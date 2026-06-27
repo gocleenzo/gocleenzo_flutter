@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "404053308024",
+    "project_id": "cleenzo-b6de5",
+    "storage_bucket": "cleenzo-b6de5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:404053308024:android:a40e1d78b94aba6cf0f38d",
+        "android_client_info": {
+          "package_name": "com.cubicleventurespvtltd.cleenzoapp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCu_6NHnrkU3f9WsGBmcUVDzNo3GEmWnt8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
