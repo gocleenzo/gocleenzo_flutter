@@ -49,9 +49,10 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       await SupabaseService.sendOtp(_phoneCtrl.text);
       setState(() => _step = 'otp');
-    } catch (_) {
-      setState(() => _error = 'Failed to send OTP. Please try again.');
-    } finally {
+    } catch (e) {
+  debugPrint('===> OTP ERROR: $e');
+  setState(() => _error = 'Failed to send OTP. Please try again.');
+} finally {
       setState(() => _loading = false);
     }
   }
