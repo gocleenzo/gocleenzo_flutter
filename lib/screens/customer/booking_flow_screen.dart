@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/theme.dart';
 import 'booking_detail_screen.dart';
@@ -10,7 +9,6 @@ class BookingFlowScreen extends StatefulWidget {
   final String  mode;
   final String? serviceId;
   final List<Map<String, dynamic>>? cartItems;
-
   final int?    overridePrice;
   final int?    overrideDuration;
   final String? selectedBhk;
@@ -35,9 +33,7 @@ class BookingFlowScreen extends StatefulWidget {
 
 class _BookingFlowScreenState extends State<BookingFlowScreen> {
   final _supabase = Supabase.instance.client;
-  late Razorpay _razorpay;
 
-  // ── Cyan / white palette (matches BookingDetailScreen) ────────
   static const _cyan     = Color(0xFF06B6D4);
   static const _cyanDk   = Color(0xFF0891B2);
   static const _cyanDeep = Color(0xFF0E7490);
@@ -58,8 +54,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   List<Map<String, dynamic>> _addresses         = [];
   String                     _selectedAddressId = '';
 
-  List<Map<String, dynamic>> _promos       = [];
-  List<Map<String, dynamic>> _usedPromos   = [];
+  List<Map<String, dynamic>> _promos      = [];
+  List<Map<String, dynamic>> _usedPromos  = [];
   Set<String>                _usedPromoIds = {};
   bool   _promosLoading    = false;
   String _appliedPromoId   = '';
@@ -70,23 +66,20 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   Map<String, dynamic>? _service;
 
-  String _pendingBookingId = '';
-
   Map<String, bool> _slotAvailability = {};
   bool _slotsLoading = false;
 
-  bool get _isSchedule  => widget.mode == 'schedule';
-  bool get _isInstant   => widget.mode == 'instant';
-  int  get _totalSteps  => _isSchedule ? 3 : 2;
+  bool get _isSchedule => widget.mode == 'schedule';
+  bool get _isInstant  => widget.mode == 'instant';
+  int  get _totalSteps => _isSchedule ? 3 : 2;
   int  get _addressStep => _isSchedule ? 2 : 1;
-  int  get _confirmStep => _isSchedule ? 3 : 2;
 
   List<String> get _stepLabels => _isSchedule
       ? ['Date & Time', 'Address', 'Confirm']
       : ['Address', 'Confirm'];
 
   static const List<IconData> _stepIcons = [
-    Icons.event_rounded, Icons.location_on_rounded, Icons.task_alt_rounded
+    Icons.event_rounded, Icons.location_on_rounded, Icons.task_alt_rounded,
   ];
 
   static const _timeSlots = [
@@ -102,8 +95,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (widget.isFirstBooking) return 25;
     if (widget.overridePrice != null) return widget.overridePrice!;
     if (widget.cartItems != null) {
-      return widget.cartItems!.fold(
-          0, (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
+      return widget.cartItems!.fold(0,
+          (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
     }
     return (_service?['base_price'] as num?)?.toInt() ?? 0;
   }
@@ -122,91 +115,28 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   String get _serviceLabel {
     if (widget.cartItems != null) {
-      return '${widget.cartItems!.length} service${widget.cartItems!.length > 1 ? 's' : ''}';
+      return '${widget.cartItems!.length} service'
+          '${widget.cartItems!.length > 1 ? 's' : ''}';
     }
     final name = _service?['name'] as String? ?? '—';
     if (widget.selectedBhk != null) return '$name · ${widget.selectedBhk}';
-    if (widget.quantity != null && widget.quantity! > 1) return '$name · ×${widget.quantity}';
+    if (widget.quantity != null && widget.quantity! > 1) {
+      return '$name · ×${widget.quantity}';
+    }
     return name;
   }
 
   @override
   void initState() {
     super.initState();
-    _initRazorpay();
     _loadData();
     if (_isInstant) _step = 1;
   }
 
   @override
   void dispose() {
-    _razorpay.clear();
     _notesCtrl.dispose();
     super.dispose();
-  }
-
-  // ── Razorpay ─────────────────────────────────────────────────
-  void _initRazorpay() {
-    _razorpay = Razorpay();
-    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
-    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR,   _onPaymentError);
-    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
-  }
-
-  void _onPaymentSuccess(PaymentSuccessResponse response) async {
-    setState(() => _loading = true);
-    try {
-      await _supabase.from('bookings').update({
-        'payment_status':      'paid',
-        'payment_id':          response.paymentId,
-        'razorpay_order_id':   response.orderId,
-        'payment_method':      'razorpay',
-        'payment_captured_at': DateTime.now().toIso8601String(),
-        'status':              'pending',
-      }).eq('id', _pendingBookingId);
-
-      if (_appliedPromoId.isNotEmpty && _userId != null) {
-        try {
-          await _supabase.from('promo_usage').insert({
-            'promo_id': _appliedPromoId,
-            'user_id':  _userId!,
-          });
-          final p = _promos.firstWhere(
-              (p) => p['id'].toString() == _appliedPromoId,
-              orElse: () => {'used_count': 0});
-          await _supabase.from('promo_codes').update({
-            'used_count': ((p['used_count'] as num? ?? 0).toInt() + 1),
-          }).eq('id', _appliedPromoId);
-        } catch (e) { debugPrint('promo usage skipped: $e'); }
-      }
-
-      if (mounted) {
-        setState(() => _loading = false);
-        Navigator.pushReplacement(context, MaterialPageRoute(
-          builder: (_) => BookingDetailScreen(
-              bookingId: _pendingBookingId, isNew: true),
-        ));
-      }
-    } catch (e) {
-      setState(() => _loading = false);
-      _showSnack('Payment captured but booking update failed. Contact support.',
-          isError: true);
-    }
-  }
-
-  void _onPaymentError(PaymentFailureResponse response) {
-    setState(() => _loading = false);
-    if (_pendingBookingId.isNotEmpty) {
-      _supabase.from('bookings').delete().eq('id', _pendingBookingId).then((_) {
-        _pendingBookingId = '';
-      });
-    }
-    _showSnack('Payment failed: ${response.message ?? 'Try again'}',
-        isError: true);
-  }
-
-  void _onExternalWallet(ExternalWalletResponse response) {
-    _showSnack('External wallet: ${response.walletName}');
   }
 
   // ── Load data ────────────────────────────────────────────────
@@ -215,7 +145,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (user == null) { if (mounted) context.go('/login'); return; }
 
     final futures = <Future>[
-      _supabase.from('addresses').select('*').eq('user_id', user.id),
+      _supabase.from('addresses').select('*')
+          .eq('user_id', user.id)
+          .eq('is_deleted', false),
     ];
     if (widget.serviceId != null) {
       futures.add(_supabase.from('services')
@@ -245,7 +177,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // ── Slot Availability ────────────────────────────────────────
   Future<void> _loadSlotAvailability(DateTime date) async {
     setState(() { _slotsLoading = true; _slotAvailability = {}; });
-
     try {
       final workersData = await _supabase
           .from('workers')
@@ -253,16 +184,28 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .eq('is_available', true);
       final workers = (workersData as List).cast<Map<String, dynamic>>();
 
-      final dayStartLocal = DateTime(date.year, date.month, date.day, 0, 0, 0);
-      final dayEndLocal   = DateTime(date.year, date.month, date.day, 23, 59, 59);
+      final dateStr = '${date.year}-'
+          '${date.month.toString().padLeft(2, '0')}-'
+          '${date.day.toString().padLeft(2, '0')}';
+      final holidaysData = await _supabase
+          .from('worker_holidays')
+          .select('worker_id')
+          .eq('holiday_date', dateStr);
+      final holidayWorkerIds = (holidaysData as List)
+          .map((h) => h['worker_id'].toString()).toSet();
+
+      final dayStartUtc =
+          DateTime(date.year, date.month, date.day, 0, 0, 0).toUtc();
+      final dayEndUtc =
+          DateTime(date.year, date.month, date.day, 23, 59, 59).toUtc();
 
       final bookingsData = await _supabase
           .from('bookings')
           .select('worker_id, scheduled_at, services(duration_minutes)')
           .inFilter('status', ['accepted', 'in_progress', 'pending'])
-          .eq('payment_status', 'paid')
-          .gte('scheduled_at', dayStartLocal.toUtc().toIso8601String())
-          .lte('scheduled_at', dayEndLocal.toUtc().toIso8601String());
+          .inFilter('payment_status', ['cod', 'paid'])
+          .gte('scheduled_at', dayStartUtc.toIso8601String())
+          .lte('scheduled_at', dayEndUtc.toIso8601String());
       final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
 
       final now          = DateTime.now();
@@ -274,24 +217,18 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       for (final slot in _timeSlots) {
         final slotDt = _slotToDateTime(date, slot);
-
-        if (slotDt.isBefore(cutoff)) {
-          availability[slot] = false;
-          continue;
-        }
+        if (slotDt.isBefore(cutoff)) { availability[slot] = false; continue; }
 
         bool anyWorkerFree = false;
         for (final worker in workers) {
+          final workerId = worker['user_id'] as String;
+          if (holidayWorkerIds.contains(workerId)) continue;
           final schedule = worker['schedule'] as Map<String, dynamic>?;
           if (!_isWorkerInShift(schedule, dayName, slotDt)) continue;
-          if (!_isWorkerFreeAtSlot(
-              worker['user_id'] as String, slotDt, durationMins, bookings)) {
-            continue;
-          }
+          if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings)) continue;
           anyWorkerFree = true;
           break;
         }
-
         availability[slot] = anyWorkerFree;
       }
 
@@ -306,7 +243,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     } catch (e) {
       debugPrint('slot availability error: $e');
       if (mounted) setState(() {
-        _slotAvailability = { for (final s in _timeSlots) s: true };
+        _slotAvailability = {for (final s in _timeSlots) s: true};
         _slotsLoading = false;
       });
     }
@@ -331,14 +268,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   bool _isWorkerInShift(
       Map<String, dynamic>? schedule, String dayName, DateTime slotDt) {
-    if (schedule == null) return true;
+    final slotMins = slotDt.hour * 60 + slotDt.minute;
+    if (schedule == null) {
+      return slotMins >= 7 * 60 && slotMins < 19 * 60;
+    }
     final day = schedule[dayName] as Map<String, dynamic>?;
     if (day == null || day['enabled'] != true) return false;
-    final start     = day['start'] as String? ?? '09:00';
-    final end       = day['end']   as String? ?? '17:00';
-    final startMins = _timeToMins(start);
-    final endMins   = _timeToMins(end);
-    final slotMins  = slotDt.hour * 60 + slotDt.minute;
+    final startMins = _timeToMins(day['start'] as String? ?? '07:00');
+    final endMins   = _timeToMins(day['end']   as String? ?? '19:00');
     if (slotMins < startMins || slotMins >= endMins) return false;
     final breaks = day['breaks'] as List? ?? [];
     for (final b in breaks) {
@@ -359,7 +296,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final slotEnd = slotDt.add(Duration(minutes: durationMins));
     for (final booking in bookings) {
       if (booking['worker_id'] != workerId) continue;
-      final bDt = DateTime.tryParse(booking['scheduled_at'].toString());
+      final bDt = DateTime.tryParse(booking['scheduled_at'].toString())?.toLocal();
       if (bDt == null) continue;
       final bDur = (booking['services']?['duration_minutes'] as num?)?.toInt()
           ?? durationMins;
@@ -387,8 +324,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       List<Map<String, dynamic>> usedPromos = [];
       if (usedIds.isNotEmpty) {
-        final ud = await _supabase
-            .from('promo_codes').select('*').inFilter('id', usedIds.toList());
+        final ud = await _supabase.from('promo_codes')
+            .select('*').inFilter('id', usedIds.toList());
         usedPromos = (ud as List).cast<Map<String, dynamic>>();
       }
 
@@ -427,8 +364,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final min   = promo['min_order_amount'] != null
         ? (promo['min_order_amount'] as num).toInt() : 0;
     if (_baseAmount < min) {
-      _showSnack('Min order ₹$min required for this code', isError: true);
-      return;
+      _showSnack('Min order ₹$min required', isError: true); return;
     }
     int disc = type == 'flat'
         ? value.toInt()
@@ -460,8 +396,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
-  // ── Payment ──────────────────────────────────────────────────
-  Future<void> _proceedToPayment() async {
+  // ── COD Confirm Booking ──────────────────────────────────────
+  Future<void> _confirmBooking() async {
     if (_selectedAddressId.isEmpty) {
       _showSnack('Please select an address', isError: true); return;
     }
@@ -481,7 +417,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
 
     try {
-      Map<String, dynamic> bookingPayload = {
+      final bookingPayload = <String, dynamic>{
         'customer_id':          user.id,
         'address_id':           _selectedAddressId,
         'scheduled_at':         scheduledAt.toIso8601String(),
@@ -489,25 +425,34 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         'base_price':           _baseAmount,
         'discount_amount':      _discount,
         'final_amount':         _finalAmount,
-        'special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
-        'payment_status':       'unpaid',
+        'special_instructions': _notesCtrl.text.isEmpty
+            ? null : _notesCtrl.text,
+        'payment_status':       'cod',  // ← COD
+        'payment_method':       'cod',
         'otp':                  otp,
-        if (_appliedPromoCode.isNotEmpty) 'promo_code': _appliedPromoCode,
-        if (widget.selectedBhk != null) 'selected_bhk': widget.selectedBhk,
-        if (widget.quantity != null)    'quantity':      widget.quantity,
-        if (widget.isFirstBooking)      'is_first_booking': true,
+        if (_appliedPromoCode.isNotEmpty)
+          'promo_code':         _appliedPromoCode,
+        if (widget.selectedBhk != null)
+          'selected_bhk':       widget.selectedBhk,
+        if (widget.quantity != null)
+          'quantity':           widget.quantity,
+        if (widget.isFirstBooking)
+          'is_first_booking':   true,
       };
-      if (widget.serviceId != null) bookingPayload['service_id'] = widget.serviceId;
+      if (widget.serviceId != null) {
+        bookingPayload['service_id'] = widget.serviceId;
+      }
 
       final booking = await _supabase.from('bookings')
           .insert(bookingPayload).select().single();
-      _pendingBookingId = booking['id'] as String;
+      final bookingId = booking['id'] as String;
 
+      // Save cart items if any
       if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
         try {
           await _supabase.from('booking_items').insert(
             widget.cartItems!.map((c) => {
-              'booking_id':  _pendingBookingId,
+              'booking_id':  bookingId,
               'service_id':  c['service_id'] as String,
               'quantity':    (c['quantity'] as num).toInt(),
               'unit_price':  (c['price'] as num).toInt(),
@@ -518,40 +463,35 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         } catch (e) { debugPrint('booking_items skipped: $e'); }
       }
 
-      setState(() => _loading = false);
-      _launchRazorpay(user);
+      // Save promo usage
+      if (_appliedPromoId.isNotEmpty && _userId != null) {
+        try {
+          await _supabase.from('promo_usage').insert({
+            'promo_id': _appliedPromoId,
+            'user_id':  _userId!,
+          });
+          final p = _promos.firstWhere(
+              (p) => p['id'].toString() == _appliedPromoId,
+              orElse: () => {'used_count': 0});
+          await _supabase.from('promo_codes').update({
+            'used_count': ((p['used_count'] as num? ?? 0).toInt() + 1),
+          }).eq('id', _appliedPromoId);
+        } catch (e) { debugPrint('promo usage skipped: $e'); }
+      }
+
+      if (mounted) {
+        setState(() => _loading = false);
+        Navigator.pushReplacement(context, MaterialPageRoute(
+          builder: (_) => BookingDetailScreen(
+              bookingId: bookingId, isNew: true),
+        ));
+      }
     } catch (e) {
       setState(() => _loading = false);
       _showSnack(
-          'Could not create booking: ${e.toString().split('\n').first}',
+          'Could not confirm booking: ${e.toString().split('\n').first}',
           isError: true);
     }
-  }
-
-  void _launchRazorpay(user) {
-    _supabase.from('users').select('full_name,phone').eq('id', user.id)
-        .maybeSingle().then((profile) {
-      final name  = profile?['full_name'] as String? ?? 'Customer';
-      final phone = profile?['phone']     as String? ?? '';
-      final options = {
-        'key':         'rzp_test_Si33xml9Pvmuqb',
-        'amount':      _finalAmount * 100,
-        'name':        'Cleenzo',
-        'description': _service?['name'] ?? 'Cleaning Service',
-        'prefill': {
-          'name':    name,
-          'contact': phone.startsWith('+91') ? phone : '+91$phone',
-        },
-        'theme': {'color': '#06B6D4'},
-        'notes': {'booking_id': _pendingBookingId},
-      };
-      try {
-        _razorpay.open(options);
-      } catch (e) {
-        _showSnack('Could not open payment: $e', isError: true);
-        setState(() => _loading = false);
-      }
-    });
   }
 
   DateTime _buildScheduledAt() {
@@ -562,9 +502,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final pm    = parts[1] == 'PM';
     if (pm && hh != 12) hh += 12;
     if (!pm && hh == 12) hh = 0;
-    final local = DateTime(
-        _selectedDate.year, _selectedDate.month, _selectedDate.day, hh, mm);
-    return local.toUtc();
+    return DateTime(
+        _selectedDate.year, _selectedDate.month,
+        _selectedDate.day, hh, mm).toUtc();
   }
 
   void _showSnack(String msg, {bool isError = false}) {
@@ -593,7 +533,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             ),
           ),
         ]),
-        Positioned(left: 0, right: 0, bottom: 0, child: _buildBottomBar(c1, c2)),
+        Positioned(
+            left: 0, right: 0, bottom: 0,
+            child: _buildBottomBar(c1, c2)),
       ]),
     );
   }
@@ -607,20 +549,18 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             colors: [c1, c2]),
       ),
       child: Stack(children: [
-        Positioned(
-          top: -36, right: -24,
-          child: Container(
-            width: 140, height: 140,
+        Positioned(top: -36, right: -24,
+          child: Container(width: 140, height: 140,
             decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: Colors.white.withValues(alpha: 0.08)),
-          ),
-        ),
+                color: Colors.white.withValues(alpha: 0.08)))),
         SafeArea(
           bottom: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Row(children: [
                 GestureDetector(
                   onTap: () {
@@ -632,44 +572,50 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.20),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
-                    ),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.22))),
                     child: const Icon(Icons.arrow_back_ios_new_rounded,
-                        color: Colors.white, size: 16),
-                  ),
+                        color: Colors.white, size: 16)),
                 ),
                 const SizedBox(width: 12),
                 Expanded(child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
                   Row(children: [
                     Text(_isInstant ? '⚡' : '📅',
                         style: const TextStyle(fontSize: 16)),
                     const SizedBox(width: 6),
-                    Text(_isInstant ? 'Instant Booking' : 'Schedule Booking',
-                        style: const TextStyle(color: Colors.white,
-                            fontSize: 16, fontWeight: FontWeight.w900)),
+                    Text(
+                      _isInstant ? 'Instant Booking' : 'Schedule Booking',
+                      style: const TextStyle(color: Colors.white,
+                          fontSize: 16, fontWeight: FontWeight.w900)),
                   ]),
-                  Text(_isInstant
-                      ? 'Pro arrives within 2 hours'
-                      : 'Choose your date & time',
-                      style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.80),
-                          fontSize: 11)),
+                  Text(
+                    _isInstant
+                        ? 'Pro arrives within 2 hours'
+                        : 'Choose your date & time',
+                    style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.80),
+                        fontSize: 11)),
                 ])),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.95),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                    borderRadius: BorderRadius.circular(16)),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
                     Text('₹$_finalAmount',
                         style: TextStyle(color: c2,
                             fontSize: 18, fontWeight: FontWeight.w900)),
                     Text(
                       widget.isFirstBooking
                           ? '🎉 First booking!'
-                          : _discount > 0 ? '-₹$_discount saved' : 'Total',
+                          : _discount > 0
+                              ? '-₹$_discount saved'
+                              : '💵 Pay cash',
                       style: TextStyle(
                           color: c2.withValues(alpha: 0.7),
                           fontSize: 9.5, fontWeight: FontWeight.w700)),
@@ -690,27 +636,30 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                       shape: BoxShape.circle,
                       boxShadow: active ? [BoxShadow(
                           color: Colors.black.withValues(alpha: 0.12),
-                          blurRadius: 8, offset: const Offset(0, 3))] : [],
-                    ),
+                          blurRadius: 8, offset: const Offset(0, 3))] : []),
                     child: Center(child: done
-                      ? Icon(Icons.check_rounded, color: c1, size: 15)
-                      : Icon(_stepIcons[i < _stepIcons.length ? i : 0],
-                          color: active ? c1 : Colors.white.withValues(alpha: 0.7),
-                          size: 14)),
+                        ? Icon(Icons.check_rounded, color: c1, size: 15)
+                        : Icon(_stepIcons[i < _stepIcons.length ? i : 0],
+                            color: active
+                                ? c1
+                                : Colors.white.withValues(alpha: 0.7),
+                            size: 14)),
                   ),
                   const SizedBox(width: 6),
                   Flexible(child: Text(_stepLabels[i],
-                    style: TextStyle(
-                      color: active
-                          ? Colors.white
-                          : Colors.white.withValues(alpha: done ? 0.85 : 0.55),
-                      fontSize: 11, fontWeight: active ? FontWeight.w800 : FontWeight.w600),
-                    overflow: TextOverflow.ellipsis)),
+                      style: TextStyle(
+                        color: active
+                            ? Colors.white
+                            : Colors.white.withValues(alpha: done ? 0.85 : 0.55),
+                        fontSize: 11,
+                        fontWeight: active ? FontWeight.w800 : FontWeight.w600),
+                      overflow: TextOverflow.ellipsis)),
                   if (i < _stepLabels.length - 1)
                     Expanded(child: Container(
                       height: 1.4,
                       margin: const EdgeInsets.symmetric(horizontal: 4),
-                      color: Colors.white.withValues(alpha: done ? 0.65 : 0.25))),
+                      color: Colors.white.withValues(
+                          alpha: done ? 0.65 : 0.25))),
                 ]));
               })),
             ]),
@@ -769,8 +718,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                         : null,
                     color: active ? null : _tint,
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                        color: active ? _cyan : _border),
+                    border: Border.all(color: active ? _cyan : _border),
                     boxShadow: active
                         ? [BoxShadow(
                             color: _cyan.withValues(alpha: 0.40),
@@ -778,17 +726,21 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                         : []),
                   child: Column(mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                    Text(['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday-1],
-                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold,
-                            color: active
-                                ? const Color(0xFFDFFAFE)
-                                : const Color(0xFF94A3B8))),
+                    Text(
+                      ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday-1],
+                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold,
+                          color: active
+                              ? const Color(0xFFDFFAFE)
+                              : const Color(0xFF94A3B8))),
                     Text('${d.day}',
-                        style: TextStyle(fontSize: 22, fontWeight: FontWeight.w900,
+                        style: TextStyle(fontSize: 22,
+                            fontWeight: FontWeight.w900,
                             color: active ? Colors.white : _ink)),
                     Text(i == 0 ? 'TODAY' : '·',
-                        style: TextStyle(fontSize: 8, fontWeight: FontWeight.w900,
-                            color: active ? Colors.white
+                        style: TextStyle(fontSize: 8,
+                            fontWeight: FontWeight.w900,
+                            color: active
+                                ? Colors.white
                                 : (i == 0 ? _cyan : Colors.transparent))),
                   ]),
                 ),
@@ -806,7 +758,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         sub: _slotsLoading
             ? 'Checking availability…'
             : '$availableCount slots available · 2hr advance · '
-              '${_slotsBlocked}hr${_slotsBlocked > 1 ? 's' : ''} blocked per booking',
+              '${_slotsBlocked}hr${_slotsBlocked > 1 ? 's' : ''} blocked',
         child: _slotsLoading
             ? const Center(child: Padding(
                 padding: EdgeInsets.symmetric(vertical: 20),
@@ -818,13 +770,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 ])))
             : Column(children: [
                 Row(children: [
-                  _legendDot(_cyan),
-                  const SizedBox(width: 4),
+                  _legendDot(_cyan), const SizedBox(width: 4),
                   const Text('Available',
                       style: TextStyle(color: _inkSoft, fontSize: 11)),
                   const SizedBox(width: 16),
-                  _legendDot(const Color(0xFFE2E8F0)),
-                  const SizedBox(width: 4),
+                  _legendDot(const Color(0xFFE2E8F0)), const SizedBox(width: 4),
                   const Text('Full / Not available',
                       style: TextStyle(color: _inkSoft, fontSize: 11)),
                 ]),
@@ -834,8 +784,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   physics: const NeverScrollableScrollPhysics(),
                   crossAxisCount: 3,
                   childAspectRatio: 2.0,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
+                  crossAxisSpacing: 10, mainAxisSpacing: 10,
                   children: _timeSlots.map((slot) {
                     final active  = _selectedTime == slot;
                     final isAvail = _slotAvailability[slot] ?? true;
@@ -864,13 +813,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                                   color: _cyan.withValues(alpha: 0.38),
                                   blurRadius: 10, offset: const Offset(0, 3))]
                               : []),
-                        child: Column(mainAxisAlignment: MainAxisAlignment.center,
+                        child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
                             children: [
                           Text(slot, style: TextStyle(
                               fontSize: 11, fontWeight: FontWeight.w800,
                               color: isFull
                                   ? const Color(0xFFCBD5E1)
-                                  : active ? Colors.white : const Color(0xFF334155))),
+                                  : active ? Colors.white
+                                  : const Color(0xFF334155))),
                           const SizedBox(height: 2),
                           if (isFull)
                             const Text('Full', style: TextStyle(
@@ -919,16 +870,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   Widget _legendDot(Color color) => Container(
-        width: 10, height: 10,
-        decoration: BoxDecoration(color: color, shape: BoxShape.circle));
+      width: 10, height: 10,
+      decoration: BoxDecoration(color: color, shape: BoxShape.circle));
 
-  // ── First booking banner ─────────────────────────────────────
   Widget _buildFirstBookingBanner() {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-            colors: [_instant1, _instant2]),
+        gradient: const LinearGradient(colors: [_instant1, _instant2]),
         borderRadius: BorderRadius.circular(18),
         boxShadow: [BoxShadow(
             color: _instant1.withValues(alpha: 0.3),
@@ -979,8 +928,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         ),
 
       if (widget.isFirstBooking) ...[
-        _buildFirstBookingBanner(),
-        const SizedBox(height: 14),
+        _buildFirstBookingBanner(), const SizedBox(height: 14),
       ],
 
       _card(
@@ -990,15 +938,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         trailing: GestureDetector(
           onTap: () => context.go('/account'),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            padding: const EdgeInsets.symmetric(
+                horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
               color: _tint2,
               borderRadius: BorderRadius.circular(10),
               border: Border.all(color: const Color(0xFFA5F3FC))),
             child: const Text('+ Add',
                 style: TextStyle(color: _cyanDk,
-                    fontSize: 12, fontWeight: FontWeight.w800)),
-          ),
+                    fontSize: 12, fontWeight: FontWeight.w800))),
         ),
         child: _addresses.isEmpty
             ? const Padding(
@@ -1013,78 +961,83 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   Text('Add an address to continue',
                       style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13)),
                 ]))
-            : Column(children: _addresses.map((addr) {
-                final active = _selectedAddressId == addr['id'];
-                final lbl    = addr['label'] ?? 'Address';
-                final icon   = lbl == 'Home' ? '🏠' : lbl == 'Office' ? '🏢' : '📍';
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedAddressId = addr['id']),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    margin: const EdgeInsets.only(bottom: 10),
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: active ? _tint2 : _tint,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(
-                          color: active ? _cyan : _border,
-                          width: active ? 1.6 : 1)),
-                    child: Row(children: [
-                      Container(
-                        width: 38, height: 38,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: _border)),
-                        child: Center(child: Text(icon,
-                            style: const TextStyle(fontSize: 18)))),
-                      const SizedBox(width: 12),
-                      Expanded(child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                        Row(children: [
-                          Text(lbl, style: const TextStyle(
-                              fontWeight: FontWeight.w800, fontSize: 14)),
-                          if (addr['is_default'] == true) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 7, vertical: 2),
-                              decoration: BoxDecoration(
-                                  color: _tint2,
-                                  borderRadius: BorderRadius.circular(20)),
-                              child: const Text('Default',
-                                  style: TextStyle(color: _cyanDk,
-                                      fontSize: 9, fontWeight: FontWeight.w800))),
-                          ],
-                        ]),
-                        const SizedBox(height: 2),
-                        Text(
-                          [if (addr['flat_no'] != null) addr['flat_no'],
-                            if (addr['building'] != null) addr['building'],
-                            addr['area'], addr['city']]
-                              .where((e) => e != null).join(', '),
-                          style: const TextStyle(
-                              color: Color(0xFF94A3B8), fontSize: 12),
-                          maxLines: 1, overflow: TextOverflow.ellipsis),
-                      ])),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        width: 22, height: 22,
-                        decoration: BoxDecoration(
-                          color: active ? _cyan : Colors.transparent,
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                              color: active ? _cyan : const Color(0xFFD1D5DB),
-                              width: 2)),
-                        child: active
-                            ? const Icon(Icons.check_rounded,
-                                color: Colors.white, size: 12)
-                            : null),
-                    ]),
-                  ),
-                );
-              }).toList()),
+            : Column(
+                children: _addresses.map((addr) {
+                  final active = _selectedAddressId == addr['id'];
+                  final lbl    = addr['label'] ?? 'Address';
+                  final icon   = lbl == 'Home'
+                      ? '🏠' : lbl == 'Office' ? '🏢' : '📍';
+                  return GestureDetector(
+                    onTap: () => setState(
+                        () => _selectedAddressId = addr['id']),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: active ? _tint2 : _tint,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                            color: active ? _cyan : _border,
+                            width: active ? 1.6 : 1)),
+                      child: Row(children: [
+                        Container(
+                          width: 38, height: 38,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: _border)),
+                          child: Center(child: Text(icon,
+                              style: const TextStyle(fontSize: 18)))),
+                        const SizedBox(width: 12),
+                        Expanded(child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          Row(children: [
+                            Text(lbl, style: const TextStyle(
+                                fontWeight: FontWeight.w800, fontSize: 14)),
+                            if (addr['is_default'] == true) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 7, vertical: 2),
+                                decoration: BoxDecoration(
+                                    color: _tint2,
+                                    borderRadius: BorderRadius.circular(20)),
+                                child: const Text('Default',
+                                    style: TextStyle(color: _cyanDk,
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.w800))),
+                            ],
+                          ]),
+                          const SizedBox(height: 2),
+                          Text(
+                            [if (addr['flat_no'] != null) addr['flat_no'],
+                              if (addr['building'] != null) addr['building'],
+                              addr['area'], addr['city']]
+                                .where((e) => e != null).join(', '),
+                            style: const TextStyle(
+                                color: Color(0xFF94A3B8), fontSize: 12),
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                        ])),
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 180),
+                          width: 22, height: 22,
+                          decoration: BoxDecoration(
+                            color: active ? _cyan : Colors.transparent,
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                                color: active
+                                    ? _cyan : const Color(0xFFD1D5DB),
+                                width: 2)),
+                          child: active
+                              ? const Icon(Icons.check_rounded,
+                                  color: Colors.white, size: 12)
+                              : null),
+                      ]),
+                    ),
+                  );
+                }).toList()),
       ),
       const SizedBox(height: 14),
       _card(
@@ -1095,7 +1048,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           controller: _notesCtrl, maxLines: 3,
           decoration: InputDecoration(
             hintText: 'e.g. Ring bell twice, pet at home...',
-            hintStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+            hintStyle: const TextStyle(
+                color: Color(0xFF94A3B8), fontSize: 13),
             filled: true, fillColor: _tint,
             border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
@@ -1105,7 +1059,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 borderSide: const BorderSide(color: _border)),
             focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(14),
-                borderSide: const BorderSide(color: _cyan, width: 1.6))),
+                borderSide:
+                    const BorderSide(color: _cyan, width: 1.6))),
         ),
       ),
     ]);
@@ -1121,15 +1076,19 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         {'icon': '🎉', 'label': 'Offer',   'value': 'First booking at ₹25!'},
       if (_isSchedule) ...[
         {'icon': '📅', 'label': 'Date',
-          'value': '${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}'},
+          'value': '${_selectedDate.day}/'
+              '${_selectedDate.month}/${_selectedDate.year}'},
         {'icon': '⏰', 'label': 'Time',    'value': _selectedTime},
         {'icon': '⏱', 'label': 'Duration',
-          'value': '~${_serviceDurationMins} min · $_slotsBlocked slot${_slotsBlocked > 1 ? 's' : ''} blocked'},
+          'value': '~$_serviceDurationMins min · '
+              '$_slotsBlocked slot${_slotsBlocked > 1 ? 's' : ''} blocked'},
       ],
       if (_isInstant)
         {'icon': '⚡', 'label': 'Arrival', 'value': 'Within 2 hours'},
       {'icon': '📍', 'label': 'Address',
-        'value': addr.isNotEmpty ? '${addr['area']}, ${addr['city']}' : '—'},
+        'value': addr.isNotEmpty
+            ? '${addr['area']}, ${addr['city']}' : '—'},
+      {'icon': '💵', 'label': 'Payment',  'value': 'Cash on Delivery'},
       if (_notesCtrl.text.isNotEmpty)
         {'icon': '💬', 'label': 'Notes',   'value': _notesCtrl.text},
     ];
@@ -1151,11 +1110,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   style: const TextStyle(fontSize: 16)))),
             const SizedBox(width: 12),
             Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start, children: [
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Text(r['label']!,
-                  style: const TextStyle(color: Color(0xFF94A3B8),
-                      fontSize: 10, fontWeight: FontWeight.w700,
-                      letterSpacing: 0.4)),
+                  style: const TextStyle(
+                      color: Color(0xFF94A3B8), fontSize: 10,
+                      fontWeight: FontWeight.w700, letterSpacing: 0.4)),
               Text(r['value']!,
                   style: const TextStyle(fontSize: 14,
                       fontWeight: FontWeight.w700, color: _ink)),
@@ -1165,6 +1125,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       ),
       const SizedBox(height: 14),
 
+      // Promo code
       if (!widget.isFirstBooking)
         GestureDetector(
           onTap: _showPromoSheet,
@@ -1187,7 +1148,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                     width: 36, height: 36,
                     decoration: BoxDecoration(
                       color: _appliedPromoCode.isNotEmpty
-                          ? const Color(0xFFECFDF5) : const Color(0xFFF5F3FF),
+                          ? const Color(0xFFECFDF5)
+                          : const Color(0xFFF5F3FF),
                       borderRadius: BorderRadius.circular(11)),
                     child: Center(child: Text(
                         _appliedPromoCode.isNotEmpty ? '🎉' : '🎟',
@@ -1203,14 +1165,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                       style: TextStyle(fontWeight: FontWeight.w800,
                           fontSize: 14,
                           color: _appliedPromoCode.isNotEmpty
-                              ? const Color(0xFF059669)
-                              : _ink)),
+                              ? const Color(0xFF059669) : _ink)),
                     Text(
                       _appliedPromoCode.isNotEmpty
                           ? '$_appliedPromoCode  •  Saving ₹$_discount'
                           : _promos.isEmpty && !_promosLoading
                               ? 'No offers available right now'
-                              : 'Tap to see ${_promos.length} offer${_promos.length == 1 ? '' : 's'}',
+                              : 'Tap to see ${_promos.length} '
+                                'offer${_promos.length == 1 ? '' : 's'}',
                       style: TextStyle(
                           color: _appliedPromoCode.isNotEmpty
                               ? const Color(0xFF10B981)
@@ -1229,14 +1191,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                             size: 14, color: Color(0xFFDC2626))))
                   else
                     Icon(Icons.chevron_right_rounded,
-                      color: _promos.isEmpty
-                          ? const Color(0xFFD1D5DB) : const Color(0xFF94A3B8)),
+                        color: _promos.isEmpty
+                            ? const Color(0xFFD1D5DB)
+                            : const Color(0xFF94A3B8)),
                 ]),
               ),
               if (_appliedPromoCode.isNotEmpty) ...[
                 const Divider(height: 1, color: Color(0xFFF0FDF4)),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 16, vertical: 10),
                   decoration: const BoxDecoration(
                     color: Color(0xFFF0FDF4),
                     borderRadius: BorderRadius.only(
@@ -1258,7 +1222,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (!widget.isFirstBooking) const SizedBox(height: 14),
 
-      // Price card
+      // Price + COD card
       Container(
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
@@ -1271,61 +1235,82 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   .withValues(alpha: 0.30),
               blurRadius: 18, offset: const Offset(0, 6))]),
         child: Column(children: [
-          if (widget.isFirstBooking)
-            _priceRow('Original price', '₹${widget.overridePrice ?? _baseAmount}',
+          if (widget.isFirstBooking) ...[
+            _priceRow('Original price',
+                '₹${widget.overridePrice ?? _baseAmount}',
                 Colors.white.withValues(alpha: 0.7),
                 Colors.white.withValues(alpha: 0.7)),
-          if (widget.isFirstBooking)
             _priceRow('First booking discount',
                 '-₹${(widget.overridePrice ?? _baseAmount) - 25}',
                 Colors.white.withValues(alpha: 0.85),
                 const Color(0xFFBBF7D0)),
-          if (!widget.isFirstBooking)
+          ] else ...[
             _priceRow('Service total', '₹$_baseAmount',
                 Colors.white.withValues(alpha: 0.85), Colors.white),
-          if (!widget.isFirstBooking && _discount > 0)
-            _priceRow('Promo ($_appliedPromoCode)', '− ₹$_discount',
-                Colors.white.withValues(alpha: 0.85),
-                const Color(0xFF86EFAC)),
+            if (_discount > 0)
+              _priceRow('Promo ($_appliedPromoCode)', '− ₹$_discount',
+                  Colors.white.withValues(alpha: 0.85),
+                  const Color(0xFF86EFAC)),
+          ],
           _priceRow('Platform fee', 'FREE',
               Colors.white.withValues(alpha: 0.85),
               const Color(0xFF86EFAC)),
           const Divider(color: Colors.white24, height: 20),
-          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-            const Text('Total Payable',
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+            const Text('Pay to Worker',
                 style: TextStyle(color: Colors.white,
                     fontSize: 16, fontWeight: FontWeight.w900)),
             Text('₹$_finalAmount',
                 style: const TextStyle(color: Colors.white,
                     fontSize: 28, fontWeight: FontWeight.w900)),
           ]),
-          const SizedBox(height: 8),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            _payIcon('💳'), _payIcon('🏦'), _payIcon('📱'), _payIcon('💰'),
-            const SizedBox(width: 8),
-            const Text('UPI · Cards · NetBanking · Wallets',
-                style: TextStyle(color: Colors.white60, fontSize: 10)),
-          ]),
+          const SizedBox(height: 10),
+          // COD badge
+          Container(
+            padding: const EdgeInsets.symmetric(
+                horizontal: 16, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.25))),
+            child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+              Text('💵', style: TextStyle(fontSize: 18)),
+              SizedBox(width: 10),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                Text('Cash on Delivery',
+                    style: TextStyle(color: Colors.white,
+                        fontSize: 13, fontWeight: FontWeight.w800)),
+                Text('Pay cash to the worker after service is done',
+                    style: TextStyle(
+                        color: Colors.white70, fontSize: 10)),
+              ])),
+            ]),
+          ),
         ]),
       ),
     ]);
   }
 
-  Widget _payIcon(String e) => Padding(
-      padding: const EdgeInsets.only(right: 4),
-      child: Text(e, style: const TextStyle(fontSize: 14)));
+  Widget _priceRow(String l, String v, Color lc, Color vc) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+          Text(l, style: TextStyle(color: lc, fontSize: 13)),
+          Text(v, style: TextStyle(
+              color: vc, fontSize: 13, fontWeight: FontWeight.bold)),
+        ]));
 
-  Widget _priceRow(String l, String v, Color lc, Color vc) => Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-        Text(l, style: TextStyle(color: lc, fontSize: 13)),
-        Text(v, style: TextStyle(color: vc, fontSize: 13,
-            fontWeight: FontWeight.bold)),
-      ]));
-
-  Widget _card({required IconData icon, required String title,
-      required String sub, required Widget child, Widget? trailing}) {
+  Widget _card({
+    required IconData icon, required String title,
+    required String sub, required Widget child, Widget? trailing,
+  }) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
@@ -1333,14 +1318,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         boxShadow: [BoxShadow(
             color: _cyan.withValues(alpha: 0.07),
             blurRadius: 16, offset: const Offset(0, 5))]),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 14),
           child: Row(children: [
             Container(
               width: 38, height: 38,
               decoration: BoxDecoration(
-                  gradient: const LinearGradient(colors: [_cyan, _cyanDk]),
+                  gradient: const LinearGradient(
+                      colors: [_cyan, _cyanDk]),
                   borderRadius: BorderRadius.circular(12),
                   boxShadow: [BoxShadow(
                       color: _cyan.withValues(alpha: 0.30),
@@ -1348,9 +1335,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
               child: Icon(icon, color: Colors.white, size: 18)),
             const SizedBox(width: 12),
             Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: const TextStyle(fontWeight: FontWeight.w800,
-                  fontSize: 14, color: _ink)),
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+              Text(title, style: const TextStyle(
+                  fontWeight: FontWeight.w800, fontSize: 14, color: _ink)),
               Text(sub, style: const TextStyle(
                   color: Color(0xFF94A3B8), fontSize: 11)),
             ])),
@@ -1372,11 +1360,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + bottom),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+        borderRadius:
+            const BorderRadius.vertical(top: Radius.circular(26)),
         boxShadow: [BoxShadow(
             color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 22, offset: const Offset(0, -6))],
-      ),
+            blurRadius: 22, offset: const Offset(0, -6))]),
       child: Row(children: [
         if (_step > 1) ...[
           GestureDetector(
@@ -1395,7 +1383,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           child: GestureDetector(
             onTap: canProceed && !_loading
                 ? () {
-                    if (isLast) _proceedToPayment();
+                    if (isLast) _confirmBooking(); // ← COD
                     else setState(() => _step++);
                   }
                 : null,
@@ -1403,11 +1391,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
               duration: const Duration(milliseconds: 200),
               height: 52,
               decoration: BoxDecoration(
-                gradient: canProceed ? LinearGradient(colors: [c1, c2]) : null,
+                gradient: canProceed
+                    ? LinearGradient(colors: [c1, c2]) : null,
                 color: canProceed ? null : const Color(0xFFE2E8F0),
                 borderRadius: BorderRadius.circular(16),
                 boxShadow: canProceed
-                    ? [BoxShadow(color: c1.withValues(alpha: 0.42),
+                    ? [BoxShadow(
+                        color: c1.withValues(alpha: 0.42),
                         blurRadius: 16, offset: const Offset(0, 5))]
                     : []),
               child: Center(
@@ -1415,19 +1405,28 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                     ? const SizedBox(width: 22, height: 22,
                         child: CircularProgressIndicator(
                             color: Colors.white, strokeWidth: 2.5))
-                    : Row(mainAxisAlignment: MainAxisAlignment.center,
+                    : Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                        if (isLast) const Text('💳  ',
-                            style: TextStyle(fontSize: 16)),
+                        if (isLast)
+                          const Text('💵  ',
+                              style: TextStyle(fontSize: 16)),
                         Text(
-                          isLast ? 'Pay ₹$_finalAmount' : 'Continue',
+                          isLast
+                              ? 'Confirm Booking'
+                              : 'Continue',
                           style: TextStyle(
-                            color: canProceed ? Colors.white : const Color(0xFF94A3B8),
-                            fontSize: 15, fontWeight: FontWeight.w900)),
+                            color: canProceed
+                                ? Colors.white
+                                : const Color(0xFF94A3B8),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w900)),
                         const SizedBox(width: 8),
                         Icon(Icons.arrow_forward_rounded,
-                          color: canProceed ? Colors.white : const Color(0xFF94A3B8),
-                          size: 18),
+                            color: canProceed
+                                ? Colors.white
+                                : const Color(0xFF94A3B8),
+                            size: 18),
                       ]),
               ),
             ),
@@ -1482,10 +1481,12 @@ class _PromoSheet extends StatelessWidget {
       height: MediaQuery.of(context).size.height * 0.75,
       decoration: const BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28))),
+        borderRadius:
+            BorderRadius.vertical(top: Radius.circular(28))),
       child: Column(children: [
         Container(
-          margin: const EdgeInsets.only(top: 10), width: 40, height: 4,
+          margin: const EdgeInsets.only(top: 10),
+          width: 40, height: 4,
           decoration: BoxDecoration(
               color: const Color(0xFFE2E8F0),
               borderRadius: BorderRadius.circular(2))),
@@ -1495,12 +1496,15 @@ class _PromoSheet extends StatelessWidget {
             const Text('🎟', style: TextStyle(fontSize: 22)),
             const SizedBox(width: 10),
             const Expanded(child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start, children: [
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Text('Choose Promo Code',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900,
+                  style: TextStyle(fontSize: 16,
+                      fontWeight: FontWeight.w900,
                       color: Color(0xFF0F172A))),
               Text('Select an offer to apply on your booking',
-                  style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11)),
+                  style: TextStyle(
+                      color: Color(0xFF94A3B8), fontSize: 11)),
             ])),
             GestureDetector(
               onTap: () => Navigator.pop(context),
@@ -1516,61 +1520,82 @@ class _PromoSheet extends StatelessWidget {
         const Divider(height: 1),
         Expanded(
           child: loading
-              ? const Center(child: CircularProgressIndicator(color: _cyan))
+              ? const Center(
+                  child: CircularProgressIndicator(color: _cyan))
               : (promos.isEmpty && usedPromos.isEmpty)
                   ? const Center(child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text('🎟', style: TextStyle(fontSize: 40)),
                         SizedBox(height: 12),
-                        Text('No offers available', style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: Color(0xFF374151))),
+                        Text('No offers available',
+                            style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF374151))),
                         SizedBox(height: 4),
-                        Text('Check back soon!', style: TextStyle(
-                            color: Color(0xFF9CA3AF), fontSize: 13)),
+                        Text('Check back soon!',
+                            style: TextStyle(
+                                color: Color(0xFF9CA3AF),
+                                fontSize: 13)),
                       ]))
                   : ListView(
-                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 30),
+                      padding:
+                          const EdgeInsets.fromLTRB(16, 12, 16, 30),
                       children: [
                         if (promos.isNotEmpty) ...[
                           const Padding(
-                            padding: EdgeInsets.only(bottom: 10, left: 4),
+                            padding:
+                                EdgeInsets.only(bottom: 10, left: 4),
                             child: Text('AVAILABLE OFFERS',
-                                style: TextStyle(color: Color(0xFF9CA3AF),
-                                    fontSize: 10, fontWeight: FontWeight.w800,
+                                style: TextStyle(
+                                    color: Color(0xFF9CA3AF),
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
                                     letterSpacing: 1.5))),
                           ...promos.map((p) {
-                            final isApplied = appliedId == p['id'].toString();
-                            final minOrder  = p['min_order_amount'] != null
-                                ? (p['min_order_amount'] as num).toInt() : 0;
-                            final canApply  = baseAmount >= minOrder;
+                            final isApplied =
+                                appliedId == p['id'].toString();
+                            final minOrder =
+                                p['min_order_amount'] != null
+                                    ? (p['min_order_amount'] as num)
+                                        .toInt()
+                                    : 0;
+                            final canApply = baseAmount >= minOrder;
                             return GestureDetector(
                               onTap: canApply ? () => onApply(p) : null,
                               child: AnimatedContainer(
-                                duration: const Duration(milliseconds: 180),
-                                margin: const EdgeInsets.only(bottom: 10),
+                                duration:
+                                    const Duration(milliseconds: 180),
+                                margin:
+                                    const EdgeInsets.only(bottom: 10),
                                 padding: const EdgeInsets.all(14),
                                 decoration: BoxDecoration(
-                                  color: isApplied ? const Color(0xFFECFDF5)
-                                      : canApply ? Colors.white : const Color(0xFFF8FAFC),
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                      color: isApplied ? const Color(0xFF6EE7B7)
-                                          : canApply ? const Color(0xFFE8EDF2)
-                                          : const Color(0xFFF1F5F9),
+                                  color: isApplied
+                                      ? const Color(0xFFECFDF5)
+                                      : canApply
+                                          ? Colors.white
+                                          : const Color(0xFFF8FAFC),
+                                  borderRadius:
+                                      BorderRadius.circular(16),                                  border: Border.all(
+                                      color: isApplied
+                                          ? const Color(0xFF6EE7B7)
+                                          : canApply
+                                              ? const Color(0xFFE8EDF2)
+                                              : const Color(0xFFF1F5F9),
                                       width: isApplied ? 1.5 : 1)),
                                 child: Row(children: [
                                   Container(
                                     width: 52, height: 52,
                                     decoration: BoxDecoration(
-                                      gradient: LinearGradient(colors: isApplied
-                                          ? [const Color(0xFF10B981), const Color(0xFF059669)]
-                                          : canApply
-                                              ? [_cyan, _cyanDk]
-                                              : [const Color(0xFFCBD5E1), const Color(0xFF94A3B8)]),
+                                      gradient: LinearGradient(
+                                          colors: isApplied
+                                              ? [const Color(0xFF10B981), const Color(0xFF059669)]
+                                              : canApply
+                                                  ? [_cyan, _cyanDk]
+                                                  : [const Color(0xFFCBD5E1), const Color(0xFF94A3B8)]),
                                       borderRadius: BorderRadius.circular(14)),
-                                    child: Column(mainAxisAlignment: MainAxisAlignment.center,
+                                    child: Column(
+                                        mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
                                       Text(
                                         (p['discount_type'] as String?) == 'percent'
@@ -1588,11 +1613,14 @@ class _PromoSheet extends StatelessWidget {
                                       children: [
                                     Row(children: [
                                       Text(p['code'] as String,
-                                          style: TextStyle(fontWeight: FontWeight.w900,
+                                          style: TextStyle(
+                                              fontWeight: FontWeight.w900,
                                               fontSize: 14, letterSpacing: 1,
-                                              color: isApplied ? const Color(0xFF059669)
-                                                  : canApply ? const Color(0xFF0F172A)
-                                                  : const Color(0xFF94A3B8))),
+                                              color: isApplied
+                                                  ? const Color(0xFF059669)
+                                                  : canApply
+                                                      ? const Color(0xFF0F172A)
+                                                      : const Color(0xFF94A3B8))),
                                       if (isApplied) ...[
                                         const SizedBox(width: 6),
                                         Container(
@@ -1603,24 +1631,27 @@ class _PromoSheet extends StatelessWidget {
                                               borderRadius: BorderRadius.circular(6)),
                                           child: const Text('Applied',
                                               style: TextStyle(color: Color(0xFF16A34A),
-                                                  fontSize: 9,
-                                                  fontWeight: FontWeight.w800))),
+                                                  fontSize: 9, fontWeight: FontWeight.w800))),
                                       ],
                                     ]),
                                     const SizedBox(height: 2),
                                     if ((p['description'] as String? ?? '').isNotEmpty)
                                       Text(p['description'] as String,
                                           style: TextStyle(
-                                              color: canApply ? const Color(0xFF6B7280)
+                                              color: canApply
+                                                  ? const Color(0xFF6B7280)
                                                   : const Color(0xFFD1D5DB),
                                               fontSize: 11),
                                           maxLines: 1, overflow: TextOverflow.ellipsis),
                                     const SizedBox(height: 4),
-                                    Text(_calcDiscount(p), style: TextStyle(
-                                        color: isApplied ? const Color(0xFF10B981)
-                                            : canApply ? _cyanDk
-                                            : const Color(0xFFD1D5DB),
-                                        fontSize: 11, fontWeight: FontWeight.w700)),
+                                    Text(_calcDiscount(p),
+                                        style: TextStyle(
+                                            color: isApplied
+                                                ? const Color(0xFF10B981)
+                                                : canApply ? _cyanDk
+                                                : const Color(0xFFD1D5DB),
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w700)),
                                     if (!canApply)
                                       Padding(
                                         padding: const EdgeInsets.only(top: 3),
@@ -1641,8 +1672,7 @@ class _PromoSheet extends StatelessWidget {
                                             borderRadius: BorderRadius.circular(10)),
                                         child: const Text('Remove',
                                             style: TextStyle(color: Color(0xFFDC2626),
-                                                fontSize: 11,
-                                                fontWeight: FontWeight.w700))))
+                                                fontSize: 11, fontWeight: FontWeight.w700))))
                                   else if (canApply)
                                     Container(
                                       padding: const EdgeInsets.symmetric(
@@ -1652,8 +1682,7 @@ class _PromoSheet extends StatelessWidget {
                                           borderRadius: BorderRadius.circular(10)),
                                       child: const Text('Apply',
                                           style: TextStyle(color: Color(0xFF6366F1),
-                                              fontSize: 11,
-                                              fontWeight: FontWeight.w800))),
+                                              fontSize: 11, fontWeight: FontWeight.w800))),
                                 ]),
                               ),
                             );
@@ -1664,7 +1693,7 @@ class _PromoSheet extends StatelessWidget {
                             padding: EdgeInsets.only(
                                 top: promos.isNotEmpty ? 8 : 0,
                                 bottom: 10, left: 4),
-                            child: Row(children: const [
+                            child: const Row(children: [
                               Text('ALREADY USED',
                                   style: TextStyle(color: Color(0xFF9CA3AF),
                                       fontSize: 10, fontWeight: FontWeight.w800,
@@ -1726,7 +1755,7 @@ class _PromoSheet extends StatelessWidget {
                               ]),
                             ),
                           )),
-                        ],        
+                        ],
                       ],
                     ),
         ),

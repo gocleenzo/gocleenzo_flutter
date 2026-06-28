@@ -13,8 +13,7 @@ dependencies:
   # Supabase
   supabase_flutter: ^2.5.0
 
-  # Payment
-  razorpay_flutter: 1.4.5
+  # Network
   http: ^1.2.0
 
   # Navigation
@@ -51,8 +50,6 @@ dependencies:
   # Firebase
   firebase_core: ^3.0.0
   firebase_messaging: ^15.0.0
-
-  # Local notifications (show foreground FCM as system notification)
   flutter_local_notifications: ^17.0.0
 
 dev_dependencies:
