@@ -12,7 +12,6 @@ import 'services/notification_service.dart';
 const _supabaseUrl     = 'https://hxrqgqhlbdconvgmmhgu.supabase.co';
 const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh4cnFncWhsYmRjb252Z21taGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2ODIwMjQsImV4cCI6MjA5NTI1ODAyNH0.mHaAtk4e_vPysJ-6MBdYgZNirgp8bj3iabwkDmjxfFw';
 
-// Background message handler — must be top-level function
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(
     RemoteMessage message) async {
@@ -24,24 +23,20 @@ Future<void> _firebaseMessagingBackgroundHandler(
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Force portrait
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
-  // Initialize Firebase
   await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform);
 
-  // Register background message handler
   FirebaseMessaging.onBackgroundMessage(
       _firebaseMessagingBackgroundHandler);
 
-  // Initialize Supabase
   await Supabase.initialize(
     url: _supabaseUrl,
-    anonKey: _supabaseAnonKey,
+    publishableKey: _supabaseAnonKey,
   );
 
   runApp(const ProviderScope(child: CleenzoApp()));
@@ -57,7 +52,6 @@ class _CleenzoAppState extends State<CleenzoApp> {
   @override
   void initState() {
     super.initState();
-    // Initialize notifications after app starts
     NotificationService.initialize();
   }
 

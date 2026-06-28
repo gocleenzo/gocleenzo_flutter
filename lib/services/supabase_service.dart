@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'notification_service.dart';
@@ -9,7 +10,7 @@ class SupabaseService {
   // ── Auth ────────────────────────────────────────────────────
   static Future<void> sendOtp(String phone) async {
     final fullPhone = '+91$phone';
-    print('===> Sending OTP to: $fullPhone');
+    debugPrint('===> Sending OTP to: $fullPhone');
     await _client.auth.signInWithOtp(
       phone: fullPhone,
       shouldCreateUser: true,
@@ -25,7 +26,6 @@ class SupabaseService {
   }
 
   static Future<void> signOut() async {
-    // Clear FCM token before signing out
     await NotificationService.clearTokenOnLogout();
     await _client.auth.signOut();
     final prefs = await SharedPreferences.getInstance();

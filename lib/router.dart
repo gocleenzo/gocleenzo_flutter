@@ -17,6 +17,7 @@ import 'screens/customer/location_search_screen.dart';
 import 'screens/customer/location_picker_screen.dart';
 import 'screens/customer/address_confirm_screen.dart';
 import 'screens/customer/saved_addresses_screen.dart';
+import 'screens/customer/notifications_screen.dart';
 
 final router = GoRouter(
   initialLocation: '/',
@@ -31,6 +32,7 @@ final router = GoRouter(
       '/location-picker',
       '/address-confirm',
       '/saved-addresses',
+      '/notifications',
     ].contains(loc);
 
     if (user == null && !isAuth && !isLocationFlow) return '/login';
@@ -42,13 +44,19 @@ final router = GoRouter(
     GoRoute(path: '/terms', builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/help',  builder: (_, __) => const HelpScreen()),
 
-    // ── Saved addresses ─────────────────────────────────────
+    // ── Saved addresses ──────────────────────────────────────
     GoRoute(
       path: '/saved-addresses',
       builder: (_, __) => const SavedAddressesScreen(),
     ),
 
-    // ── Location flow ────────────────────────────────────────
+    // ── Notifications ────────────────────────────────────────
+    GoRoute(
+      path: '/notifications',
+      builder: (_, __) => const NotificationsScreen(),
+    ),
+
+    // ── Location flow ─────────────────────────────────────────
     GoRoute(
       path: '/location-gate',
       builder: (_, __) => const LocationGateScreen(),
