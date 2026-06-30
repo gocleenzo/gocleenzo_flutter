@@ -8,6 +8,7 @@ class SupabaseService {
   static final _client = Supabase.instance.client;
   static SupabaseClient get client => _client;
 
+<<<<<<< HEAD
   // Cached app user id (set after Firebase login via edge function)
   static String? _cachedUserId;
 
@@ -33,11 +34,22 @@ class SupabaseService {
     final supaUser = _client.auth.currentUser;
     if (supaUser != null) return supaUser.id;
     return _cachedUserId;
+=======
+  /// Normalizes ANY user input to +91XXXXXXXXXX (E.164).
+  /// Strips spaces, dashes, a leading 0, or a pasted +91 so the number
+  /// sent to Twilio is always clean. This is the #1 cause of "OTP not
+  /// sending", and it must be identical in sendOtp and verifyOtp.
+  static String _e164(String raw) {
+    var d = raw.replaceAll(RegExp(r'\D'), ''); // digits only
+    if (d.startsWith('0')) d = d.substring(1); // drop a leading 0
+    if (d.length > 10) d = d.substring(d.length - 10); // keep last 10
+    return '+91$d';
+>>>>>>> 7b7a43646a02ef1a0f3ff5b2e13b499a96512c0f
   }
 
   // ── Auth ────────────────────────────────────────────────────
   static Future<void> sendOtp(String phone) async {
-    final fullPhone = '+91$phone';
+    final fullPhone = _e164(phone);
     debugPrint('===> Sending OTP to: $fullPhone');
     await _client.auth.signInWithOtp(
       phone: fullPhone,
@@ -47,7 +59,7 @@ class SupabaseService {
 
   static Future<AuthResponse> verifyOtp(String phone, String token) async {
     return await _client.auth.verifyOTP(
-      phone: '+91$phone',
+      phone: _e164(phone),
       token: token,
       type: OtpType.sms,
     );
