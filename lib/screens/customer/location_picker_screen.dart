@@ -5,6 +5,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/supabase_service.dart';
 
 class LocationPickerScreen extends StatefulWidget {
   final double? initialLat;
@@ -175,13 +176,14 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
     HapticFeedback.mediumImpact();
 
     try {
-      final user = _supabase.auth.currentUser;
+      final userId = await SupabaseService.loadCachedUserId() ??
+          SupabaseService.currentUserId;
       String? phone;
-      if (user != null) {
+      if (userId != null) {
         final profile = await _supabase
             .from('users')
             .select('phone')
-            .eq('id', user.id)
+            .eq('id', userId)
             .maybeSingle();
         phone = profile?['phone'] as String?;
       }
@@ -201,7 +203,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
         });
         HapticFeedback.heavyImpact();
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Notify me error: $e');
       if (mounted) setState(() => _notifyLoading = false);
     }
   }

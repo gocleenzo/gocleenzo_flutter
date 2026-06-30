@@ -22,25 +22,32 @@ class _AccountScreenState extends State<AccountScreen> {
   }
 
   Future<void> _load() async {
-    final user = SupabaseService.currentUser;
-    if (user == null) {
+    final userId = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (userId == null) {
       if (mounted) context.go('/login');
       return;
     }
 
     try {
-      _profile = await SupabaseService.getUserProfile(user.id);
-    } catch (_) {}
+      _profile = await SupabaseService.getUserProfile(userId);
+    } catch (e) {
+      debugPrint('AccountScreen profile load error: $e');
+    }
 
     try {
-      final addresses = await SupabaseService.getAddresses(user.id);
+      final addresses = await SupabaseService.getAddresses(userId);
       _addressCount = addresses.length;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('AccountScreen addresses load error: $e');
+    }
 
     try {
-      final bookings = await SupabaseService.getCustomerBookings(user.id);
+      final bookings = await SupabaseService.getCustomerBookings(userId);
       _bookingCount = bookings.length;
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('AccountScreen bookings load error: $e');
+    }
 
     if (mounted) setState(() => _loading = false);
   }
@@ -75,7 +82,9 @@ class _AccountScreenState extends State<AccountScreen> {
     if (confirm != true) return;
     try {
       await SupabaseService.signOut();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('Sign out error: $e');
+    }
     if (mounted) context.go('/login');
   }
 
@@ -200,7 +209,6 @@ class _AccountScreenState extends State<AccountScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(children: [
 
-              // ← CHANGED: goes to saved-addresses screen
               _tile(
                 Icons.location_on_outlined,
                 'Saved Addresses',

@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -55,12 +56,52 @@ class _SplashScreenState extends State<SplashScreen>
   }
 
   Future<void> _navigate() async {
-    final user = SupabaseService.currentUser;
-    if (user == null) {
+    // Check both Supabase and Firebase auth
+    final supaUser = SupabaseService.currentUser;
+    final fireUser = fb.FirebaseAuth.instance.currentUser;
+
+    if (supaUser == null && fireUser == null) {
       if (mounted) context.go('/login');
       return;
     }
-    final profile = await SupabaseService.getUserProfile(user.id);
+
+    // If logged in via Firebase only, look up user by phone in users table
+    if (supaUser == null && fireUser != null) {
+      try {
+        final phone = fireUser.phoneNumber;
+        if (phone == null) {
+          if (mounted) context.go('/login');
+          return;
+        }
+        final profile = await Supabase.instance.client
+            .from('users')
+            .select()
+            .eq('phone', phone)
+            .maybeSingle();
+
+        if (!mounted) return;
+
+        if (profile == null) {
+          context.go('/login');
+          return;
+        }
+
+        final role = profile['role'] ?? 'customer';
+        if (role == 'worker') {
+          context.go('/worker/dashboard');
+        } else if (role == 'owner') {
+          context.go('/admin-overview');
+        } else {
+          context.go('/services');
+        }
+      } catch (e) {
+        if (mounted) context.go('/login');
+      }
+      return;
+    }
+
+    // Normal Supabase auth flow
+    final profile = await SupabaseService.getUserProfile(supaUser!.id);
     final role = profile?['role'] ?? 'customer';
     if (!mounted) return;
     if (role == 'worker') {
@@ -91,7 +132,6 @@ class _SplashScreenState extends State<SplashScreen>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Brand logo
                   Opacity(
                     opacity: _opacity.value,
                     child: Transform.scale(
@@ -128,7 +168,6 @@ class _SplashScreenState extends State<SplashScreen>
                               ),
                             ],
                           ),
-                          // Sparkle
                           Positioned(
                             top: -8,
                             right: -18,
@@ -146,7 +185,6 @@ class _SplashScreenState extends State<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 16),
-                  // Tagline
                   Opacity(
                     opacity: _opacity.value,
                     child: Text(
@@ -160,7 +198,6 @@ class _SplashScreenState extends State<SplashScreen>
                     ),
                   ),
                   const SizedBox(height: 24),
-                  // Dots
                   Opacity(
                     opacity: _opacity.value,
                     child: const _PulsingDots(),

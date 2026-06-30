@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/theme.dart';
+import '../../services/supabase_service.dart';
 import 'review_popup.dart';
 
 class BookingDetailScreen extends StatefulWidget {
@@ -40,26 +41,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   late final AnimationController _caretCtrl;
   late final AnimationController _pulseCtrl;
 
-  // ── Cyan / white palette ──────────────────────────────────────
-  static const _cyan      = Color(0xFF06B6D4);
-  static const _cyanDk    = Color(0xFF0891B2);
-  static const _cyanDeep  = Color(0xFF0E7490);
-  static const _tint      = Color(0xFFEAFBFE); // page wash
-  static const _tint2     = Color(0xFFD6F6FB); // card wash
-  static const _border    = Color(0xFFDDF1F5);
-  static const _ink       = Color(0xFF0E2A33);
-  static const _inkSoft   = Color(0xFF5B7480);
-  static const _green     = Color(0xFF10B981);
-  static const _red       = Color(0xFFF2545B);
-  static const _amber     = Color(0xFFF59E0B);
-
-  static const _otpAccent   = _cyan;
-  static const _otpAccentDk = _cyanDk;
-  static const _otpTint     = _tint2;
-  static const _otpBorder   = _border;
-  static const _otpInk      = _ink;
-  static const _otpGreen    = _green;
-  static const _otpRed      = _red;
+  static const _otpAccent   = Color(0xFF06B6D4);
+  static const _otpAccentDk = Color(0xFF0891B2);
+  static const _otpTint     = Color(0xFFE0F7FB);
+  static const _otpBorder   = Color(0xFFDDE7EC);
+  static const _otpInk      = Color(0xFF0E2A33);
+  static const _otpGreen    = Color(0xFF10B981);
+  static const _otpRed      = Color(0xFFF2545B);
 
   // Timer
   Timer? _timer;
@@ -70,18 +58,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   static const _completedStatuses = {'completed', 'done', 'finished', 'work_done'};
 
-  // Ordered journey for the timeline stepper
-  static const _journey = [
-    'pending', 'accepted', 'otp_verified', 'in_progress', 'completed'
-  ];
-
   static const _statusColor = {
     'pending':      Color(0xFFF59E0B),
-    'confirmed':    _cyan,
+    'confirmed':    Color(0xFF06B6D4),
     'accepted':     Color(0xFF2563EB),
     'otp_verified': Color(0xFF7C3AED),
-    'in_progress':  _cyanDk,
-    'completed':    _green,
+    'in_progress':  Color(0xFF3B82F6),
+    'completed':    Color(0xFF10B981),
     'cancelled':    Color(0xFFEF4444),
   };
 
@@ -95,22 +78,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     'cancelled':    'Cancelled',
   };
 
-  static const _stepIcons = {
-    'pending':      Icons.hourglass_top_rounded,
-    'accepted':     Icons.engineering_rounded,
-    'otp_verified': Icons.verified_rounded,
-    'in_progress':  Icons.cleaning_services_rounded,
-    'completed':    Icons.task_alt_rounded,
-  };
-
-  static const _stepShortLabel = {
-    'pending':      'Placed',
-    'accepted':     'Assigned',
-    'otp_verified': 'Verified',
-    'in_progress':  'Working',
-    'completed':    'Done',
-  };
-
   @override
   void initState() {
     super.initState();
@@ -122,6 +89,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       ..repeat();
     _load();
     _subscribeToBooking();
+    // Re-render every minute so the OTP window status updates live
     _windowTimer = Timer.periodic(const Duration(minutes: 1), (_) {
       if (mounted) setState(() {});
     });
@@ -189,7 +157,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   Future<void> _maybePromptReview(Map<String, dynamic> b) async {
     if (_reviewPrompted) return;
     _reviewPrompted = true;
-    final uid = _supabase.auth.currentUser?.id;
+    final uid = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
     if (uid == null) { _reviewPrompted = false; return; }
 
     bool alreadyReviewed = false;
@@ -220,6 +189,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   void _startTimer(String workStartedAt) {
     _timer?.cancel();
+    // Parse UTC from Supabase, compare with local now
     final start   = DateTime.parse(workStartedAt).toUtc();
     final now     = DateTime.now().toUtc();
     final elapsed = now.difference(start).inSeconds;
@@ -251,20 +221,31 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   }
 
   // ── OTP Time Window Check ────────────────────────────────────
+  // Returns null if within window, or an error message if not.
+  // Window: 30 minutes BEFORE scheduled time
+  //      to service_duration_minutes AFTER scheduled time
   String? _otpWindowError() {
     final b = _booking;
     if (b == null) return null;
     final scheduledStr = b['scheduled_at'] as String?;
     if (scheduledStr == null) return null;
 
+    // Supabase stores in UTC — parse as UTC then convert to local
     final scheduled = DateTime.parse(scheduledStr).toUtc().toLocal();
     final now       = DateTime.now();
 
+    debugPrint('[OTP] scheduled: $scheduled | now: $now');
+
+    // Window opens 30 min before scheduled time
     final windowStart = scheduled.subtract(const Duration(minutes: 30));
 
+    // Window closes after service duration
     final durationMins =
         (b['services']?['duration_minutes'] as num?)?.toInt() ?? 60;
     final windowEnd = scheduled.add(Duration(minutes: durationMins));
+
+    debugPrint('[OTP] windowStart: $windowStart | windowEnd: $windowEnd');
+    debugPrint('[OTP] isBefore windowStart: ${now.isBefore(windowStart)}');
 
     if (now.isBefore(windowStart)) {
       final minsUntil = windowStart.difference(now).inMinutes + 1;
@@ -283,7 +264,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       return 'Booking window has passed.\nPlease contact support.';
     }
 
-    return null;
+    return null; // ✅ within window — OTP entry allowed
   }
 
   // ── Auto-verify on keystroke ─────────────────────────────────
@@ -292,6 +273,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final b = _booking;
     if (b == null) return;
 
+    // ── Time window check ──────────────────────────────────────
     final windowErr = _otpWindowError();
     if (windowErr != null) {
       setState(() => _otpError = windowErr);
@@ -322,6 +304,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       return;
     }
 
+    // ✅ Correct OTP + within window → start work
     setState(() { _otpVerifying = true; _otpError = null; });
     try {
       final now = DateTime.now().toUtc().toIso8601String();
@@ -379,17 +362,17 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   Widget build(BuildContext context) {
     if (_loading) {
       return const Scaffold(
-        backgroundColor: _tint,
-        body: Center(child: CircularProgressIndicator(color: _cyan)),
+        backgroundColor: Color(0xFFF5F5F7),
+        body: Center(
+            child: CircularProgressIndicator(color: AppTheme.primary)),
       );
     }
     if (_booking == null) {
       return Scaffold(
-        backgroundColor: _tint,
+        backgroundColor: const Color(0xFFF5F5F7),
         appBar: AppBar(
             title: const Text('Booking Details'),
-            backgroundColor: Colors.white, elevation: 0,
-            foregroundColor: _ink),
+            backgroundColor: Colors.white, elevation: 0),
         body: const Center(child: Text('Booking not found')),
       );
     }
@@ -405,499 +388,366 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final workerId    = b['worker_id']    as String?;
     final workStarted = b['work_started_at'] as String?;
 
+    // Pre-compute OTP window for UI
     final windowErr  = _otpWindowError();
     final inWindow   = status == 'accepted' &&
         workerId != null && windowErr == null;
     final notYet     = status == 'accepted' &&
         workerId != null && windowErr != null &&
-        windowErr.contains('opens in');
-    final isCancelled = status == 'cancelled';
+        windowErr.contains('available in');
 
     return Scaffold(
-      backgroundColor: _tint,
-      body: Stack(children: [
-        CustomScrollView(
-          slivers: [
-            // ── Hero header ───────────────────────────────────
-            SliverToBoxAdapter(
-              child: _buildHero(svc, statusColor, statusText, status, isCancelled),
-            ),
+      backgroundColor: const Color(0xFFF5F5F7),
+      body: Column(children: [
 
-            // ── Timeline ────────────────────────────────────
-            if (!isCancelled)
-              SliverToBoxAdapter(child: _buildTimeline(status)),
-
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 140),
-                child: Column(children: [
-
-                  if (widget.isNew) _buildBanner(
-                    emoji: '🎉', title: 'Booking Confirmed!',
-                    sub: 'Your booking is placed. A worker will be assigned soon.',
-                    bg1: const Color(0xFFECFDF5), bg2: const Color(0xFFD1FAE5),
-                    border: const Color(0xFF6EE7B7), titleColor: const Color(0xFF065F46),
-                    subColor: const Color(0xFF047857)),
-
-                  if (status == 'pending') _buildBanner(
-                    emoji: '⏳', title: 'Waiting for Worker',
-                    sub: 'Admin is assigning a worker to your booking.',
-                    bg1: const Color(0xFFFFFBEB), bg2: const Color(0xFFFFFBEB),
-                    border: const Color(0xFFFDE68A), titleColor: const Color(0xFF92400E),
-                    subColor: const Color(0xFFB45309)),
-
-                  if (notYet) _buildWaitingCard(windowErr!),
-
-                  if (inWindow) _buildOtpCard(),
-
-                  if (status == 'in_progress' && workStarted != null)
-                    _buildInProgressCard(workStarted),
-
-                  if (status == 'completed')
-                    _buildCompletedSection(b),
-
-                  // ── Trip card (merged info) ────────────────
-                  _buildTripCard(svc, scheduledAt, addr, status),
-
-                  const SizedBox(height: 8),
-                ]),
-              ),
-            ),
-          ],
-        ),
-
-        // ── Sticky bottom bar ───────────────────────────────
-        Positioned(
-          left: 0, right: 0, bottom: 0,
-          child: _buildBottomBar(finalAmt),
-        ),
-      ]),
-    );
-  }
-
-  // ── Hero header ────────────────────────────────────────────
-  Widget _buildHero(Map<String, dynamic>? svc, Color statusColor,
-      String statusText, String status, bool isCancelled) {
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-          colors: [_cyan, _cyanDeep]),
-      ),
-      child: Stack(children: [
-        // decorative glow
-        Positioned(
-          top: -40, right: -30,
-          child: Container(
-            width: 160, height: 160,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withValues(alpha: 0.08)),
+        // ── Header ────────────────────────────────────────────
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+                colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
           ),
-        ),
-        Positioned(
-          bottom: -60, left: -20,
-          child: Container(
-            width: 140, height: 140,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: Colors.white.withValues(alpha: 0.06)),
-          ),
-        ),
-        SafeArea(
-          bottom: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 26),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Row(children: [
+          child: SafeArea(
+            bottom: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+              child: Row(children: [
                 GestureDetector(
                   onTap: () => Navigator.canPop(context)
                       ? Navigator.pop(context)
                       : context.go('/bookings'),
                   child: Container(
-                    width: 38, height: 38,
+                    width: 36, height: 36,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(13),
-                      border: Border.all(color: Colors.white.withValues(alpha: 0.25)),
-                    ),
-                    child: const Icon(Icons.arrow_back_ios_new_rounded,
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(12)),
+                    child: const Icon(Icons.arrow_back_ios_new,
                         color: Colors.white, size: 16),
                   ),
                 ),
-                const Spacer(),
+                const SizedBox(width: 12),
+                const Expanded(child: Text('Booking Details',
+                    style: TextStyle(color: Colors.white,
+                        fontSize: 18, fontWeight: FontWeight.w900))),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.95),
+                    color: statusColor.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.3)),
                   ),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Container(
-                      width: 7, height: 7,
-                      decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
-                    ),
-                    const SizedBox(width: 7),
-                    Text(statusText,
-                        style: TextStyle(color: _cyanDeep,
-                            fontSize: 12, fontWeight: FontWeight.w800)),
-                  ]),
+                  child: Text(statusText,
+                      style: const TextStyle(color: Colors.white,
+                          fontSize: 12, fontWeight: FontWeight.w700)),
                 ),
               ]),
-              const SizedBox(height: 22),
-              Text(svc?['name'] as String? ?? 'Service Booking',
-                  style: const TextStyle(color: Colors.white,
-                      fontSize: 22, fontWeight: FontWeight.w900)),
-              const SizedBox(height: 4),
-              Text('Booking #${widget.bookingId.substring(0, 8).toUpperCase()}',
-                  style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.78), fontSize: 12.5,
-                      letterSpacing: 0.4)),
-            ]),
+            ),
           ),
         ),
-      ]),
-    );
-  }
 
-  // ── Timeline stepper ──────────────────────────────────────
-  Widget _buildTimeline(String status) {
-    final idx = _journey.indexOf(status);
-    final activeIdx = idx < 0 ? 0 : idx;
+        Expanded(
+          child: RefreshIndicator(
+            onRefresh: _load,
+            color: AppTheme.primary,
+            child: ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
 
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-      padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [BoxShadow(
-            color: _cyan.withValues(alpha: 0.08),
-            blurRadius: 18, offset: const Offset(0, 6))],
-      ),
-      child: Row(
-        children: List.generate(_journey.length, (i) {
-          final key   = _journey[i];
-          final done  = i < activeIdx;
-          final cur   = i == activeIdx;
-          final color = done || cur ? _cyan : const Color(0xFFE2E8F0);
-
-          return Expanded(
-            child: Row(children: [
-              Expanded(
-                child: Column(children: [
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 250),
-                    width: cur ? 38 : 32, height: cur ? 38 : 32,
+                // ── New booking banner ─────────────────────────
+                if (widget.isNew) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: done ? _cyan
-                          : cur ? Colors.white : const Color(0xFFF1F5F9),
-                      border: Border.all(
-                          color: color, width: cur ? 2.4 : 1.6),
-                      boxShadow: cur ? [BoxShadow(
-                          color: _cyan.withValues(alpha: 0.35),
-                          blurRadius: 10, offset: const Offset(0, 3))] : [],
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFFECFDF5), Color(0xFFD1FAE5)]),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF6EE7B7)),
                     ),
-                    child: Icon(
-                      done ? Icons.check_rounded : _stepIcons[key],
-                      size: cur ? 18 : 15,
-                      color: done ? Colors.white
-                          : cur ? _cyan : const Color(0xFFB6C2CB)),
+                    child: const Row(children: [
+                      Text('🎉', style: TextStyle(fontSize: 28)),
+                      SizedBox(width: 12),
+                      Expanded(child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text('Booking Confirmed!',
+                            style: TextStyle(color: Color(0xFF065F46),
+                                fontWeight: FontWeight.w900, fontSize: 15)),
+                        SizedBox(height: 2),
+                        Text('Your booking is placed. A worker will be '
+                            'assigned soon.',
+                            style: TextStyle(
+                                color: Color(0xFF047857), fontSize: 12)),
+                      ])),
+                    ]),
                   ),
-                  const SizedBox(height: 6),
-                  Text(_stepShortLabel[key] ?? '',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 9.5,
-                        fontWeight: cur ? FontWeight.w800 : FontWeight.w600,
-                        color: cur ? _cyanDeep
-                            : done ? _inkSoft : const Color(0xFFB6C2CB))),
+                ],
+
+                // ── Waiting for worker (pending) ───────────────
+                if (status == 'pending') ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFFBEB),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFFDE68A)),
+                    ),
+                    child: const Row(children: [
+                      Text('⏳', style: TextStyle(fontSize: 28)),
+                      SizedBox(width: 12),
+                      Expanded(child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        Text('Waiting for Worker',
+                            style: TextStyle(color: Color(0xFF92400E),
+                                fontWeight: FontWeight.w900, fontSize: 15)),
+                        SizedBox(height: 2),
+                        Text('Admin is assigning a worker to your booking.',
+                            style: TextStyle(
+                                color: Color(0xFFB45309), fontSize: 12)),
+                      ])),
+                    ]),
+                  ),
+                ],
+
+                // ── OTP not yet available (too early) ──────────
+                if (notYet) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0F9FF),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFBAE6FD)),
+                    ),
+                    child: Row(children: [
+                      Container(
+                        width: 48, height: 48,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFECFEFF),
+                          borderRadius: BorderRadius.circular(14)),
+                        child: const Center(child: Text('🕐',
+                            style: TextStyle(fontSize: 24))),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        const Text('Worker Assigned ✓',
+                            style: TextStyle(
+                                color: Color(0xFF0369A1),
+                                fontWeight: FontWeight.w900, fontSize: 14)),
+                        const SizedBox(height: 4),
+                        Text(windowErr!,
+                            style: const TextStyle(
+                                color: Color(0xFF0891B2), fontSize: 12,
+                                height: 1.4)),
+                      ])),
+                    ]),
+                  ),
+                ],
+
+                // ── OTP Entry (within time window) ─────────────
+                if (inWindow) _buildOtpCard(),
+
+                // ── Work In Progress Banner + Timer ────────────
+                if (status == 'in_progress' && workStarted != null) ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFF1D4ED8), Color(0xFF3B82F6)]),
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [BoxShadow(
+                          color: const Color(0xFF3B82F6)
+                              .withValues(alpha: 0.35),
+                          blurRadius: 16, offset: const Offset(0, 4))],
+                    ),
+                    child: Column(children: [
+                      Row(children: [
+                        Container(
+                          width: 44, height: 44,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(14)),
+                          child: const Center(child: Text('🧹',
+                              style: TextStyle(fontSize: 22))),
+                        ),
+                        const SizedBox(width: 14),
+                        const Expanded(child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                          Text('Work In Progress',
+                              style: TextStyle(color: Colors.white,
+                                  fontSize: 15, fontWeight: FontWeight.w900)),
+                          SizedBox(height: 2),
+                          Text('Your cleaner is working right now',
+                              style: TextStyle(
+                                  color: Color(0xFFBFDBFE), fontSize: 12)),
+                        ])),
+                        Container(
+                            width: 10, height: 10,
+                            decoration: const BoxDecoration(
+                                color: Color(0xFF4ADE80),
+                                shape: BoxShape.circle)),
+                      ]),
+                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(16)),
+                        child: Column(children: [
+                          Text(_formatElapsed(_elapsedSeconds),
+                              style: const TextStyle(
+                                color: Colors.white, fontSize: 40,
+                                fontWeight: FontWeight.w900,
+                                fontFamily: 'monospace', letterSpacing: 2)),
+                          const SizedBox(height: 4),
+                          Text('Started at ${_formatTime(workStarted)}',
+                              style: const TextStyle(
+                                  color: Color(0xFFBFDBFE), fontSize: 12)),
+                        ]),
+                      ),
+                    ]),
+                  ),
+                ],
+
+                // ── Completed banner ───────────────────────────
+                if (status == 'completed') ...[
+                  Container(
+                    margin: const EdgeInsets.only(bottom: 16),
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFFECFDF5), Color(0xFFD1FAE5)]),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF6EE7B7)),
+                    ),
+                    child: Row(children: [
+                      const Text('✅', style: TextStyle(fontSize: 28)),
+                      const SizedBox(width: 12),
+                      Expanded(child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                        const Text('Work Completed!',
+                            style: TextStyle(color: Color(0xFF065F46),
+                                fontWeight: FontWeight.w900, fontSize: 15)),
+                        const SizedBox(height: 2),
+                        if (b['work_started_at'] != null &&
+                            b['work_ended_at'] != null)
+                          Text(
+                            'Duration: ${_formatElapsed(DateTime.parse(b['work_ended_at']).difference(DateTime.parse(b['work_started_at'])).inSeconds)}',
+                            style: const TextStyle(
+                                color: Color(0xFF047857), fontSize: 12),
+                          ),
+                      ])),
+                    ]),
+                  ),
+                  GestureDetector(
+                    onTap: () {
+                      _reviewPrompted = false;
+                      _maybePromptReview(b);
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.only(bottom: 16),
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                            color: const Color(0xFF06B6D4), width: 1.6),
+                      ),
+                      child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                        Icon(Icons.star_rounded,
+                            color: Color(0xFFF59E0B), size: 20),
+                        SizedBox(width: 8),
+                        Text('Rate this service',
+                            style: TextStyle(color: Color(0xFF0891B2),
+                                fontWeight: FontWeight.w800, fontSize: 14)),
+                      ]),
+                    ),
+                  ),
+                ],
+
+                // ── Info cards ─────────────────────────────────
+                _infoCard(icon: '🧹', label: 'Service',
+                    value: svc?['name'] ?? '—',
+                    bgColor: const Color(0xFFECFEFF)),
+                Row(children: [
+                  Expanded(child: _infoCard(icon: '📅', label: 'Date',
+                      value: _formatDate(scheduledAt),
+                      bgColor: const Color(0xFFF0F9FF))),
+                  const SizedBox(width: 12),
+                  Expanded(child: _infoCard(icon: '⏰', label: 'Time',
+                      value: _formatTime(scheduledAt),
+                      bgColor: const Color(0xFFF5F3FF))),
                 ]),
-              ),
-              if (i < _journey.length - 1)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 18),
-                  child: Container(
-                    width: 14, height: 2,
-                    color: done ? _cyan : const Color(0xFFE2E8F0)),
+                _infoCard(icon: '📍', label: 'Address',
+                    value: _formatAddress(addr),
+                    bgColor: const Color(0xFFFFF7ED)),
+
+                // ── Price card ─────────────────────────────────
+                Container(
+                  margin: const EdgeInsets.only(bottom: 14),
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                        colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                    const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                      Text('Total Amount',
+                          style: TextStyle(color: Color(0xFFBAE6FD),
+                              fontSize: 12, fontWeight: FontWeight.w600)),
+                      SizedBox(height: 4),
+                      Text('Inclusive of all charges',
+                          style: TextStyle(
+                              color: Color(0xFF7DD3FC), fontSize: 11)),
+                    ]),
+                    Text('₹${finalAmt ?? '—'}',
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 28, fontWeight: FontWeight.w900)),
+                  ]),
                 ),
-            ]),
-          );
-        }),
-      ),
-    );
-  }
 
-  Widget _buildBanner({
-    required String emoji, required String title, required String sub,
-    required Color bg1, required Color bg2, required Color border,
-    required Color titleColor, required Color subColor,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(colors: [bg1, bg2]),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: border),
-      ),
-      child: Row(children: [
-        Text(emoji, style: const TextStyle(fontSize: 26)),
-        const SizedBox(width: 12),
-        Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: TextStyle(color: titleColor,
-              fontWeight: FontWeight.w900, fontSize: 14.5)),
-          const SizedBox(height: 2),
-          Text(sub, style: TextStyle(color: subColor, fontSize: 12, height: 1.3)),
-        ])),
-      ]),
-    );
-  }
-
-  Widget _buildWaitingCard(String windowErr) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _border),
-        boxShadow: [BoxShadow(
-            color: _cyan.withValues(alpha: 0.06), blurRadius: 14,
-            offset: const Offset(0, 4))],
-      ),
-      child: Row(children: [
-        Container(
-          width: 48, height: 48,
-          decoration: BoxDecoration(
-            color: _tint2, borderRadius: BorderRadius.circular(14)),
-          child: const Center(child: Text('🕐', style: TextStyle(fontSize: 24))),
-        ),
-        const SizedBox(width: 14),
-        Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Worker Assigned ✓',
-              style: TextStyle(color: _cyanDeep,
-                  fontWeight: FontWeight.w900, fontSize: 14)),
-          const SizedBox(height: 4),
-          Text(windowErr,
-              style: const TextStyle(color: _inkSoft, fontSize: 12, height: 1.4)),
-        ])),
-      ]),
-    );
-  }
-
-  Widget _buildInProgressCard(String workStarted) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        gradient: const LinearGradient(colors: [_cyan, _cyanDeep]),
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [BoxShadow(
-            color: _cyan.withValues(alpha: 0.32),
-            blurRadius: 18, offset: const Offset(0, 6))],
-      ),
-      child: Column(children: [
-        Row(children: [
-          Container(
-            width: 44, height: 44,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(14)),
-            child: const Center(child: Text('🧹', style: TextStyle(fontSize: 22))),
-          ),
-          const SizedBox(width: 14),
-          const Expanded(child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Work In Progress',
-                style: TextStyle(color: Colors.white,
-                    fontSize: 15, fontWeight: FontWeight.w900)),
-            SizedBox(height: 2),
-            Text('Your cleaner is working right now',
-                style: TextStyle(color: Color(0xFFD6F6FB), fontSize: 12)),
-          ])),
-          _liveDot(),
-        ]),
-        const SizedBox(height: 16),
-        Container(
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.15),
-            borderRadius: BorderRadius.circular(16)),
-          child: Column(children: [
-            Text(_formatElapsed(_elapsedSeconds),
-                style: const TextStyle(
-                  color: Colors.white, fontSize: 40,
-                  fontWeight: FontWeight.w900,
-                  fontFamily: 'monospace', letterSpacing: 2)),
-            const SizedBox(height: 4),
-            Text('Started at ${_formatTime(workStarted)}',
-                style: const TextStyle(color: Color(0xFFD6F6FB), fontSize: 12)),
-          ]),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildCompletedSection(Map<String, dynamic> b) {
-    return Column(children: [
-      Container(
-        margin: const EdgeInsets.only(bottom: 14),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          gradient: const LinearGradient(
-              colors: [Color(0xFFECFDF5), Color(0xFFD1FAE5)]),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: const Color(0xFF6EE7B7)),
-        ),
-        child: Row(children: [
-          const Text('✅', style: TextStyle(fontSize: 28)),
-          const SizedBox(width: 12),
-          Expanded(child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('Work Completed!',
-                style: TextStyle(color: Color(0xFF065F46),
-                    fontWeight: FontWeight.w900, fontSize: 15)),
-            const SizedBox(height: 2),
-            if (b['work_started_at'] != null && b['work_ended_at'] != null)
-              Text(
-                'Duration: ${_formatElapsed(DateTime.parse(b['work_ended_at']).difference(DateTime.parse(b['work_started_at'])).inSeconds)}',
-                style: const TextStyle(color: Color(0xFF047857), fontSize: 12),
-              ),
-          ])),
-        ]),
-      ),
-      GestureDetector(
-        onTap: () { _reviewPrompted = false; _maybePromptReview(b); },
-        child: Container(
-          margin: const EdgeInsets.only(bottom: 14),
-          height: 52,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _cyan, width: 1.6),
-            boxShadow: [BoxShadow(
-                color: _cyan.withValues(alpha: 0.10), blurRadius: 10,
-                offset: const Offset(0, 3))],
-          ),
-          child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.star_rounded, color: _amber, size: 20),
-            SizedBox(width: 8),
-            Text('Rate this service',
-                style: TextStyle(color: _cyanDk,
-                    fontWeight: FontWeight.w800, fontSize: 14)),
-          ]),
-        ),
-      ),
-    ]);
-  }
-
-  // ── Merged trip card ──────────────────────────────────────
-  Widget _buildTripCard(Map<String, dynamic>? svc, String? scheduledAt,
-      Map<String, dynamic>? addr, String status) {
-    final rows = [
-      ('🧹', 'Service', svc?['name'] as String? ?? '—'),
-      ('📅', 'Date', _formatDate(scheduledAt)),
-      ('⏰', 'Time', _formatTime(scheduledAt)),
-      ('📍', 'Address', _formatAddress(addr)),
-    ];
-
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(22),
-        boxShadow: [BoxShadow(
-            color: _cyan.withValues(alpha: 0.07),
-            blurRadius: 18, offset: const Offset(0, 6))],
-      ),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 18, 18, 12),
-          child: Row(children: [
-            Container(
-              width: 34, height: 34,
-              decoration: BoxDecoration(
-                  color: _tint2, borderRadius: BorderRadius.circular(11)),
-              child: const Icon(Icons.receipt_long_rounded,
-                  color: _cyanDk, size: 18)),
-            const SizedBox(width: 10),
-            const Text('Booking Summary',
-                style: TextStyle(fontWeight: FontWeight.w900,
-                    fontSize: 14.5, color: _ink)),
-          ]),
-        ),
-        for (int i = 0; i < rows.length; i++) ...[
-          if (i > 0)
-            const Padding(
-              padding: EdgeInsets.symmetric(horizontal: 18),
-              child: Divider(height: 1, color: Color(0xFFF1F5F9)),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () => context.go('/bookings'),
+                  child: Container(
+                    height: 54,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                          colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+                      borderRadius: BorderRadius.circular(18),
+                      boxShadow: [BoxShadow(
+                          color: AppTheme.primary.withValues(alpha: 0.4),
+                          blurRadius: 16, offset: const Offset(0, 6))],
+                    ),
+                    child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                      Icon(Icons.receipt_long_outlined,
+                          color: Colors.white, size: 20),
+                      SizedBox(width: 10),
+                      Text('View All Bookings',
+                          style: TextStyle(color: Colors.white,
+                              fontWeight: FontWeight.w800, fontSize: 15)),
+                    ]),
+                  ),
+                ),
+              ],
             ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 13),
-            child: Row(children: [
-              SizedBox(width: 26, child: Text(rows[i].$1,
-                  style: const TextStyle(fontSize: 16))),
-              const SizedBox(width: 8),
-              Text(rows[i].$2, style: const TextStyle(
-                  color: _inkSoft, fontSize: 12.5, fontWeight: FontWeight.w600)),
-              const Spacer(),
-              Flexible(child: Text(rows[i].$3, textAlign: TextAlign.right,
-                  maxLines: 2, overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w800,
-                      fontSize: 13.5, color: _ink))),
-            ]),
-          ),
-        ],
-        const SizedBox(height: 4),
-      ]),
-    );
-  }
-
-  // ── Sticky bottom bar ──────────────────────────────────────
-  Widget _buildBottomBar(dynamic finalAmt) {
-    final bottom = MediaQuery.of(context).padding.bottom;
-    return Container(
-      padding: EdgeInsets.fromLTRB(18, 14, 18, 14 + bottom),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
-        boxShadow: [BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 22, offset: const Offset(0, -6))],
-      ),
-      child: Row(children: [
-        Expanded(child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('Total Amount',
-              style: TextStyle(color: _inkSoft, fontSize: 11.5,
-                  fontWeight: FontWeight.w600)),
-          const SizedBox(height: 2),
-          Text('₹${finalAmt ?? '—'}',
-              style: const TextStyle(color: _ink, fontSize: 24,
-                  fontWeight: FontWeight.w900)),
-        ])),
-        GestureDetector(
-          onTap: () => context.go('/bookings'),
-          child: Container(
-            height: 52,
-            padding: const EdgeInsets.symmetric(horizontal: 22),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [_cyan, _cyanDk]),
-              borderRadius: BorderRadius.circular(16),
-              boxShadow: [BoxShadow(
-                  color: _cyan.withValues(alpha: 0.38),
-                  blurRadius: 14, offset: const Offset(0, 5))],
-            ),
-            child: const Row(mainAxisSize: MainAxisSize.min, children: [
-              Icon(Icons.receipt_long_outlined, color: Colors.white, size: 18),
-              SizedBox(width: 9),
-              Text('All Bookings',
-                  style: TextStyle(color: Colors.white,
-                      fontWeight: FontWeight.w800, fontSize: 14.5)),
-            ]),
           ),
         ),
       ]),
@@ -913,25 +763,30 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final fontSz = otpLen <= 4 ? 26.0 : 22.0;
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 14),
+      margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(22),
         border: Border.all(
-          color: _otpError != null ? const Color(0xFFFCA5A5) : _border),
+          color: _otpError != null
+              ? const Color(0xFFFCA5A5)
+              : const Color(0xFFEEF1F6)),
         boxShadow: [BoxShadow(
-            color: _cyan.withValues(alpha: 0.10),
-            blurRadius: 20, offset: const Offset(0, 8))],
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 18, offset: const Offset(0, 6))],
       ),
       child: Column(children: [
+
+        // Header
         Container(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
               begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: [_tint, _tint2]),
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(22), topRight: Radius.circular(22)),
+              colors: [Color(0xFFECFEFF), Color(0xFFCFFAFE)]),
+            borderRadius: BorderRadius.only(
+              topLeft: Radius.circular(22),
+              topRight: Radius.circular(22)),
           ),
           child: Row(children: [
             Container(
@@ -945,25 +800,30 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                     color: _otpAccent.withValues(alpha: 0.38),
                     blurRadius: 14, offset: const Offset(0, 6))],
               ),
-              child: const Icon(Icons.vpn_key_rounded, color: Colors.white, size: 24),
+              child: const Icon(Icons.vpn_key_rounded,
+                  color: Colors.white, size: 24),
             ),
             const SizedBox(width: 13),
             Expanded(child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
                 const Text('Worker has arrived!',
-                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16.5,
-                        color: _otpInk, letterSpacing: 0.2)),
+                    style: TextStyle(
+                      fontWeight: FontWeight.w900, fontSize: 16.5,
+                      color: _otpInk, letterSpacing: 0.2)),
                 const SizedBox(width: 9),
                 _liveDot(),
               ]),
               const SizedBox(height: 4),
               Text('Enter the $otpLen-digit code your worker gives you',
-                  style: const TextStyle(color: _inkSoft,
+                  style: const TextStyle(
+                      color: Color(0xFF52666E),
                       fontSize: 12.5, fontWeight: FontWeight.w500)),
             ])),
           ]),
         ),
+
+        // OTP Boxes
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
           child: Column(children: [
@@ -1015,7 +875,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
             if (_otpError != null) ...[
               const SizedBox(height: 10),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 8),
                 decoration: BoxDecoration(
                   color: const Color(0xFFFEF2F2),
                   borderRadius: BorderRadius.circular(10),
@@ -1026,7 +887,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                       color: Color(0xFFDC2626), size: 16),
                   const SizedBox(width: 8),
                   Expanded(child: Text(_otpError!,
-                      style: const TextStyle(color: Color(0xFFDC2626),
+                      style: const TextStyle(
+                          color: Color(0xFFDC2626),
                           fontSize: 12, fontWeight: FontWeight.w600))),
                 ]),
               ),
@@ -1037,7 +899,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  Widget _otpBox(int i, String text, bool focused, double boxW, double fontSz) {
+  Widget _otpBox(int i, String text, bool focused,
+      double boxW, double fontSz) {
     final filled   = i < text.length;
     final isActive = focused && i == text.length &&
         !_otpVerifying && !_otpSuccess && _otpError == null;
@@ -1045,15 +908,25 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
     Color borderColor, bgColor, textColor;
     if (_otpSuccess) {
-      borderColor = _otpGreen; bgColor = const Color(0xFFE9FBF3); textColor = _otpGreen;
+      borderColor = _otpGreen;
+      bgColor     = const Color(0xFFE9FBF3);
+      textColor   = _otpGreen;
     } else if (hasError) {
-      borderColor = _otpRed; bgColor = const Color(0xFFFFF3F4); textColor = _otpRed;
+      borderColor = _otpRed;
+      bgColor     = const Color(0xFFFFF3F4);
+      textColor   = _otpRed;
     } else if (isActive) {
-      borderColor = _otpAccent; bgColor = Colors.white; textColor = _otpAccent;
+      borderColor = _otpAccent;
+      bgColor     = Colors.white;
+      textColor   = _otpAccent;
     } else if (filled) {
-      borderColor = _otpAccent; bgColor = _otpTint; textColor = _otpAccentDk;
+      borderColor = _otpAccent;
+      bgColor     = _otpTint;
+      textColor   = _otpAccentDk;
     } else {
-      borderColor = _otpBorder; bgColor = const Color(0xFFFBFCFE); textColor = _otpInk;
+      borderColor = _otpBorder;
+      bgColor     = const Color(0xFFFBFCFE);
+      textColor   = _otpInk;
     }
 
     return AnimatedContainer(
@@ -1083,10 +956,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               tween: Tween(begin: 0.6, end: 1.0),
               duration: const Duration(milliseconds: 220),
               curve: Curves.easeOutBack,
-              builder: (_, v, child) => Transform.scale(scale: v, child: child),
+              builder: (_, v, child) =>
+                  Transform.scale(scale: v, child: child),
               child: Text(text[i],
-                  style: TextStyle(fontSize: fontSz,
-                      fontWeight: FontWeight.w900, color: textColor)),
+                  style: TextStyle(
+                      fontSize: fontSz,
+                      fontWeight: FontWeight.w900,
+                      color: textColor)),
             )
           : (isActive
               ? FadeTransition(
@@ -1094,7 +970,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                   child: Container(
                     width: 2, height: 28,
                     decoration: BoxDecoration(
-                      color: _otpAccent, borderRadius: BorderRadius.circular(2)),
+                      color: _otpAccent,
+                      borderRadius: BorderRadius.circular(2)),
                   ),
                 )
               : const SizedBox.shrink()),
@@ -1108,7 +985,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         animation: _pulseCtrl,
         builder: (context, _) {
           final t = _pulseCtrl.value;
-          return Stack(clipBehavior: Clip.none, alignment: Alignment.center, children: [
+          return Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
             Opacity(
               opacity: (1 - t) * 0.6,
               child: Transform.scale(
@@ -1116,7 +996,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                 child: Container(
                   width: 9, height: 9,
                   decoration: const BoxDecoration(
-                      color: Color(0xFF22C55E), shape: BoxShape.circle)),
+                      color: Color(0xFF22C55E),
+                      shape: BoxShape.circle)),
               ),
             ),
             Container(
@@ -1131,23 +1012,29 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   Widget _otpStatusLine() {
     if (_otpSuccess) {
-      return const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      return const Row(mainAxisAlignment: MainAxisAlignment.center,
+          children: [
         Icon(Icons.check_circle_rounded, color: _otpGreen, size: 16),
         SizedBox(width: 7),
         Text('Verified — work has started',
-            style: TextStyle(fontSize: 12, color: _otpGreen, fontWeight: FontWeight.w700)),
+            style: TextStyle(fontSize: 12, color: _otpGreen,
+                fontWeight: FontWeight.w700)),
       ]);
     }
     if (_otpVerifying) {
-      return const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+      return const Row(mainAxisAlignment: MainAxisAlignment.center,
+          children: [
         SizedBox(width: 14, height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2.2, color: _otpAccent)),
+            child: CircularProgressIndicator(
+                strokeWidth: 2.2, color: _otpAccent)),
         SizedBox(width: 9),
         Text('Verifying code…',
-            style: TextStyle(fontSize: 12, color: _otpAccent, fontWeight: FontWeight.w600)),
+            style: TextStyle(fontSize: 12, color: _otpAccent,
+                fontWeight: FontWeight.w600)),
       ]);
     }
-    return const Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+    return const Row(mainAxisAlignment: MainAxisAlignment.center,
+        children: [
       SizedBox(width: 5, height: 5,
           child: DecoratedBox(decoration: BoxDecoration(
               color: _otpAccent, shape: BoxShape.circle))),
@@ -1155,5 +1042,40 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       Text('Work starts automatically once the code is verified',
           style: TextStyle(fontSize: 11, color: Color(0xFF9CA3AF))),
     ]);
+  }
+
+  Widget _infoCard({required String icon, required String label,
+      required String value, required Color bgColor}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFF0F0F0)),
+        boxShadow: [BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04), blurRadius: 8)],
+      ),
+      child: Row(children: [
+        Container(
+          width: 42, height: 42,
+          decoration: BoxDecoration(color: bgColor,
+              borderRadius: BorderRadius.circular(13)),
+          child: Center(child: Text(icon,
+              style: const TextStyle(fontSize: 20))),
+        ),
+        const SizedBox(width: 14),
+        Expanded(child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(
+              color: Color(0xFF9CA3AF), fontSize: 11,
+              fontWeight: FontWeight.w600, letterSpacing: 0.3)),
+          const SizedBox(height: 3),
+          Text(value, style: const TextStyle(
+              fontWeight: FontWeight.w700, fontSize: 14,
+              color: Color(0xFF111827))),
+        ])),
+      ]),
+    );
   }
 }

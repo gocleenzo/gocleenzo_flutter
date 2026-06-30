@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/splash_screen.dart';
@@ -22,8 +23,12 @@ import 'screens/customer/notifications_screen.dart';
 final router = GoRouter(
   initialLocation: '/',
   redirect: (context, state) {
-    final user = Supabase.instance.client.auth.currentUser;
-    final loc  = state.matchedLocation;
+    // Check both Supabase and Firebase auth
+    final supaUser  = Supabase.instance.client.auth.currentUser;
+    final fireUser  = fb.FirebaseAuth.instance.currentUser;
+    final isLoggedIn = supaUser != null || fireUser != null;
+
+    final loc = state.matchedLocation;
 
     final isAuth = ['/', '/login'].contains(loc);
     final isLocationFlow = [
@@ -35,7 +40,14 @@ final router = GoRouter(
       '/notifications',
     ].contains(loc);
 
-    if (user == null && !isAuth && !isLocationFlow) return '/login';
+    // ignore: avoid_print
+    print('[ROUTER] loc=$loc supaUser=${supaUser?.id} fireUser=${fireUser?.uid} isLoggedIn=$isLoggedIn isAuth=$isAuth isLocationFlow=$isLocationFlow');
+
+    if (!isLoggedIn && !isAuth && !isLocationFlow) {
+      // ignore: avoid_print
+      print('[ROUTER] REDIRECTING TO /login');
+      return '/login';
+    }
     return null;
   },
   routes: [

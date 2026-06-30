@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
 import '../../utils/theme.dart';
+import '../../services/supabase_service.dart';
 
 class BookingsScreen extends StatefulWidget {
   const BookingsScreen({super.key});
@@ -91,7 +92,8 @@ class _BookingsScreenState extends State<BookingsScreen>
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final userId = _supabase.auth.currentUser?.id;
+    final userId = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
     if (userId == null) {
       if (mounted) setState(() => _loading = false);
       return;
@@ -126,7 +128,8 @@ class _BookingsScreenState extends State<BookingsScreen>
           _loading = false;
         });
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Bookings load error: $e');
       if (mounted) setState(() => _loading = false);
     }
   }

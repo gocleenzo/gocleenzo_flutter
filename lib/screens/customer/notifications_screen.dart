@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/supabase_service.dart';
 
 class NotificationsScreen extends StatefulWidget {
   const NotificationsScreen({super.key});
@@ -29,14 +30,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   Future<void> _load() async {
-    final user = _supabase.auth.currentUser;
-    if (user == null) return;
+    final userId = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (userId == null) return;
     setState(() => _loading = true);
     try {
       final data = await _supabase
           .from('notifications')
           .select('*')
-          .eq('user_id', user.id)
+          .eq('user_id', userId)
           .order('created_at', ascending: false)
           .limit(50);
       if (mounted) {
@@ -50,7 +52,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       await _supabase
           .from('notifications')
           .update({'is_read': true})
-          .eq('user_id', user.id)
+          .eq('user_id', userId)
           .eq('is_read', false);
     } catch (e) {
       debugPrint('notifications load error: $e');

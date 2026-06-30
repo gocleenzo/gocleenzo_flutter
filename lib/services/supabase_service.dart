@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'notification_service.dart';
@@ -6,6 +7,33 @@ import 'notification_service.dart';
 class SupabaseService {
   static final _client = Supabase.instance.client;
   static SupabaseClient get client => _client;
+
+  // Cached app user id (set after Firebase login via edge function)
+  static String? _cachedUserId;
+
+  /// Call this right after a successful Firebase login + edge function
+  /// response, passing the `user_id` returned from the `firebase-auth`
+  /// edge function. Persists it so it survives app restarts.
+  static Future<void> setCachedUserId(String userId) async {
+    _cachedUserId = userId;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('app_user_id', userId);
+  }
+
+  static Future<String?> loadCachedUserId() async {
+    if (_cachedUserId != null) return _cachedUserId;
+    final prefs = await SharedPreferences.getInstance();
+    _cachedUserId = prefs.getString('app_user_id');
+    return _cachedUserId;
+  }
+
+  /// Unified current user id — works whether the session came from
+  /// Supabase auth (legacy) or Firebase auth (current flow).
+  static String? get currentUserId {
+    final supaUser = _client.auth.currentUser;
+    if (supaUser != null) return supaUser.id;
+    return _cachedUserId;
+  }
 
   // ── Auth ────────────────────────────────────────────────────
   static Future<void> sendOtp(String phone) async {
@@ -28,6 +56,8 @@ class SupabaseService {
   static Future<void> signOut() async {
     await NotificationService.clearTokenOnLogout();
     await _client.auth.signOut();
+    await fb.FirebaseAuth.instance.signOut();
+    _cachedUserId = null;
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
   }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/supabase_service.dart';
 
 class SavedAddressesScreen extends StatefulWidget {
   const SavedAddressesScreen({super.key});
@@ -32,9 +33,14 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
     _load();
   }
 
+  Future<String?> _getUserId() async {
+    return await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+  }
+
   Future<void> _load() async {
-    final user = _supabase.auth.currentUser;
-    if (user == null) {
+    final userId = await _getUserId();
+    if (userId == null) {
       if (mounted) context.go('/login');
       return;
     }
@@ -43,7 +49,7 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
       final data = await _supabase
           .from('addresses')
           .select('*')
-          .eq('user_id', user.id)
+          .eq('user_id', userId)
           .eq('is_deleted', false)
           .order('is_default', ascending: false)
           .order('created_at', ascending: true);
@@ -61,14 +67,14 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
   }
 
   Future<void> _setDefault(String id) async {
-    final user = _supabase.auth.currentUser;
-    if (user == null) return;
+    final userId = await _getUserId();
+    if (userId == null) return;
     HapticFeedback.selectionClick();
     try {
       await _supabase
           .from('addresses')
           .update({'is_default': false})
-          .eq('user_id', user.id);
+          .eq('user_id', userId);
       await _supabase
           .from('addresses')
           .update({'is_default': true})

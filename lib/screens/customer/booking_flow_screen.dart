@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../utils/theme.dart';
+import '../../services/supabase_service.dart';
 import 'booking_detail_screen.dart';
 
 class BookingFlowScreen extends StatefulWidget {
@@ -111,7 +112,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   int get _slotsBlocked => (_serviceDurationMins / 60).ceil();
 
-  String? get _userId => _supabase.auth.currentUser?.id;
+  String? _userId;
 
   String get _serviceLabel {
     if (widget.cartItems != null) {
@@ -141,12 +142,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   // ── Load data ────────────────────────────────────────────────
   Future<void> _loadData() async {
-    final user = _supabase.auth.currentUser;
-    if (user == null) { if (mounted) context.go('/login'); return; }
+    _userId = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (_userId == null) { if (mounted) context.go('/login'); return; }
+    final userId = _userId!;
 
     final futures = <Future>[
       _supabase.from('addresses').select('*')
-          .eq('user_id', user.id)
+          .eq('user_id', userId)
           .eq('is_deleted', false),
     ];
     if (widget.serviceId != null) {
@@ -406,8 +409,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
 
     setState(() => _loading = true);
-    final user = _supabase.auth.currentUser;
-    if (user == null) { if (mounted) context.go('/login'); return; }
+    final userId = _userId ?? await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (userId == null) { if (mounted) context.go('/login'); return; }
+    _userId = userId;
 
     final scheduledAt = _isInstant
         ? DateTime.now().add(const Duration(hours: 1)).toUtc()
@@ -418,7 +423,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
     try {
       final bookingPayload = <String, dynamic>{
-        'customer_id':          user.id,
+        'customer_id':          userId,
         'address_id':           _selectedAddressId,
         'scheduled_at':         scheduledAt.toIso8601String(),
         'status':               'pending',

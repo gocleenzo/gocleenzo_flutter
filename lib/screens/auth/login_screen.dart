@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../../services/notification_service.dart';
 import '../../services/supabase_service.dart';
 import '../../utils/theme.dart';
 import '../../widgets/auth_widgets.dart';
@@ -18,21 +20,22 @@ const _cleaningCards = [
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
-
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
 class _LoginScreenState extends State<LoginScreen> {
   final _supabase  = Supabase.instance.client;
+  final _fireAuth  = fb.FirebaseAuth.instance;
   final _phoneCtrl = TextEditingController();
   final _nameCtrl  = TextEditingController();
 
-  String  _step     = 'phone'; // 'phone' → 'otp' → 'profile'
-  String  _otp      = '';
-  String  _gender   = '';
-  bool    _loading  = false;
-  String  _error    = '';
+  String  _step           = 'phone';
+  String  _otp            = '';
+  String  _gender         = '';
+  bool    _loading        = false;
+  String  _error          = '';
+  String? _verificationId;
   String? _userId;
 
   @override
@@ -42,67 +45,153 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  // ── STEP 1 : send OTP ────────────────────────────────────────
+  // ── STEP 1: Send OTP via Firebase ────────────────────────────
   Future<void> _sendOtp() async {
     if (_phoneCtrl.text.length < 10) return;
     setState(() { _loading = true; _error = ''; });
+
     try {
-      await SupabaseService.sendOtp(_phoneCtrl.text);
-      setState(() => _step = 'otp');
-    } catch (_) {
-      setState(() => _error = 'Failed to send OTP. Please try again.');
-    } finally {
-      setState(() => _loading = false);
+      await _fireAuth.verifyPhoneNumber(
+        phoneNumber: '+91${_phoneCtrl.text}',
+        timeout: const Duration(seconds: 60),
+        verificationCompleted: (fb.PhoneAuthCredential credential) async {
+          debugPrint('Auto-verification completed');
+          await _signInWithCredential(credential);
+        },
+        verificationFailed: (fb.FirebaseAuthException e) {
+          debugPrint('Verification failed: ${e.message}');
+          if (mounted) setState(() {
+            _error   = e.message ?? 'Failed to send OTP. Try again.';
+            _loading = false;
+          });
+        },
+        codeSent: (String verificationId, int? resendToken) {
+          debugPrint('OTP sent. verificationId set.');
+          if (mounted) setState(() {
+            _verificationId = verificationId;
+            _step           = 'otp';
+            _loading        = false;
+          });
+        },
+        codeAutoRetrievalTimeout: (String verificationId) {
+          debugPrint('Auto retrieval timeout');
+          if (mounted) setState(() {
+            _verificationId = verificationId;
+          });
+        },
+      );
+    } catch (e) {
+      debugPrint('Send OTP error: $e');
+      if (mounted) setState(() {
+        _error   = 'Failed to send OTP. Please try again.';
+        _loading = false;
+      });
     }
   }
 
-  // ── STEP 2 : verify OTP ──────────────────────────────────────
-  // OTP verification and profile lookup are kept SEPARATE so that a
-  // profile lookup failure (e.g. no row yet for a brand-new user, or an
-  // RLS error) is treated as "new user" instead of "invalid OTP".
+  // ── STEP 2: Verify OTP ────────────────────────────────────────
   Future<void> _verifyOtp() async {
-    if (_otp.length < 6) return;
+    debugPrint('_verifyOtp called. OTP: $_otp, verificationId: $_verificationId');
+    if (_otp.length < 6) {
+      setState(() => _error = 'Please enter the 6-digit OTP');
+      return;
+    }
+    if (_verificationId == null) {
+      setState(() => _error = 'Verification session expired. Please resend OTP.');
+      return;
+    }
     setState(() { _loading = true; _error = ''; });
-
-    // 1) Verify the OTP. A failure here genuinely means a bad code.
-    AuthResponse res;
     try {
-      res = await SupabaseService.verifyOtp(_phoneCtrl.text, _otp);
-    } catch (_) {
-      if (!mounted) return;
-      setState(() { _error = 'Invalid OTP. Please try again.'; _loading = false; });
-      return;
-    }
-
-    final user = res.user;
-    if (user == null) {
-      if (!mounted) return;
-      setState(() { _error = 'Verification failed. Please try again.'; _loading = false; });
-      return;
-    }
-    _userId = user.id;
-
-    // 2) Look up the profile SEPARATELY. Any error here = treat as new user.
-    Map<String, dynamic>? profile;
-    try {
-      profile = await SupabaseService.getUserProfile(user.id);
-    } catch (_) {
-      profile = null; // no profile yet (or RLS block) → treat as new user
-    }
-
-    if (!mounted) return;
-
-    if (profile == null) {
-      // New user → collect name + gender
-      setState(() { _step = 'profile'; _loading = false; });
-    } else {
-      // Existing customer → check if they have a saved address
-      setState(() => _loading = false);
-      await _goToNextScreen(user.id);
+      final credential = fb.PhoneAuthProvider.credential(
+        verificationId: _verificationId!,
+        smsCode:        _otp,
+      );
+      await _signInWithCredential(credential);
+    } on fb.FirebaseAuthException catch (e) {
+      debugPrint('FirebaseAuthException: ${e.code} - ${e.message}');
+      if (mounted) setState(() {
+        _error   = e.code == 'invalid-verification-code'
+            ? 'Invalid OTP. Please try again.'
+            : e.message ?? 'Verification failed.';
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Verify OTP error: $e');
+      if (mounted) setState(() {
+        _error   = 'Something went wrong. Please try again.';
+        _loading = false;
+      });
     }
   }
 
-  // ── STEP 3 : save profile (new users) ────────────────────────
+  // ── Sign in with Firebase → call Edge Function ────────────────
+  Future<void> _signInWithCredential(
+      fb.PhoneAuthCredential credential) async {
+    try {
+      debugPrint('Signing in with credential...');
+      final userCred = await _fireAuth.signInWithCredential(credential);
+      final fireUser = userCred.user;
+      if (fireUser == null) throw Exception('Firebase user is null');
+      debugPrint('Firebase signed in: ${fireUser.uid}');
+
+      final phone = '+91${_phoneCtrl.text}';
+
+      // Call Supabase Edge Function
+      debugPrint('Calling edge function...');
+      final res = await _supabase.functions.invoke(
+        'firebase-auth',
+        body: {
+          'firebase_uid': fireUser.uid,
+          'phone':        phone,
+        },
+      );
+
+      debugPrint('Edge function status: ${res.status}');
+      final data = res.data as Map<String, dynamic>;
+      debugPrint('Edge function response: $data');
+
+      if (!mounted) return;
+
+      if (data['is_new_user'] == true) {
+        debugPrint('New user — going to profile step');
+        setState(() { _step = 'profile'; _loading = false; });
+      } else {
+        debugPrint('Existing user — navigating to services');
+        _userId = data['user_id'] as String?;
+        if (_userId != null) {
+          await SupabaseService.setCachedUserId(_userId!);
+        }
+        await NotificationService.saveTokenAfterLogin();
+        setState(() => _loading = false);
+        // Small delay lets Firebase auth state propagate to the router
+        await Future.delayed(const Duration(milliseconds: 300));
+        debugPrint('About to call context.go(/services). mounted=$mounted');
+        if (mounted) {
+          try {
+            context.go('/services');
+            debugPrint('context.go(/services) call completed without throwing');
+          } catch (navErr, st) {
+            debugPrint('NAVIGATION ERROR: $navErr');
+            debugPrint('Stack: $st');
+          }
+        }
+      }
+    } on fb.FirebaseAuthException catch (e) {
+      debugPrint('Firebase sign in error: ${e.code} - ${e.message}');
+      if (mounted) setState(() {
+        _error   = e.message ?? 'Sign in failed.';
+        _loading = false;
+      });
+    } catch (e) {
+      debugPrint('Sign in error: $e');
+      if (mounted) setState(() {
+        _error   = 'Sign in failed. Please try again.';
+        _loading = false;
+      });
+    }
+  }
+
+  // ── STEP 3: Save profile (new users) ─────────────────────────
   Future<void> _saveProfile() async {
     if (_nameCtrl.text.trim().isEmpty) {
       setState(() => _error = 'Please enter your name');
@@ -110,55 +199,35 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     setState(() { _loading = true; _error = ''; });
     try {
-      await SupabaseService.createUser({
-        'id':        _userId,
+      final phone = '+91${_phoneCtrl.text}';
+      final data  = await _supabase.from('users').insert({
         'full_name': _nameCtrl.text.trim(),
-        'phone':     '+91${_phoneCtrl.text}',
+        'phone':     phone,
         'role':      'customer',
         'gender':    _gender.isEmpty ? null : _gender,
-      });
+      }).select().single();
+
+      _userId = data['id'] as String;
+      await SupabaseService.setCachedUserId(_userId!);
+      await NotificationService.saveTokenAfterLogin();
+
       if (!mounted) return;
-      // Brand new user — definitely no address yet
       context.go('/location-gate');
-    } catch (_) {
+    } catch (e) {
+      debugPrint('Save profile error: $e');
       setState(() => _error = 'Something went wrong. Please try again.');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // ── Check address → route accordingly ────────────────────────
-  Future<void> _goToNextScreen(String userId) async {
-    try {
-      final addresses = await _supabase
-          .from('addresses')
-          .select('id')
-          .eq('user_id', userId)
-          .limit(1);
-
-      if (!mounted) return;
-
-      if ((addresses as List).isEmpty) {
-        // No saved address → set location first
-        context.go('/location-gate');
-      } else {
-        // Has address → go to services
-        context.go('/services');
-      }
-    } catch (_) {
-      // On error just go to services
-      if (mounted) context.go('/services');
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────
+  // ── BUILD ─────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
       body: Column(children: [
 
-        // ── Scrolling cards hero ──────────────────────────────
         SizedBox(
           height: MediaQuery.of(context).size.height * 0.45,
           child: Stack(children: [
@@ -179,7 +248,6 @@ class _LoginScreenState extends State<LoginScreen> {
           ]),
         ),
 
-        // ── Form area ─────────────────────────────────────────
         Expanded(
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -197,8 +265,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text('MOBILE NUMBER',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
+                      style: TextStyle(fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.gray400,
+                          letterSpacing: 1.5)),
                 ),
                 const SizedBox(height: 8),
                 PhoneInput(controller: _phoneCtrl, onSubmit: _sendOtp),
@@ -221,25 +291,55 @@ class _LoginScreenState extends State<LoginScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: GestureDetector(
-                    onTap: () => setState(() { _step = 'phone'; _error = ''; }),
-                    child: Row(mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.arrow_back_ios, size: 16, color: AppColors.cyan),
+                    onTap: () => setState(
+                        () { _step = 'phone'; _error = ''; _verificationId = null; }),
+                    child: Row(mainAxisSize: MainAxisSize.min,
+                        children: [
+                      Icon(Icons.arrow_back_ios,
+                          size: 16, color: AppColors.cyan),
                       Text('Back', style: TextStyle(
-                          color: AppColors.cyan, fontWeight: FontWeight.w700)),
+                          color: AppColors.cyan,
+                          fontWeight: FontWeight.w700)),
                     ]),
                   ),
                 ),
                 const SizedBox(height: 16),
                 Text('Enter the 6-digit code sent to',
-                    style: TextStyle(color: AppColors.gray500, fontSize: 13)),
+                    style: TextStyle(
+                        color: AppColors.gray500, fontSize: 13)),
                 const SizedBox(height: 4),
                 Text('+91 ${_phoneCtrl.text}',
                     style: TextStyle(color: AppColors.cyan,
                         fontWeight: FontWeight.w900, fontSize: 14)),
+                const SizedBox(height: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF8E1),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                        color: const Color(0xFFFFCC02)
+                            .withValues(alpha: 0.5))),
+                  child: const Row(
+                      mainAxisSize: MainAxisSize.min, children: [
+                    Text('🔥', style: TextStyle(fontSize: 12)),
+                    SizedBox(width: 4),
+                    Text('Verified by Firebase',
+                        style: TextStyle(
+                            color: Color(0xFFE65100),
+                            fontSize: 10,
+                            fontWeight: FontWeight.w700)),
+                  ]),
+                ),
                 const SizedBox(height: 16),
                 OtpInputRow(
-                  onCompleted: (v) { setState(() => _otp = v); _verifyOtp(); },
-                  onChange:    (v) => setState(() => _otp = v),
+                  onCompleted: (v) {
+                    debugPrint('OTP completed: $v');
+                    setState(() => _otp = v);
+                    _verifyOtp();
+                  },
+                  onChange: (v) => setState(() => _otp = v),
                 ),
                 const SizedBox(height: 12),
                 ErrorBox(message: _error),
@@ -252,10 +352,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 8),
                 TextButton(
-                  onPressed: _sendOtp,
+                  onPressed: _loading ? null : _sendOtp,
                   child: Text('Resend OTP',
                       style: TextStyle(
-                          color: AppColors.cyan, fontWeight: FontWeight.w600)),
+                          color: AppColors.cyan,
+                          fontWeight: FontWeight.w600)),
                 ),
               ],
 
@@ -270,8 +371,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text('FULL NAME',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
+                      style: TextStyle(fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.gray400,
+                          letterSpacing: 1.5)),
                 ),
                 const SizedBox(height: 8),
                 _nameField(),
@@ -279,8 +382,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text('GENDER (optional)',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                          color: AppColors.gray400, letterSpacing: 1.5)),
+                      style: TextStyle(fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                          color: AppColors.gray400,
+                          letterSpacing: 1.5)),
                 ),
                 const SizedBox(height: 10),
                 Row(
@@ -303,13 +408,17 @@ class _LoginScreenState extends State<LoginScreen> {
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
                             color: selected
-                                ? AppColors.cyan : const Color(0xFFDDE3EB),
+                                ? AppColors.cyan
+                                : const Color(0xFFDDE3EB),
                             width: selected ? 2.0 : 1.5,
                           ),
                         ),
                         child: Text(g, style: TextStyle(
-                          color: selected ? AppColors.cyan : const Color(0xFF64748B),
-                          fontSize: 13, fontWeight: FontWeight.w700,
+                          color: selected
+                              ? AppColors.cyan
+                              : const Color(0xFF64748B),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
                         )),
                       ),
                     );
@@ -324,7 +433,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     label: 'Continue',
                     icon: Icons.arrow_forward,
                     loading: _loading,
-                    onPressed: val.text.trim().isNotEmpty ? _saveProfile : null,
+                    onPressed: val.text.trim().isNotEmpty
+                        ? _saveProfile : null,
                   ),
                 ),
               ],
@@ -333,15 +443,18 @@ class _LoginScreenState extends State<LoginScreen> {
               RichText(
                 textAlign: TextAlign.center,
                 text: TextSpan(
-                  style: TextStyle(color: AppColors.gray400, fontSize: 11),
+                  style: TextStyle(
+                      color: AppColors.gray400, fontSize: 11),
                   children: [
                     const TextSpan(text: 'By proceeding, I accept the '),
                     WidgetSpan(
                       child: GestureDetector(
                         onTap: () => context.push('/terms'),
                         child: Text('Terms of use',
-                            style: TextStyle(color: AppColors.cyan,
-                                fontWeight: FontWeight.w600, fontSize: 11)),
+                            style: TextStyle(
+                                color: AppColors.cyan,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 11)),
                       ),
                     ),
                     const TextSpan(text: ' & Privacy policy'),
@@ -376,7 +489,8 @@ class _LoginScreenState extends State<LoginScreen> {
             border: InputBorder.none,
             hintText: 'Your full name',
             hintStyle: TextStyle(
-                color: AppColors.cyanLight, fontWeight: FontWeight.w700),
+                color: AppColors.cyanLight,
+                fontWeight: FontWeight.w700),
             isDense: true,
             contentPadding: EdgeInsets.zero,
           ),
