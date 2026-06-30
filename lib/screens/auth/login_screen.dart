@@ -51,7 +51,6 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _loading = true; _error = ''; });
 
     try {
-<<<<<<< HEAD
       await _fireAuth.verifyPhoneNumber(
         phoneNumber: '+91${_phoneCtrl.text}',
         timeout: const Duration(seconds: 60),
@@ -87,15 +86,6 @@ class _LoginScreenState extends State<LoginScreen> {
         _error   = 'Failed to send OTP. Please try again.';
         _loading = false;
       });
-=======
-      await SupabaseService.sendOtp(_phoneCtrl.text);
-      setState(() => _step = 'otp');
-    } catch (e) {
-  debugPrint('===> OTP ERROR: $e');
-  setState(() => _error = 'Failed to send OTP. Please try again.');
-} finally {
-      setState(() => _loading = false);
->>>>>>> 7b7a43646a02ef1a0f3ff5b2e13b499a96512c0f
     }
   }
 
