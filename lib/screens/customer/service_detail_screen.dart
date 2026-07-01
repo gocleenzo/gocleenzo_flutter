@@ -83,6 +83,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   static const _cyanDk = Color(0xFF0891B2);
   static const _cyanLt = Color(0xFFCFFAFE);
   static const _cyanXl = Color(0xFFECFEFF);
+  static const _cyanBg2 = Color(0xFFCFFAFE);
   static const _ink    = Color(0xFF0F172A);
   static const _muted  = Color(0xFF64748B);
   static const _faint  = Color(0xFF94A3B8);
@@ -104,6 +105,33 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     'Pre-Party Express Cleaning': '🎉',
     'After-Party Cleanup':        '🧽',
   };
+
+  // ── Exact service.id → local asset mapping (reliable) ─────────
+  // Same mapping used on the Services list screen, so images stay
+  // consistent between the grid/cards and this detail screen.
+  static const Map<String, String> _assetMap = {
+    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning.png',  // Bathroom Cleaning
+    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe.png',           // Wardrobe Cleaning
+    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning.png', // Full House Cleaning
+    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning.png',       // Fan Cleaning
+    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping.png',     // Dusting & Wiping
+    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping.png',   // Sweeping & Mopping
+    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning.png',    // Refrigerator Cleaning
+    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning.png',   // Kitchen Cleaning
+    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning.png',  // Utensil Cleaning
+    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet.png',            // Kitchen Cabinet Cleaning
+    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning.png',   // Balcony Cleaning
+    'c104cecf-dc59-4514-bbaa-33301da6db1e': 'assets/services/after.png',              // After-Party Cleanup
+    '44a7c787-41f1-4ed9-b8e6-5066dcc009ce': 'assets/services/pre.png',                // Pre-Party Cleaning
+  };
+
+  /// Returns the local asset path for a service by exact id match.
+  /// Returns null if the id isn't in the map.
+  String? _assetFor(Map<String, dynamic> svc) {
+    final id = svc['id'] as String?;
+    if (id == null) return null;
+    return _assetMap[id];
+  }
 
   // ── Computed values ─────────────────────────────────────────────
   Map<String, dynamic> get _pricing {
@@ -300,38 +328,21 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
         title: const SizedBox.shrink(),
         background: Stack(fit: StackFit.expand, children: [
 
-          // Background wash
-          Container(color: const Color(0xFFECFEFF)),
-          Positioned(top: -80, right: -80,
-            child: Container(width: 280, height: 280,
-              decoration: const BoxDecoration(
-                  color: Color(0xFFCFFAFE), shape: BoxShape.circle))),
-          Positioned(bottom: -40, left: -60,
-            child: Container(width: 200, height: 200,
-              decoration: const BoxDecoration(
-                  color: Color(0xFFBAE6FD), shape: BoxShape.circle))),
+          // Background image (network image_url → local asset → gradient+emoji)
+          _heroImage(svc, emoji),
 
-          // Ghost emoji
-          Positioned(right: 10, bottom: 70,
-            child: Text(emoji, style: TextStyle(
-                fontSize: 130,
-                color: Colors.white.withValues(alpha: 0.18)))),
-
-          // Main emoji in glowing circle
-          Positioned(right: 24, top: 72,
-            child: Container(
-              width: 108, height: 108,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(color: _cyan.withValues(alpha: 0.22),
-                      blurRadius: 30, spreadRadius: 4),
-                  BoxShadow(color: _cyan.withValues(alpha: 0.08),
-                      blurRadius: 60, spreadRadius: 12),
-                ]),
-              child: Center(child: Text(emoji,
-                  style: const TextStyle(fontSize: 54))))),
+          // Soft scrim so the white card + top buttons stay legible
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withValues(alpha: 0.18),
+                  Colors.transparent,
+                  Colors.white,
+                ],
+                stops: const [0.0, 0.42, 0.78])),
+          ),
 
           // Bottom white card
           Positioned(left: 0, right: 0, bottom: 0,
@@ -416,6 +427,66 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
         ]),
       ),
     );
+  }
+
+  /// Hero background priority:
+  /// 1. Supabase `image_url` (network image) if present
+  /// 2. Local asset matched by exact service.id (assets/services/...)
+  /// 3. Gradient wash + giant emoji (original placeholder look)
+  Widget _heroImage(Map<String, dynamic> svc, String emoji) {
+    final url = (svc['image_url'] as String?)?.trim();
+
+    Widget placeholder() => Stack(fit: StackFit.expand, children: [
+      Container(color: const Color(0xFFECFEFF)),
+      Positioned(top: -80, right: -80,
+        child: Container(width: 280, height: 280,
+          decoration: const BoxDecoration(
+              color: Color(0xFFCFFAFE), shape: BoxShape.circle))),
+      Positioned(bottom: -40, left: -60,
+        child: Container(width: 200, height: 200,
+          decoration: const BoxDecoration(
+              color: Color(0xFFBAE6FD), shape: BoxShape.circle))),
+      Positioned(right: 10, bottom: 70,
+        child: Text(emoji, style: TextStyle(
+            fontSize: 130,
+            color: Colors.white.withValues(alpha: 0.18)))),
+      Positioned(right: 24, top: 72,
+        child: Container(
+          width: 108, height: 108,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(color: _cyan.withValues(alpha: 0.22),
+                  blurRadius: 30, spreadRadius: 4),
+              BoxShadow(color: _cyan.withValues(alpha: 0.08),
+                  blurRadius: 60, spreadRadius: 12),
+            ]),
+          child: Center(child: Text(emoji,
+              style: const TextStyle(fontSize: 54))))),
+    ]);
+
+    if (url != null && url.isNotEmpty) {
+      return Image.network(url, fit: BoxFit.cover,
+        loadingBuilder: (ctx, child, prog) =>
+            prog == null ? child : Container(color: const Color(0xFFECFEFF)),
+        errorBuilder: (ctx, e, s) {
+          final asset = _assetFor(svc);
+          if (asset != null) {
+            return Image.asset(asset, fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => placeholder());
+          }
+          return placeholder();
+        });
+    }
+
+    final asset = _assetFor(svc);
+    if (asset != null) {
+      return Image.asset(asset, fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => placeholder());
+    }
+
+    return placeholder();
   }
 
   Widget _chip(String label, Color bg, Color borderColor, Color textColor) =>

@@ -7,6 +7,7 @@ environment:
   sdk: '>=3.0.0 <4.0.0'
 
 dependencies:
+  
   flutter:
     sdk: flutter
 
@@ -77,4 +78,16 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo.png
-    
+    - assets/services/after.png
+    - assets/services/fan-cleaning.png
+    - assets/services/balcony-cleaning.png
+    - assets/services/fridge-cleaning.png
+    - assets/services/bathroom-cleaning.png
+    - assets/services/full-home-cleaning.png
+    - assets/services/wardrobe.png
+    - assets/services/Utensils-cleaning.png
+    - assets/services/cabinet.png
+    - assets/services/pre.png
+    - assets/services/dusting-wiping.png
+    - assets/services/kitchen-cleaning.png
+    - assets/services/sweeping-mopping.png

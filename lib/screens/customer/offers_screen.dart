@@ -13,8 +13,6 @@ class OffersScreen extends StatefulWidget {
 class _OffersScreenState extends State<OffersScreen>
     with TickerProviderStateMixin {
   final _supabase  = Supabase.instance.client;
-  final _promoCtrl = TextEditingController();
-  final _focusNode = FocusNode();
 
   late AnimationController _headerAnimCtrl;
   late AnimationController _shimmerCtrl;
@@ -26,10 +24,7 @@ class _OffersScreenState extends State<OffersScreen>
   List<Map<String, dynamic>> _usedPromos   = [];
   Set<String>                _usedPromoIds = {};
   String? _copiedCode;
-  String? _promoMsg;
-  bool    _promoSuccess = false;
   bool    _loading      = true;
-  bool    _applying     = false;
 
   String? get _userId => _supabase.auth.currentUser?.id;
 
@@ -54,8 +49,6 @@ class _OffersScreenState extends State<OffersScreen>
 
   @override
   void dispose() {
-    _promoCtrl.dispose();
-    _focusNode.dispose();
     _headerAnimCtrl.dispose();
     _shimmerCtrl.dispose();
     super.dispose();
@@ -193,103 +186,6 @@ class _OffersScreenState extends State<OffersScreen>
     });
   }
 
-  // ── Apply ─────────────────────────────────────────────────────
-
-  Future<void> _applyPromo() async {
-    final input = _promoCtrl.text.trim().toUpperCase();
-    if (input.isEmpty) return;
-    _focusNode.unfocus();
-    setState(() { _applying = true; _promoMsg = null; });
-
-    try {
-      final result = await _supabase
-          .from('promo_codes')
-          .select('*')
-          .eq('code', input)
-          .maybeSingle();
-
-      if (result == null) {
-        _showMsg(false, '❌ Invalid promo code. Please check and try again.'); return;
-      }
-      if (result['is_active'] != true) {
-        _showMsg(false, '⏸ This promo code is currently paused.'); return;
-      }
-      if (_isNotStarted(result)) {
-        final d = DateTime.parse(result['valid_from'].toString());
-        _showMsg(false, '⏰ This promo starts on ${_dateLabel(d)}. Check back then!'); return;
-      }
-      if (_isExpired(result)) {
-        _showMsg(false, '⏰ This promo code has expired.'); return;
-      }
-      if (_isExhausted(result)) {
-        _showMsg(false, '✕ This promo code has been fully used up.'); return;
-      }
-
-      if (_userId != null) {
-        final existing = await _supabase
-            .from('promo_usage')
-            .select('id')
-            .eq('promo_id', result['id'].toString())
-            .eq('user_id', _userId!)
-            .maybeSingle();
-
-        if (existing != null) {
-          _showMsg(false,
-            '🚫 You have already used this promo code.\nEach code can only be used once per account.');
-          return;
-        }
-      }
-
-      if (_userId != null) {
-        await _supabase.from('promo_usage').insert({
-          'promo_id': result['id'].toString(),
-          'user_id':  _userId!,
-        });
-        final currentUsed = (result['used_count'] as num? ?? 0).toInt();
-        await _supabase
-            .from('promo_codes')
-            .update({ 'used_count': currentUsed + 1 })
-            .eq('id', result['id'].toString());
-        setState(() => _usedPromoIds.add(result['id'].toString()));
-      }
-
-      final discType  = result['discount_type'] as String? ?? 'percent';
-      final discValue = (result['discount_value'] as num? ?? 0).toDouble();
-      final minOrder  = result['min_order_amount'] != null
-          ? (result['min_order_amount'] as num).toDouble() : null;
-      final maxDisc   = result['max_discount_amount'] != null
-          ? (result['max_discount_amount'] as num).toDouble() : null;
-      final desc      = result['description'] as String?;
-
-      String discLabel = discType == 'percent'
-          ? '${discValue.toStringAsFixed(0)}% off'
-          : '₹${discValue.toStringAsFixed(0)} off';
-      if (maxDisc != null && discType == 'percent')
-        discLabel += ' (max ₹${maxDisc.toStringAsFixed(0)})';
-
-      String msg = (desc != null && desc.isNotEmpty)
-          ? '🎉 $desc'
-          : '🎉 "$input" applied! $discLabel';
-      if (minOrder != null) msg += '\n📋 Min order: ₹${minOrder.toStringAsFixed(0)}';
-
-      _showMsg(true, msg);
-      _load();
-    } catch (e) {
-      _showMsg(false, '❌ Could not verify code. Check your connection.');
-    }
-  }
-
-  void _showMsg(bool success, String msg) {
-    if (mounted) setState(() {
-      _promoSuccess = success;
-      _promoMsg     = msg;
-      _applying     = false;
-    });
-    Future.delayed(const Duration(seconds: 5), () {
-      if (mounted) setState(() => _promoMsg = null);
-    });
-  }
-
   // ── Build ─────────────────────────────────────────────────────
 
   @override
@@ -308,8 +204,6 @@ class _OffersScreenState extends State<OffersScreen>
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
                         sliver: SliverList(
                           delegate: SliverChildListDelegate([
-                            _buildPromoInput(),
-                            const SizedBox(height: 20),
                             if (_promos.isEmpty && _usedPromos.isEmpty)
                               _buildEmptyState()
                             else
@@ -459,173 +353,6 @@ class _OffersScreenState extends State<OffersScreen>
     );
   }
 
-  // ── Promo Input ───────────────────────────────────────────────
-
-  Widget _buildPromoInput() {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: const Color(0xFFE0F7FF), width: 1.5),
-        boxShadow: [
-          BoxShadow(
-            color: const Color(0xFF06B6D4).withOpacity(0.08),
-            blurRadius: 18, offset: const Offset(0, 5)),
-        ],
-      ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        // Label row
-        Row(children: [
-          Container(
-            width: 36, height: 36,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: const Center(
-              child: Text('✍️', style: TextStyle(fontSize: 18))),
-          ),
-          const SizedBox(width: 10),
-          const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Have a promo code?',
-              style: TextStyle(color: Color(0xFF0E4F5C),
-                  fontSize: 14, fontWeight: FontWeight.w800)),
-            Text('Enter your code below to unlock savings',
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 11)),
-          ]),
-        ]),
-        const SizedBox(height: 14),
-        // Input + button
-        Row(children: [
-          Expanded(
-            child: TextField(
-              controller: _promoCtrl,
-              focusNode: _focusNode,
-              textCapitalization: TextCapitalization.characters,
-              onSubmitted: (_) => _applyPromo(),
-              onChanged: (_) => setState(() {}),
-              style: const TextStyle(
-                color: Color(0xFF0891B2),
-                fontWeight: FontWeight.w800,
-                letterSpacing: 2.5,
-                fontSize: 15,
-              ),
-              decoration: InputDecoration(
-                hintText: 'e.g. CLEAN20',
-                hintStyle: const TextStyle(
-                  color: Color(0xFFBAE6FD),
-                  fontWeight: FontWeight.normal,
-                  letterSpacing: 0, fontSize: 14,
-                ),
-                filled: true,
-                fillColor: const Color(0xFFECFEFF),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xFFBAE6FD))),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xFFBAE6FD))),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(
-                      color: Color(0xFF06B6D4), width: 1.5)),
-                contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16, vertical: 14),
-                suffixIcon: _promoCtrl.text.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.close,
-                            size: 18, color: Color(0xFF9CA3AF)),
-                        onPressed: () {
-                          _promoCtrl.clear();
-                          setState(() { _promoMsg = null; });
-                        })
-                    : null,
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
-          GestureDetector(
-            onTap: _applying ? null : _applyPromo,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              height: 50,
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: _applying
-                      ? [const Color(0xFF67E8F9), const Color(0xFF22D3EE)]
-                      : [const Color(0xFF0891B2), const Color(0xFF06B6D4)]),
-                borderRadius: BorderRadius.circular(16),
-                boxShadow: [BoxShadow(
-                  color: const Color(0xFF06B6D4).withOpacity(0.35),
-                  blurRadius: 12, offset: const Offset(0, 4))],
-              ),
-              child: Center(
-                child: _applying
-                    ? const SizedBox(width: 18, height: 18,
-                        child: CircularProgressIndicator(
-                            color: Colors.white, strokeWidth: 2.5))
-                    : const Text('Apply',
-                        style: TextStyle(color: Colors.white,
-                            fontWeight: FontWeight.w800, fontSize: 14)),
-              ),
-            ),
-          ),
-        ]),
-
-        // Result message
-        AnimatedSize(
-          duration: const Duration(milliseconds: 280),
-          child: _promoMsg != null
-              ? Container(
-                  margin: const EdgeInsets.only(top: 12),
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 11),
-                  decoration: BoxDecoration(
-                    color: _promoSuccess
-                        ? const Color(0xFFECFDF5)
-                        : const Color(0xFFFEF2F2),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: _promoSuccess
-                          ? const Color(0xFF6EE7B7)
-                          : const Color(0xFFFCA5A5)),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        _promoSuccess
-                            ? Icons.check_circle_outline_rounded
-                            : Icons.error_outline_rounded,
-                        color: _promoSuccess
-                            ? const Color(0xFF059669)
-                            : const Color(0xFFDC2626),
-                        size: 16,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(_promoMsg!,
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: _promoSuccess
-                                ? const Color(0xFF059669)
-                                : const Color(0xFFDC2626),
-                            height: 1.5,
-                          )),
-                      ),
-                    ],
-                  ),
-                )
-              : const SizedBox.shrink(),
-        ),
-      ]),
-    );
-  }
-
   // ── Promo List ────────────────────────────────────────────────
 
   List<Widget> _buildPromoList() {
@@ -648,11 +375,6 @@ class _OffersScreenState extends State<OffersScreen>
               usedByMe:       false,
               copiedCode:     _copiedCode,
               onCopy:         _copyCode,
-              onTapApply: () {
-                _promoCtrl.text = p['code'] as String;
-                setState(() {});
-                _applyPromo();
-              },
             ),
           ),
         ));
@@ -678,7 +400,6 @@ class _OffersScreenState extends State<OffersScreen>
                 usedByMe:       true,
                 copiedCode:     null,
                 onCopy:         (_) async {},
-                onTapApply:     () {},
               ),
             ),
           ),
@@ -786,7 +507,6 @@ class _PromoCard extends StatelessWidget {
   final bool    usedByMe;
   final String? copiedCode;
   final Future<void> Function(String) onCopy;
-  final VoidCallback onTapApply;
 
   const _PromoCard({
     required this.promo,
@@ -797,7 +517,6 @@ class _PromoCard extends StatelessWidget {
     required this.usedByMe,
     required this.copiedCode,
     required this.onCopy,
-    required this.onTapApply,
   });
 
   @override
@@ -981,7 +700,7 @@ class _PromoCard extends StatelessWidget {
 
                     const SizedBox(height: 10),
 
-                    // Code chip + buttons
+                    // Code chip + copy button
                     Row(children: [
                       Flexible(
                         child: Container(
@@ -1046,26 +765,6 @@ class _PromoCard extends StatelessWidget {
                                   fontSize: 11,
                                   fontWeight: FontWeight.w700)),
                             ]),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        // Apply
-                        GestureDetector(
-                          onTap: onTapApply,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 13, vertical: 6),
-                            decoration: BoxDecoration(
-                              gradient: const LinearGradient(colors: [
-                                Color(0xFF0891B2), Color(0xFF06B6D4)]),
-                              borderRadius: BorderRadius.circular(10),
-                              boxShadow: [BoxShadow(
-                                color: const Color(0xFF06B6D4).withOpacity(0.35),
-                                blurRadius: 8, offset: const Offset(0, 3))],
-                            ),
-                            child: const Text('Apply',
-                              style: TextStyle(color: Colors.white,
-                                  fontSize: 11, fontWeight: FontWeight.w800)),
                           ),
                         ),
                       ],
