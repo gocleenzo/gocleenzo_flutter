@@ -17,35 +17,62 @@ class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
   late AnimationController _ctrl;
   late Animation<double> _scale;
-  late Animation<double> _opacity;
-  late Animation<double> _fadeOut;
+  late Animation<double> _wordOpacity;
+  late Animation<double> _entranceOpacity;
+
+  // Total splash animation budget: 2500ms here + 500ms for the
+  // router's zoom-in page transition on the next screen = 3000ms.
+  static const _totalDuration = Duration(milliseconds: 2500);
 
   @override
   void initState() {
     super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2800),
+    _ctrl = AnimationController(vsync: this, duration: _totalDuration);
+
+    // Fades the wordmark in right at the start (pop-in).
+    _entranceOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _ctrl,
+        curve: const Interval(0.0, 0.10, curve: Curves.easeIn),
+      ),
     );
 
-    _scale = Tween<double>(begin: 0.25, end: 1.0).animate(
+    // Fades the wordmark OUT only during the final part of the zoom,
+    // so it dissolves as it grows past the edges of the screen.
+    _wordOpacity = Tween<double>(begin: 1.0, end: 0.0).animate(
       CurvedAnimation(
         parent: _ctrl,
-        curve: const Interval(0.04, 0.5, curve: Curves.easeOutExpo),
+        curve: const Interval(0.85, 1.0, curve: Curves.easeIn),
       ),
     );
-    _opacity = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(
-        parent: _ctrl,
-        curve: const Interval(0.04, 0.25, curve: Curves.easeIn),
+
+    // ONE continuous scale motion for the whole splash, in four
+    // stages (weights are fractions of the 2500ms duration):
+    //   1. Pop in with a slight springy overshoot   (0%   -> 15%,  375ms)
+    //   2. Settle back down to exactly normal size   (15%  -> 20%,  125ms)
+    //   3. Hold steady at normal size                (20%  -> 55%,  875ms)
+    //   4. Rapid accelerating zoom out to fill screen (55%  -> 100%, 1125ms)
+    _scale = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween(begin: 0.4, end: 1.06)
+            .chain(CurveTween(curve: Curves.easeOutBack)),
+        weight: 15,
       ),
-    );
-    _fadeOut = Tween<double>(begin: 1.0, end: 0.0).animate(
-      CurvedAnimation(
-        parent: _ctrl,
-        curve: const Interval(0.82, 1.0, curve: Curves.easeIn),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.06, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 5,
       ),
-    );
+      TweenSequenceItem(
+        tween: ConstantTween(1.0),
+        weight: 35,
+      ),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.0, end: 9.0)
+            .chain(CurveTween(curve: Curves.easeInExpo)),
+        weight: 45,
+      ),
+    ]).animate(_ctrl);
 
     _ctrl.forward();
     _ctrl.addStatusListener((status) {
@@ -128,81 +155,13 @@ class _SplashScreenState extends State<SplashScreen>
           animation: _ctrl,
           builder: (_, __) {
             return Opacity(
-              opacity: _fadeOut.value,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Opacity(
-                    opacity: _opacity.value,
-                    child: Transform.scale(
-                      scale: _scale.value,
-                      child: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          Row(
-                            mainAxisSize: MainAxisSize.min,
-                            crossAxisAlignment: CrossAxisAlignment.baseline,
-                            textBaseline: TextBaseline.alphabetic,
-                            children: [
-                              Text(
-                                'Cleen',
-                                style: GoogleFonts.nunito(
-                                  fontSize: 64,
-                                  fontWeight: FontWeight.w900,
-                                  fontStyle: FontStyle.italic,
-                                  color: AppColors.navy,
-                                  letterSpacing: -1,
-                                  height: 1,
-                                ),
-                              ),
-                              Text(
-                                'zo',
-                                style: GoogleFonts.nunito(
-                                  fontSize: 64,
-                                  fontWeight: FontWeight.w900,
-                                  fontStyle: FontStyle.italic,
-                                  color: Colors.white,
-                                  letterSpacing: -1,
-                                  height: 1,
-                                ),
-                              ),
-                            ],
-                          ),
-                          Positioned(
-                            top: -8,
-                            right: -18,
-                            child: Text(
-                              '✦',
-                              style: TextStyle(
-                                fontSize: 22,
-                                color: Colors.white,
-                                fontWeight: FontWeight.w900,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Opacity(
-                    opacity: _opacity.value,
-                    child: Text(
-                      'CLEAN HOME. HAPPY YOU',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: AppColors.navy.withOpacity(0.8),
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 3.0,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  Opacity(
-                    opacity: _opacity.value,
-                    child: const _PulsingDots(),
-                  ),
-                ],
+              opacity: _entranceOpacity.value * _wordOpacity.value,
+              child: Transform.scale(
+                scale: _scale.value,
+                // Entire wordmark + sparkle is ONE widget under a
+                // single Transform.scale — nothing animates
+                // independently, so it can never look scattered.
+                child: const _CleenzoWordmark(),
               ),
             );
           },
@@ -212,63 +171,102 @@ class _SplashScreenState extends State<SplashScreen>
   }
 }
 
-class _PulsingDots extends StatefulWidget {
-  const _PulsingDots();
+/// The "Cleenzo✦" wordmark — white Montserrat Bold text with the "zo"
+/// in #001C42, plus a gently twinkling sparkle. No image asset, no
+/// logo file.
+class _CleenzoWordmark extends StatefulWidget {
+  const _CleenzoWordmark();
 
   @override
-  State<_PulsingDots> createState() => _PulsingDotsState();
+  State<_CleenzoWordmark> createState() => _CleenzoWordmarkState();
 }
 
-class _PulsingDotsState extends State<_PulsingDots>
-    with TickerProviderStateMixin {
-  late List<AnimationController> _ctrls;
+class _CleenzoWordmarkState extends State<_CleenzoWordmark>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _twinkleCtrl;
+  late Animation<double> _twinkleScale;
+  late Animation<double> _twinkleOpacity;
+
+  static const _zoColor = Color(0xFF001C42);
 
   @override
   void initState() {
     super.initState();
-    _ctrls = List.generate(3, (i) {
-      final c = AnimationController(
-        vsync: this,
-        duration: const Duration(milliseconds: 1100),
-      );
-      Future.delayed(Duration(milliseconds: i * 200), () {
-        if (mounted) c.repeat(reverse: true);
-      });
-      return c;
-    });
+    _twinkleCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+
+    _twinkleScale = Tween<double>(begin: 0.85, end: 1.15).animate(
+      CurvedAnimation(parent: _twinkleCtrl, curve: Curves.easeInOut),
+    );
+    _twinkleOpacity = Tween<double>(begin: 0.55, end: 1.0).animate(
+      CurvedAnimation(parent: _twinkleCtrl, curve: Curves.easeInOut),
+    );
   }
 
   @override
   void dispose() {
-    for (final c in _ctrls) {
-      c.dispose();
-    }
+    _twinkleCtrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: List.generate(3, (i) {
-        return AnimatedBuilder(
-          animation: _ctrls[i],
-          builder: (_, __) {
-            final v = _ctrls[i].value;
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 3.5),
-              width: 7,
-              height: 7,
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.5 + 0.5 * v),
-                shape: BoxShape.circle,
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            Text(
+              'Cleen',
+              style: GoogleFonts.montserrat(
+                fontSize: 64,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+                letterSpacing: -0.5,
+                height: 1,
               ),
-              transform: Matrix4.identity()..scale(1.0 + 0.6 * v),
-              transformAlignment: Alignment.center,
-            );
-          },
-        );
-      }),
+            ),
+            Text(
+              'zo',
+              style: GoogleFonts.montserrat(
+                fontSize: 64,
+                fontWeight: FontWeight.bold,
+                color: _zoColor,
+                letterSpacing: -0.5,
+                height: 1,
+              ),
+            ),
+          ],
+        ),
+        Positioned(
+          top: -6,
+          right: -20,
+          child: AnimatedBuilder(
+            animation: _twinkleCtrl,
+            builder: (_, __) {
+              return Opacity(
+                opacity: _twinkleOpacity.value,
+                child: Transform.scale(
+                  scale: _twinkleScale.value,
+                  child: const Text(
+                    '✦',
+                    style: TextStyle(
+                      fontSize: 24,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

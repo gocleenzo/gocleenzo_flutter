@@ -18,7 +18,7 @@ dependencies:
   http: ^1.2.0
 
   # Navigation
-  go_router: ^13.0.0
+  go_router: ^17.3.0
 
   # State Management
   flutter_riverpod: ^2.5.1
@@ -37,7 +37,7 @@ dependencies:
 
   # Utils
   intl: ^0.19.0
-  url_launcher: ^6.3.0
+  url_launcher: ^6.3.1
   pin_code_fields: ^8.0.1
 
   cupertino_icons: ^1.0.6
@@ -91,3 +91,6 @@ flutter:
     - assets/services/dusting-wiping.png
     - assets/services/kitchen-cleaning.png
     - assets/services/sweeping-mopping.png
+    - assets/banners/offer1.png
+    - assets/banners/offer2.png
+    - assets/banners/offer3.png

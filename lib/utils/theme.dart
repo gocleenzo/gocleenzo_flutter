@@ -3,10 +3,10 @@ import 'package:google_fonts/google_fonts.dart';
 
 class AppColors {
   // Brand
-  static const cyan = Color(0xFF06B6D4);
-  static const cyanLight = Color(0xFFA5F3FC);
+  static const cyan = Color(0xFF00B1FC);
+  static const cyanLight = Color(0xFF00B1FC);
   static const cyanBg = Color(0xFFF0FDFF);
-  static const cyanDark = Color(0xFF0891B2);
+  static const cyanDark = Color(0xFF00B1FC);
   static const navy = Color(0xFF0D2D5E);
 
   // Status

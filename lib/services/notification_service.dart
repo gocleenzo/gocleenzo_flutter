@@ -1,11 +1,17 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class NotificationService {
   static final _messaging = FirebaseMessaging.instance;
   static final _supabase  = Supabase.instance.client;
+
+  // Store router context for navigation on notification tap.
+  // Call NotificationService.setContext(context) from your root widget.
+  static BuildContext? _context;
+  static void setContext(BuildContext context) => _context = context;
 
   // Local notifications plugin
   static final _localNotifications = FlutterLocalNotificationsPlugin();
@@ -56,27 +62,27 @@ class NotificationService {
 
     // 6. Handle notification tap when app is in background
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      debugPrint('Notification tapped: ${message.data}');
-      _handleMessageTap(message);
+      debugPrint('Notification tapped (background): ${message.data}');
+      _handleMessageTap(message.data);
     });
 
     // 7. Check if app was opened from a terminated notification
     final initial = await _messaging.getInitialMessage();
     if (initial != null) {
       debugPrint('App opened from notification: ${initial.data}');
-      _handleMessageTap(initial);
+      // Delay so router is ready before navigating
+      await Future.delayed(const Duration(milliseconds: 800));
+      _handleMessageTap(initial.data);
     }
   }
 
   // ── Setup local notifications ──────────────────────────────
   static Future<void> _setupLocalNotifications() async {
-    // Create high importance channel on Android
     final androidPlugin = _localNotifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
     await androidPlugin?.createNotificationChannel(_channel);
 
-    // Initialize plugin
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
     const initSettings =
@@ -86,11 +92,12 @@ class NotificationService {
       initSettings,
       onDidReceiveNotificationResponse: (details) {
         debugPrint('Local notification tapped: ${details.payload}');
+        if (details.payload != null && details.payload!.isNotEmpty) {
+          _navigateToBooking(details.payload!);
+        }
       },
     );
 
-    // Tell FCM to not show notifications automatically
-    // (we handle them via local notifications instead)
     await FirebaseMessaging.instance
         .setForegroundNotificationPresentationOptions(
       alert: false,
@@ -129,6 +136,25 @@ class NotificationService {
     );
   }
 
+  // ── Handle notification tap ────────────────────────────────
+  static void _handleMessageTap(Map<String, dynamic> data) {
+    final bookingId = data['booking_id'] as String?;
+    if (bookingId == null || bookingId.isEmpty) return;
+    _navigateToBooking(bookingId);
+  }
+
+  static void _navigateToBooking(String bookingId) {
+    final ctx = _context;
+    if (ctx == null) {
+      debugPrint('No context for navigation to booking $bookingId');
+      return;
+    }
+    // Use Navigator directly since go_router's context push works here
+    Navigator.of(ctx, rootNavigator: true).pushNamed(
+      '/bookings/$bookingId',
+    );
+  }
+
   // ── Save FCM token to Supabase ─────────────────────────────
   static Future<void> _saveToken() async {
     try {
@@ -143,21 +169,25 @@ class NotificationService {
 
   static Future<void> _saveTokenToSupabase(String token) async {
     try {
+      // Use cached userId since app uses Firebase Phone Auth +
+      // custom Supabase session — auth.currentUser is null in this setup.
       final user = _supabase.auth.currentUser;
-      if (user == null) return;
+      String? userId = user?.id;
+
+      // Fallback to cached userId for Firebase Phone Auth flow
+      if (userId == null) {
+        final prefs = await SharedPreferences.getInstance();
+        userId = prefs.getString('cached_user_id');
+      }
+
+      if (userId == null) return;
       await _supabase.from('users').update({
         'fcm_token': token,
-      }).eq('id', user.id);
-      debugPrint('FCM token saved to Supabase');
+      }).eq('id', userId);
+      debugPrint('FCM token saved to Supabase for user: $userId');
     } catch (e) {
       debugPrint('Error saving FCM token: $e');
     }
-  }
-
-  // ── Handle notification tap ────────────────────────────────
-  static void _handleMessageTap(RemoteMessage message) {
-    final bookingId = message.data['booking_id'] as String?;
-    debugPrint('Tapped notification for booking: $bookingId');
   }
 
   // ── Call this after login to save token ───────────────────
@@ -169,14 +199,19 @@ class NotificationService {
   static Future<void> clearTokenOnLogout() async {
     try {
       final user = _supabase.auth.currentUser;
-      if (user == null) return;
+      String? userId = user?.id;
+      if (userId == null) {
+        final prefs = await SharedPreferences.getInstance();
+        userId = prefs.getString('cached_user_id');
+      }
+      if (userId == null) return;
       await _supabase.from('users').update({
         'fcm_token': null,
-      }).eq('id', user.id);
+      }).eq('id', userId);
       await _messaging.deleteToken();
       debugPrint('FCM token cleared');
     } catch (e) {
       debugPrint('Error clearing FCM token: $e');
     }
   }
-} 
+}

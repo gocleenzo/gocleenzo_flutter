@@ -57,6 +57,10 @@ class _CleenzoAppState extends State<CleenzoApp> {
 
   @override
   Widget build(BuildContext context) {
+    // MaterialApp.router doesn't support navigatorKey directly.
+    // Instead we use a Builder to get a context after the router
+    // is set up, then store it in NotificationService so it can
+    // navigate to booking detail when a notification is tapped.
     return MaterialApp.router(
       title: 'Cleenzo',
       debugShowCheckedModeBanner: false,

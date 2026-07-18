@@ -46,77 +46,160 @@ class _TermsScreenState extends State<TermsScreen>
   bool _showPrivacyFab = false;
 
   // ---- CONTENT -------------------------------------------------------
+  // Sourced from the official Cleenzo Terms & Conditions
+  // (Cubicle Ventures Private Limited), last updated July 1, 2026.
 
   final List<LegalSection> _termsSections = const [
     LegalSection(
-      title: 'Use of Service',
-      icon: Icons.how_to_reg_rounded,
+      title: 'Services & Pro Services',
+      icon: Icons.cleaning_services_rounded,
       items: [
-        'You must be at least 18 years old to use Cleenzo.',
-        'You are responsible for maintaining the confidentiality of your account credentials.',
-        'You agree to provide accurate, current, and complete information during registration.',
-        'You must not use the service for any unlawful or prohibited purpose.',
-        'One person may maintain only one active account on the platform.',
+        'Cleenzo is a technology platform that lets you discover, book, and avail home cleaning and related services ("Professional Services") from independent third-party Professionals. We facilitate discovery, booking, and payment — we do not perform or control the execution of Professional Services ourselves.',
+        'Instant Booking is available between 7:00 AM and 7:00 PM IST on the day of booking, subject to Professional availability.',
+        'Scheduled Booking lets you book in advance for a preferred date and time slot, subject to availability.',
+        'Professionals are independent service providers — not agents, partners, or representatives of Cleenzo.',
+        'The Platform is for your personal, non-commercial use only.',
+        'We reserve the right to decline any booking at our sole discretion (safety, compliance, or operational reasons) and do not guarantee Professional availability for any service, slot, or location.',
+        'We may update, modify, suspend, or discontinue any Service or feature at any time without prior notice.',
       ],
     ),
     LegalSection(
-      title: 'Booking & Cancellation',
+      title: 'Eligibility',
+      icon: Icons.how_to_reg_rounded,
+      items: [
+        'You must be at least 18 years old and have the legal capacity to enter into a binding agreement under Indian law.',
+        'You agree to use the Services only in compliance with these Terms and all applicable laws and regulations of India.',
+      ],
+    ),
+    LegalSection(
+      title: 'Account Creation',
+      icon: Icons.badge_rounded,
+      items: [
+        'You must create an Account with accurate details, including your name, phone number, and address.',
+        'You must keep your Account information accurate and complete, and update it promptly if it changes.',
+        'You are solely responsible for keeping your Account credentials confidential and for all activity under your Account.',
+        'You must notify us immediately of any unauthorized use of your Account or any security breach.',
+        'Cleenzo is not liable for loss or damage from unauthorized Account access, unless it results directly from our gross negligence or willful misconduct.',
+      ],
+    ),
+    LegalSection(
+      title: 'Bookings',
       icon: Icons.event_available_rounded,
       items: [
-        'Bookings are confirmed only after successful payment processing.',
-        'Cancellations made more than 24 hours before the scheduled service are eligible for a full refund.',
-        'Cancellations within 24 hours may attract a cancellation fee of up to 50% of the booking amount.',
-        'Cleenzo reserves the right to cancel bookings in case of worker unavailability with a full refund.',
-        'No-shows by the customer will be treated as a cancellation without refund.',
+        'Bookings are placed based on availability shown at the time of booking, and are subject to Professional availability and time-slot capacity.',
+        'Instant bookings are first-come, first-served. A slot is confirmed only once your booking is successfully placed — availability is never guaranteed.',
+        'Once confirmed, you\'ll receive an App and/or SMS notification with your booking details and OTP for service verification.',
+        'If your assigned Professional becomes unavailable, we may arrange a replacement or help you reschedule where possible — this isn\'t guaranteed.',
+        'You agree to: ensure timely access to the service location; tell us in advance about anything that could affect service (pets, restricted areas, safety hazards); and avoid undue delays on-site.',
+        'Failure to meet the above may cause delays, prevent the service from being performed, or lead to cancellation — Cleenzo and Professionals aren\'t liable for non-performance caused by such conditions.',
+        'Time estimates and service durations shown on the Platform are indicative only, not a guaranteed completion time.',
+        'Professionals do not carry their own cleaning equipment or supplies — please make sure everything needed is available at your address before the service begins.',
       ],
     ),
     LegalSection(
       title: 'Payment Terms',
       icon: Icons.payments_rounded,
       items: [
-        'All payments are processed securely via Razorpay.',
-        'Prices are listed in Indian Rupees (INR) and are inclusive of applicable taxes.',
-        'Promotional codes and offers are subject to their individual terms and expiry dates.',
-        'Refunds, where applicable, will be credited to the original payment method within 5–7 business days.',
-        'Cleenzo is not liable for any payment gateway outages or transaction failures.',
+        'All payments for Professional Services are currently Cash on Delivery (COD), paid directly to the Professional once the service is complete.',
+        'The total amount payable ("Fees") is clearly shown before you confirm a booking, and may include the service fee, a platform fee, a surge fee (where enabled), and any other disclosed charges.',
+        'All Fees are inclusive of or subject to applicable taxes.',
+        'Promo codes and discounts follow their own terms and validity periods, and can\'t be combined unless explicitly stated.',
+        'We may change Fees at any time at our discretion — this won\'t affect bookings already confirmed before the change.',
+        'We may introduce additional payment methods (UPI, cards, net banking) on the Platform in future.',
+        'Please don\'t pay Professionals outside the Platform — Cleenzo isn\'t liable for disputes, losses, or damages from payments made directly to Professionals off-platform.',
       ],
     ),
     LegalSection(
-      title: 'Service Standards',
-      icon: Icons.verified_rounded,
+      title: 'OTP Verification',
+      icon: Icons.lock_rounded,
       items: [
-        'All Cleenzo workers are background-verified and trained professionals.',
-        'The service quality guarantee covers re-cleaning within 24 hours of reported dissatisfaction.',
-        'Customers must ensure a safe working environment for Cleenzo workers.',
-        'Any damage caused by the customer or pre-existing conditions is not Cleenzo\'s liability.',
-        'Workers will not be held responsible for pre-existing damage or wear and tear.',
+        'An OTP (One-Time Password) verifies the start of your service. You must give this OTP to your assigned Professional at your service location to begin the job.',
+        'Never share your OTP with anyone other than the verified Professional physically present at your address.',
+        'The OTP window opens 30 minutes before your scheduled service start time.',
+      ],
+    ),
+    LegalSection(
+      title: 'Cancellations',
+      icon: Icons.event_busy_rounded,
+      items: [
+        'You may cancel a booking at no charge before a Professional has been assigned.',
+        'Once a Professional is assigned, cancellations may not be permitted, or may attract a cancellation fee as shown on the Platform at the time of booking.',
+        'We reserve the right to cancel any booking due to Professional unavailability, safety concerns, or other operational or regulatory reasons.',
+      ],
+    ),
+    LegalSection(
+      title: 'Customer Conduct',
+      icon: Icons.diversity_3_rounded,
+      items: [
+        'Please treat all Professionals with courtesy, dignity, and respect, and provide a safe, appropriate environment for the service.',
+        'Professionals may refuse to work if conditions at your location are unsafe or unsanitary, or if your conduct is abusive, disrespectful, threatening, or otherwise inappropriate.',
+        'Discrimination against Professionals based on race, religion, caste, national origin, disability, sexual orientation, gender, age, or any other protected characteristic is strictly prohibited.',
+        'Please don\'t solicit or encourage a Professional to work with you outside the Platform — doing so may result in suspension or termination of your access.',
+        'Secure your valuables, fragile items, and sensitive equipment before the service begins — Cleenzo and Professionals aren\'t responsible for loss or damage to such items.',
+        'Cleenzo isn\'t responsible for pre-existing defects, damage, or wear and tear at your service location.',
+        'If a Professional behaves abusively, inappropriately, or unlawfully, please report it to gocleenzo@gmail.com within 48 hours.',
       ],
     ),
     LegalSection(
       title: 'Intellectual Property',
       icon: Icons.copyright_rounded,
       items: [
-        'All content, trademarks, and data on this app are owned by Cleenzo.',
-        'You may not reproduce or distribute any part of our service without written permission.',
-        'User-generated content remains your property, but you grant Cleenzo a license to use it for service improvement.',
+        'All rights, title, and interest in the Services — including the Platform, App, logos, content, and software — belong to or are validly licensed to Cleenzo.',
+        'You\'re granted a limited, non-exclusive, non-transferable, revocable licence to access and use the Services under these Terms.',
+        'You may not reproduce, modify, distribute, or create derivative works from any Platform content without our prior written consent.',
       ],
     ),
     LegalSection(
-      title: 'Limitation of Liability',
+      title: 'Indemnity',
+      icon: Icons.shield_rounded,
+      items: [
+        'You agree to indemnify, defend, and hold harmless Cleenzo, its officers, directors, employees, agents, and representatives from any claims, losses, liabilities, damages, and expenses (including reasonable legal fees) arising from your use of the Services, your violation of these Terms, or unauthorized use of your Account.',
+      ],
+    ),
+    LegalSection(
+      title: 'Liability & Disclaimers',
       icon: Icons.gpp_maybe_rounded,
       items: [
-        'Cleenzo shall not be liable for indirect, incidental, or consequential damages.',
-        'Our liability is limited to the amount paid for the specific booking in question.',
-        'We are not liable for delays or cancellations due to force majeure events.',
+        'To the maximum extent permitted by law, Cleenzo is not liable for indirect, incidental, special, consequential, punitive, or exemplary damages relating to these Terms or the Services.',
+        'Our total liability arising from these Terms or the Services is capped at the Fees you paid for the specific booking the claim relates to.',
+        'Cleenzo operates a technology platform and doesn\'t perform Professional Services itself — we\'re not liable for the acts, omissions, or quality of work of Professionals.',
+        'The Services are provided "as is" and "as available," without warranties of merchantability, fitness for a particular purpose, or non-infringement.',
+        'We don\'t guarantee any specific outcome, result, or satisfaction level from Professional Services.',
+        'We\'re not responsible for property damage arising from Professional Services, except where required by law.',
       ],
     ),
     LegalSection(
-      title: 'Governing Law',
+      title: 'Term, Termination & Governing Law',
       icon: Icons.account_balance_rounded,
       items: [
-        'These terms are governed by the laws of India.',
-        'Any disputes shall be subject to the exclusive jurisdiction of courts in Mumbai, Maharashtra.',
-        'Disputes will first be attempted to be resolved through mediation before litigation.',
+        'These Terms remain in effect until terminated by either party.',
+        'We may restrict, suspend, or terminate your access at any time — with or without notice — for violations of these Terms, ineligibility, or legitimate business, legal, or regulatory reasons.',
+        'You may close your Account anytime by emailing gocleenzo@gmail.com.',
+        'Clauses covering intellectual property, liability, indemnity, governing law, and dispute resolution survive termination of these Terms.',
+        'These Terms are governed by the laws of India. Courts in Maharashtra have exclusive jurisdiction over any disputes.',
+        'Disputes are resolved by arbitration in Maharashtra under the Arbitration and Conciliation Act, 1996, before a single Company-appointed arbitrator, conducted in English. The arbitrator\'s decision is final and binding.',
+      ],
+    ),
+    LegalSection(
+      title: 'Grievance Redressal',
+      icon: Icons.support_agent_rounded,
+      items: [
+        'For any booking-related issues, reach us through the Help section in the App or the channels below.',
+        'Email: gocleenzo@gmail.com',
+        'Available in-app via the Help section, Monday – Saturday, 9:00 AM to 7:00 PM IST.',
+      ],
+    ),
+    LegalSection(
+      title: 'Miscellaneous',
+      icon: Icons.rule_folder_rounded,
+      items: [
+        'We may update these Terms from time to time — continuing to use the Platform after an update means you accept the revised Terms.',
+        'If any provision of these Terms is found invalid or unenforceable, the rest remain in full effect.',
+        'You may not assign your rights or obligations under these Terms without our prior written consent. We may freely assign these Terms to an affiliate, successor, or third party in a merger, acquisition, or business transfer.',
+        'Any delay or failure by us to enforce a right under these Terms doesn\'t waive that right.',
+        'We\'re not liable for delays or failures caused by events beyond our reasonable control — acts of God, strikes, pandemic, war, government orders, or third-party service failures.',
+        'These Terms, together with the Privacy Policy and any Additional Terms, form the entire agreement between you and Cleenzo, superseding all prior agreements.',
+        'Nothing in these Terms creates a partnership, employment, joint venture, or agency relationship between Cleenzo and any Customer or Professional.',
       ],
     ),
   ];
@@ -127,19 +210,19 @@ class _TermsScreenState extends State<TermsScreen>
       icon: Icons.badge_rounded,
       items: [
         'Personal details: name, email address, phone number, and profile photo.',
-        'Address information for service delivery.',
-        'Payment details (processed securely via Razorpay — we do not store card details).',
+        'Address information, needed to deliver Professional Services to you.',
         'Usage data: app interactions, bookings, and preferences.',
-        'Device information: device type, OS version, and app version for troubleshooting.',
+        'Device information: device type, OS version, and app version, for troubleshooting.',
+        'We do not currently process online payments through the Platform — all payments are Cash on Delivery, paid directly to the Professional, so we do not collect or store your card or bank details.',
       ],
     ),
     LegalSection(
       title: 'How We Use Your Data',
       icon: Icons.tune_rounded,
       items: [
-        'To create and manage your account and service bookings.',
-        'To process payments and send booking confirmations and receipts.',
-        'To match you with the best available cleaning professionals.',
+        'To create and manage your Account and service bookings.',
+        'To send booking confirmations, OTPs, and service-related updates.',
+        'To match you with an available cleaning Professional.',
         'To improve our app features, services, and user experience.',
         'To send important updates, offers, and promotional communications (with your consent).',
         'To comply with legal obligations and resolve disputes.',
@@ -149,21 +232,20 @@ class _TermsScreenState extends State<TermsScreen>
       title: 'Data Sharing',
       icon: Icons.share_rounded,
       items: [
-        'We share your contact and address with the assigned worker to complete your booking.',
-        'We use Supabase for secure data storage and Razorpay for payment processing.',
+        'We share your contact details and address with the Professional assigned to your booking, so they can complete the service.',
+        'We use Supabase for secure data storage.',
         'We do not sell your personal data to third parties.',
         'We may share anonymized, aggregated data for analytics purposes.',
-        'We may disclose data if required by law or to protect rights and safety.',
+        'We may disclose your data to law enforcement or government bodies pursuant to a lawful request.',
       ],
     ),
     LegalSection(
       title: 'Data Security',
       icon: Icons.lock_rounded,
       items: [
-        'All data is transmitted over HTTPS with end-to-end encryption.',
-        'We use Supabase Row-Level Security (RLS) to ensure data access control.',
-        'Passwords are hashed and never stored in plain text.',
-        'We regularly audit our security practices and update protections.',
+        'All data is transmitted over HTTPS.',
+        'We use Supabase Row-Level Security (RLS) to control access to your data.',
+        'We regularly review and update our security practices.',
         'In the event of a data breach, we will notify affected users promptly.',
       ],
     ),
@@ -174,26 +256,15 @@ class _TermsScreenState extends State<TermsScreen>
         'You can access, update, or delete your personal information from Account Settings.',
         'You can opt out of marketing communications at any time.',
         'You have the right to request a copy of the data we hold about you.',
-        'You may request data portability in a machine-readable format.',
         'You can withdraw consent for data processing at any time (this may affect service availability).',
-      ],
-    ),
-    LegalSection(
-      title: 'Cookies & Tracking',
-      icon: Icons.cookie_rounded,
-      items: [
-        'We use analytics tools to understand app usage patterns.',
-        'No third-party advertising cookies are used in our app.',
-        'You may opt out of analytics data collection in app settings.',
       ],
     ),
     LegalSection(
       title: 'Data Retention',
       icon: Icons.history_rounded,
       items: [
-        'We retain your data for as long as your account is active.',
-        'After account deletion, data is retained for 30 days before permanent removal.',
-        'Booking history may be retained for up to 2 years for legal compliance.',
+        'We retain your data for as long as your Account is active.',
+        'After Account deletion, data is retained for a limited period before permanent removal, unless a longer period is required for legal or regulatory compliance.',
       ],
     ),
   ];
@@ -373,7 +444,7 @@ class _TermsScreenState extends State<TermsScreen>
                         children: [
                           _Pill(
                             icon: Icons.update_rounded,
-                            label: 'Updated Jan 2025',
+                            label: 'Updated Jul 1, 2026',
                           ),
                           const SizedBox(width: 8),
                           _Pill(
@@ -659,8 +730,8 @@ class _IntroCard extends StatelessWidget {
                 const SizedBox(height: 6),
                 Text(
                   isPrivacy
-                      ? 'This policy describes how we collect, use, and protect your personal information when you use Cleenzo.'
-                      : 'By accessing or using Cleenzo, you agree to be bound by these Terms of Service and all applicable laws.',
+                      ? 'This policy describes how Cubicle Ventures Private Limited ("Cleenzo") collects, uses, and protects your personal information when you use the app.'
+                      : 'By accessing or using Cleenzo, you enter into a legally binding agreement with Cubicle Ventures Private Limited and agree to be bound by these Terms.',
                   style: const TextStyle(
                     color: Color(0xFF475569),
                     fontSize: 13.5,
@@ -875,7 +946,7 @@ class _ContactCard extends StatelessWidget {
           const SizedBox(height: 10),
           Text(
             isPrivacy
-                ? 'For privacy-related queries or data requests, contact our Data Protection Officer:'
+                ? 'For privacy-related queries or data requests, contact us at:'
                 : 'If you have any questions about these Terms, please contact us:',
             style: const TextStyle(
               fontSize: 13.5,
@@ -884,15 +955,15 @@ class _ContactCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          _ContactRow(icon: Icons.email_outlined, text: 'support@cleenzo.in'),
+          _ContactRow(icon: Icons.email_outlined, text: 'gocleenzo@gmail.com'),
           const SizedBox(height: 10),
           _ContactRow(
               icon: Icons.location_on_outlined,
-              text: 'Mumbai, Maharashtra, India'),
+              text: 'Yavatmal, Maharashtra, India'),
           const SizedBox(height: 10),
           _ContactRow(
               icon: Icons.access_time_outlined,
-              text: 'Mon–Sat, 9:00 AM – 6:00 PM IST'),
+              text: 'Monday – Saturday, 9:00 AM – 7:00 PM IST'),
         ],
       ),
     );

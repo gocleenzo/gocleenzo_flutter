@@ -22,8 +22,8 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
   String _sessionToken = '';
 
   static const _apiKey  = 'AIzaSyCr_DDF-1Aro_QuNAlzZRMOnrjKhiR20Ic';
-  static const _cyan    = Color(0xFF06B6D4);
-  static const _cyanDk  = Color(0xFF0891B2);
+  static const _cyan    = Color(0xFF00B1FC);
+  static const _cyanDk  = Color(0xFF00B1FC);
   static const _ink     = Color(0xFF0F172A);
   static const _muted   = Color(0xFF64748B);
   static const _faint   = Color(0xFF94A3B8);
@@ -219,7 +219,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                     child: Row(children: [
                       const SizedBox(width: 14),
                       const Icon(Icons.search_rounded,
-                          color: _cyan, size: 20),
+                          color: Colors.black, size: 20),
                       const SizedBox(width: 10),
                       Expanded(
                         child: TextField(
@@ -257,7 +257,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           padding: EdgeInsets.only(right: 12),
                           child: SizedBox(width: 16, height: 16,
                             child: CircularProgressIndicator(
-                                strokeWidth: 2, color: _cyan))),
+                                strokeWidth: 2, color: Colors.black))),
                     ]),
                   ),
                 ]),
@@ -272,7 +272,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
               ? Center(child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                  const CircularProgressIndicator(color: _cyan),
+                  const CircularProgressIndicator(color: Colors.black),
                   const SizedBox(height: 16),
                   Text('Loading location…',
                       style: TextStyle(color: _faint, fontSize: 13)),
@@ -360,11 +360,11 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           leading: Container(
                             width: 44, height: 44,
                             decoration: BoxDecoration(
-                              color: const Color(0xFFECFEFF),
+                              color: const Color(0xFF00B1FC),
                               borderRadius: BorderRadius.circular(14)),
                             child: const Icon(
                                 Icons.location_city_rounded,
-                                color: _cyan, size: 20)),
+                                color: Colors.black, size: 20)),
                           title: r.split(',').first,
                           subtitle: r,
                           onTap: () => _search(r.split(',').first),
@@ -378,10 +378,10 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                             16, 20, 16, 16),
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFECFEFF),
+                          color: const Color(0xFF00B1FC),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
-                              color: const Color(0xFFA5F3FC))),
+                              color: const Color(0xFF00B1FC))),
                         child: Column(
                             crossAxisAlignment:
                                 CrossAxisAlignment.start,
@@ -391,7 +391,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                                 style: TextStyle(fontSize: 16)),
                             SizedBox(width: 8),
                             Text('Service Areas',
-                                style: TextStyle(color: _cyanDk,
+                                style: TextStyle(color: Colors.black,
                                     fontSize: 12,
                                     fontWeight: FontWeight.w800)),
                           ]),

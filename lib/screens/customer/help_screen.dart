@@ -267,7 +267,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
         background: Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight,
-              colors: [Color(0xFFECFEFF), Color(0xFFE0F7FA)]),
+              colors: [Color(0xFF00B1FC), Color(0xFFE0F7FA)]),
           ),
           child: Stack(
             children: [
@@ -375,14 +375,14 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
                 color: active ? AppTheme.primary : const Color(0xFFF0FDFE),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(
-                  color: active ? AppTheme.primary : const Color(0xFFA5F3FC),
+                  color: active ? AppTheme.primary : const Color(0xFF00B1FC),
                 ),
               ),
               child: Center(
                 child: Text(
                   cat,
                   style: TextStyle(
-                    color: active ? Colors.white : const Color(0xFF0E7490),
+                    color: active ? Colors.white : const Color(0xFF00B1FC),
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
                   ),
@@ -442,7 +442,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Text('${items.length}',
-                    style: const TextStyle(color: Color(0xFF0E7490), fontSize: 11, fontWeight: FontWeight.w700)),
+                    style: const TextStyle(color: Color(0xFF00B1FC), fontSize: 11, fontWeight: FontWeight.w700)),
               ),
             ]),
           ),
@@ -496,7 +496,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
       decoration: BoxDecoration(
         color: const Color(0xFFF0FDFE),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFA5F3FC)),
+        border: Border.all(color: const Color(0xFF00B1FC)),
       ),
       child: Row(children: [
         Container(width: 44, height: 44, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
@@ -617,9 +617,9 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
             decoration: BoxDecoration(
               color: const Color(0xFFF0FDFE),
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFFA5F3FC)),
+              border: Border.all(color: const Color(0xFF00B1FC)),
             ),
-            child: const Text('Send another message', style: TextStyle(color: Color(0xFF0E7490), fontWeight: FontWeight.w600)),
+            child: const Text('Send another message', style: TextStyle(color: Color(0xFF00B1FC), fontWeight: FontWeight.w600)),
           ),
         ),
       ],
@@ -746,7 +746,7 @@ class _AnimatedSubmitButtonState extends State<_AnimatedSubmitButton> {
           height: 52,
           decoration: BoxDecoration(
             gradient: const LinearGradient(
-              colors: [AppTheme.primary, Color(0xFF0E7490)],
+              colors: [AppTheme.primary, Color(0xFF00B1FC)],
               begin: Alignment.centerLeft,
               end: Alignment.centerRight,
             ),

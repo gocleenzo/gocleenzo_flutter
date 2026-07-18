@@ -56,8 +56,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   late Animation<double>   _bounceAnim;
 
   // ── Colours ────────────────────────────────────────────────
-  static const _cyan   = Color(0xFF06B6D4);
-  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyan   = Color(0xFF00B1FC);
+  static const _cyanDk = Color(0xFF00B1FC);
   static const _ink    = Color(0xFF0F172A);
   static const _muted  = Color(0xFF64748B);
   static const _faint  = Color(0xFF94A3B8);
@@ -498,7 +498,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
             borderRadius: BorderRadius.circular(16),
             boxShadow: hasAddr
                 ? [BoxShadow(
-                    color: _cyan.withValues(alpha: 0.35),
+                    color: Colors.black.withValues(alpha: 0.35),
                     blurRadius: 14,
                     offset: const Offset(0, 5))]
                 : []),

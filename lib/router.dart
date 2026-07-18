@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart' as fb;
+import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/splash_screen.dart';
@@ -8,7 +9,7 @@ import 'screens/customer/services_screen.dart';
 import 'screens/customer/service_detail_screen.dart';
 import 'screens/customer/booking_flow_screen.dart';
 import 'screens/customer/bookings_screen.dart';
-import 'screens/customer/booking_detail_screen.dart';
+import 'screens/customer/booking_detail_screen.dart' hide ServiceDetailScreen;
 import 'screens/customer/account_screen.dart';
 import 'screens/customer/offers_screen.dart';
 import 'screens/customer/help_screen.dart';
@@ -20,10 +21,37 @@ import 'screens/customer/address_confirm_screen.dart';
 import 'screens/customer/saved_addresses_screen.dart';
 import 'screens/customer/notifications_screen.dart';
 
+// ── Zoom-in page transition ─────────────────────────────────────
+// Used only for the screens the splash screen can land on, so the
+// destination page appears to scale in from the center — continuing
+// the splash's own zoom-out motion into a single unbroken flow.
+// 500ms here + the splash's 2500ms = 3000ms total, matching the
+// splash screen's own animation budget.
+CustomTransitionPage<void> _zoomPage(Widget child, GoRouterState state) {
+  return CustomTransitionPage<void>(
+    key: state.pageKey,
+    child: child,
+    transitionDuration: const Duration(milliseconds: 500),
+    reverseTransitionDuration: const Duration(milliseconds: 300),
+    transitionsBuilder: (context, animation, secondaryAnimation, child) {
+      final scale = Tween<double>(begin: 0.35, end: 1.0).animate(
+        CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+      );
+      return FadeTransition(
+        opacity: animation,
+        child: ScaleTransition(
+          scale: scale,
+          alignment: Alignment.center,
+          child: child,
+        ),
+      );
+    },
+  );
+}
+
 final router = GoRouter(
   initialLocation: '/',
   redirect: (context, state) {
-    // Check both Supabase and Firebase auth
     final supaUser  = Supabase.instance.client.auth.currentUser;
     final fireUser  = fb.FirebaseAuth.instance.currentUser;
     final isLoggedIn = supaUser != null || fireUser != null;
@@ -51,8 +79,11 @@ final router = GoRouter(
     return null;
   },
   routes: [
-    GoRoute(path: '/',      builder: (_, __) => const SplashScreen()),
-    GoRoute(path: '/login', builder: (_, __) => const LoginScreen()),
+    GoRoute(path: '/', builder: (_, __) => const SplashScreen()),
+    GoRoute(
+      path: '/login',
+      pageBuilder: (context, state) => _zoomPage(const LoginScreen(), state),
+    ),
     GoRoute(path: '/terms', builder: (_, __) => const TermsScreen()),
     GoRoute(path: '/help',  builder: (_, __) => const HelpScreen()),
 
@@ -118,7 +149,11 @@ final router = GoRouter(
       builder: (context, state, child) =>
           CustomerShell(child: child),
       routes: [
-        GoRoute(path: '/services', builder: (_, __) => const ServicesScreen()),
+        GoRoute(
+          path: '/services',
+          pageBuilder: (context, state) =>
+              _zoomPage(const ServicesScreen(), state),
+        ),
         GoRoute(path: '/bookings', builder: (_, __) => const BookingsScreen()),
         GoRoute(path: '/offers',   builder: (_, __) => const OffersScreen()),
         GoRoute(path: '/account',  builder: (_, __) => const AccountScreen()),

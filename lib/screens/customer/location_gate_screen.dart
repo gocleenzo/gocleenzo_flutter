@@ -16,8 +16,8 @@ class _LocationGateScreenState extends State<LocationGateScreen>
   late AnimationController _pulseCtrl;
   late Animation<double>   _pulseAnim;
 
-  static const _cyan   = Color(0xFF06B6D4);
-  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyan   = Color(0xFF00B1FC);
+  static const _cyanDk = Color(0xFF00B1FC);
   static const _ink    = Color(0xFF0F172A);
   static const _muted  = Color(0xFF64748B);
   static const _faint  = Color(0xFF94A3B8);
@@ -25,7 +25,7 @@ class _LocationGateScreenState extends State<LocationGateScreen>
 
   @override
   void initState() {
-    super.initState();
+    super.initState();  
     _pulseCtrl = AnimationController(
         vsync: this,
         duration: const Duration(milliseconds: 1800))
@@ -222,7 +222,7 @@ class _LocationGateScreenState extends State<LocationGateScreen>
                         colors: [_cyan, _cyanDk]),
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [BoxShadow(
-                        color: _cyan.withValues(alpha: 0.35),
+                        color: Colors.black.withValues(alpha: 0.35),
                         blurRadius: 16,
                         offset: const Offset(0, 6))]),
                   child: Center(
@@ -339,14 +339,14 @@ class _LocationGateScreenState extends State<LocationGateScreen>
     child: Container(
       padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFECFEFF),
+        color: const Color(0xFF00B1FC),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFFA5F3FC))),
+        border: Border.all(color: const Color(0xFF00B1FC))),
       child: Column(children: [
         Text(emoji, style: const TextStyle(fontSize: 16)),
         const SizedBox(height: 3),
         Text(label, style: const TextStyle(
-            color: _cyanDk, fontSize: 10,
+            color: Colors.black, fontSize: 10,
             fontWeight: FontWeight.w700)),
       ]),
     ),

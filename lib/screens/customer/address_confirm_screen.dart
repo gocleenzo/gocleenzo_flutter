@@ -90,12 +90,12 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
-                color: const Color(0xFFECFEFF),
+                color: const Color(0xFF00B1FC),
                 borderRadius: BorderRadius.circular(12)),
               child: const Text(
                 '📍 Vile Parle · Andheri · Juhu\nSantacruz · Jogeshwari · Khar',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Color(0xFF0891B2), fontSize: 12,
+                style: TextStyle(color: Color(0xFF00B1FC), fontSize: 12,
                     fontWeight: FontWeight.w700, height: 1.6),
               ),
             ),
@@ -190,7 +190,7 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
         Container(
           decoration: const BoxDecoration(
             gradient: LinearGradient(
-                colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+                colors: [Color(0xFF00B1FC), Color(0xFF00B1FC)]),
           ),
           child: SafeArea(
             bottom: false,
@@ -239,10 +239,10 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
                   Container(
                     width: 44, height: 44,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFECFEFF),
+                      color: const Color(0xFF00B1FC),
                       borderRadius: BorderRadius.circular(12)),
                     child: const Icon(Icons.location_on_rounded,
-                        color: Color(0xFF06B6D4), size: 22),
+                        color: Color(0xFF00B1FC), size: 22),
                   ),
                   const SizedBox(width: 12),
                   Expanded(child: Column(
@@ -286,11 +286,11 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         decoration: BoxDecoration(
                           color: active
-                              ? const Color(0xFFECFEFF) : Colors.white,
+                              ? const Color(0xFF00B1FC) : Colors.white,
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                             color: active
-                                ? const Color(0xFF06B6D4)
+                                ? const Color(0xFF00B1FC)
                                 : const Color(0xFFE8EDF2),
                             width: active ? 1.5 : 1),
                         ),
@@ -301,7 +301,7 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
                           Text(lbl, style: TextStyle(
                             fontSize: 12, fontWeight: FontWeight.w700,
                             color: active
-                                ? const Color(0xFF06B6D4)
+                                ? const Color(0xFF00B1FC)
                                 : const Color(0xFF64748B),
                           )),
                         ]),
@@ -349,10 +349,10 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
                   width: double.infinity, height: 56,
                   decoration: BoxDecoration(
                     gradient: const LinearGradient(
-                        colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+                        colors: [Color(0xFF00B1FC), Color(0xFF00B1FC)]),
                     borderRadius: BorderRadius.circular(18),
                     boxShadow: [BoxShadow(
-                      color: const Color(0xFF06B6D4).withValues(alpha: 0.4),
+                      color: const Color(0xFF00B1FC).withValues(alpha: 0.4),
                       blurRadius: 16, offset: const Offset(0, 6))],
                   ),
                   child: Center(
@@ -404,7 +404,7 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(14),
             borderSide: const BorderSide(
-                color: Color(0xFF06B6D4), width: 1.5)),
+                color: Color(0xFF00B1FC), width: 1.5)),
           contentPadding: const EdgeInsets.symmetric(
               horizontal: 16, vertical: 14),
         ),

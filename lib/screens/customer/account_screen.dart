@@ -95,7 +95,7 @@ class _AccountScreenState extends State<AccountScreen> {
         backgroundColor: Color(0xFFF1F5F9),
         body: Center(
             child: CircularProgressIndicator(
-                color: Color(0xFF0891B2))),
+                color: Color(0xFF00B1FC))),
       );
     }
 
@@ -120,7 +120,7 @@ class _AccountScreenState extends State<AccountScreen> {
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Color(0xFF06B6D4), Color(0xFF0E7490)],
+                colors: [Color(0xFF00B1FC), Color(0xFF0E7490)],
               ),
             ),
             child: Column(
@@ -322,7 +322,7 @@ class _AccountScreenState extends State<AccountScreen> {
                 color: const Color(0xFFE0F7FA),
                 borderRadius: BorderRadius.circular(12)),
               child: Icon(icon,
-                  color: const Color(0xFF0891B2), size: 22)),
+                  color: const Color(0xFF00B1FC), size: 22)),
             const SizedBox(width: 14),
             Expanded(child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

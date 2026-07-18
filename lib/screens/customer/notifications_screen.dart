@@ -15,8 +15,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   List<Map<String, dynamic>> _notifications = [];
   bool _loading = true;
 
-  static const _cyan   = Color(0xFF06B6D4);
-  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyan   = Color(0xFF00B1FC);
+  static const _cyanDk = Color(0xFF00B1FC);
   static const _ink    = Color(0xFF0F172A);
   static const _muted  = Color(0xFF64748B);
   static const _faint  = Color(0xFF94A3B8);
@@ -43,8 +43,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           .limit(50);
       if (mounted) {
         setState(() {
-          _notifications =
-              (data as List).cast<Map<String, dynamic>>();
+          _notifications = (data as List).cast<Map<String, dynamic>>();
           _loading = false;
         });
       }
@@ -61,7 +60,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   }
 
   String _timeAgo(String createdAt) {
-    final dt  = DateTime.tryParse(createdAt)?.toLocal();
+    final dt = DateTime.tryParse(createdAt)?.toLocal();
     if (dt == null) return '';
     final diff = DateTime.now().difference(dt);
     if (diff.inMinutes < 1) return 'Just now';
@@ -71,25 +70,33 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     return '${dt.day}/${dt.month}/${dt.year}';
   }
 
-  Map<String, dynamic> _typeConfig(String? type) {
-    switch (type) {
-      case 'booking_assigned':
-        return {'emoji': '✅', 'color': const Color(0xFF059669),
-            'bg': const Color(0xFFECFDF5)};
-      case 'booking_completed':
-        return {'emoji': '🎉', 'color': const Color(0xFF7C3AED),
-            'bg': const Color(0xFFF5F3FF)};
-      case 'booking_cancelled':
-        return {'emoji': '❌', 'color': const Color(0xFFDC2626),
-            'bg': const Color(0xFFFEF2F2)};
-      default:
-        return {'emoji': '🔔', 'color': _cyan, 'bg': const Color(0xFFECFEFF)};
+  // Maps booking status (stored in body/title) to correct emoji + color.
+  // Edge Function saves type='booking' and status inside templateData,
+  // so we detect from the title string instead.
+  Map<String, dynamic> _typeConfig(Map<String, dynamic> n) {
+    final title = (n['title'] as String? ?? '').toLowerCase();
+    final status = (n['data']?['status'] as String? ?? '');
+
+    if (title.contains('confirmed') || status == 'pending') {
+      return {'emoji': '🧹', 'color': _cyan, 'bg': const Color(0xFF00B1FC)};
     }
+    if (title.contains('assigned') || status == 'accepted') {
+      return {'emoji': '✅', 'color': const Color(0xFF059669), 'bg': const Color(0xFFECFDF5)};
+    }
+    if (title.contains('started') || status == 'in_progress') {
+      return {'emoji': '🧹', 'color': const Color(0xFF00B1FC), 'bg': const Color(0xFF00B1FC)};
+    }
+    if (title.contains('complete') || status == 'completed') {
+      return {'emoji': '🎉', 'color': const Color(0xFF7C3AED), 'bg': const Color(0xFFF5F3FF)};
+    }
+    if (title.contains('cancel') || status == 'cancelled') {
+      return {'emoji': '❌', 'color': const Color(0xFFDC2626), 'bg': const Color(0xFFFEF2F2)};
+    }
+    return {'emoji': '🔔', 'color': _cyan, 'bg': const Color(0xFF00B1FC)};
   }
 
   @override
   Widget build(BuildContext context) {
-    final topPad = MediaQuery.of(context).padding.top;
     final botPad = MediaQuery.of(context).padding.bottom;
 
     return Scaffold(
@@ -106,8 +113,10 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             ),
           ),
           child: Stack(children: [
-            Positioned(top: -30, right: -30,
-              child: Container(width: 140, height: 140,
+            Positioned(
+              top: -30, right: -30,
+              child: Container(
+                width: 140, height: 140,
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.05),
                   shape: BoxShape.circle))),
@@ -141,7 +150,6 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           color: Colors.white.withValues(alpha: 0.72),
                           fontSize: 11)),
                   ])),
-                  // Unread count badge
                   if (_notifications.any((n) => n['is_read'] == false))
                     Container(
                       padding: const EdgeInsets.symmetric(
@@ -164,22 +172,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         // ── Body ────────────────────────────────────────────
         Expanded(
           child: _loading
-              ? const Center(
-                  child: CircularProgressIndicator(color: _cyan))
+              ? const Center(child: CircularProgressIndicator(color: Colors.black))
               : _notifications.isEmpty
                   ? _buildEmpty()
                   : RefreshIndicator(
                       onRefresh: _load,
-                      color: _cyan,
+                      color: Colors.black,
                       child: ListView.separated(
-                        padding: EdgeInsets.fromLTRB(
-                            16, 16, 16, botPad + 16),
+                        padding: EdgeInsets.fromLTRB(16, 16, 16, botPad + 16),
                         itemCount: _notifications.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 10),
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
                         itemBuilder: (_, i) =>
-                            _buildNotificationCard(
-                                _notifications[i]),
+                            _buildNotificationCard(_notifications[i]),
                       ),
                     ),
         ),
@@ -195,13 +199,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         Container(
           width: 90, height: 90,
           decoration: BoxDecoration(
-            color: const Color(0xFFECFEFF),
+            color: const Color(0xFF00B1FC),
             shape: BoxShape.circle,
-            border: Border.all(
-                color: const Color(0xFFA5F3FC), width: 2)),
+            border: Border.all(color: const Color(0xFF00B1FC), width: 2)),
           child: const Center(
-              child: Text('🔔',
-                  style: TextStyle(fontSize: 40)))),
+              child: Text('🔔', style: TextStyle(fontSize: 40)))),
         const SizedBox(height: 20),
         const Text('No notifications yet',
             style: TextStyle(fontSize: 18,
@@ -210,18 +212,16 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         const Text(
           'You\'ll see booking updates\nand offers here',
           textAlign: TextAlign.center,
-          style: TextStyle(color: _muted, fontSize: 13,
-              height: 1.5)),
+          style: TextStyle(color: _muted, fontSize: 13, height: 1.5)),
       ]),
     );
   }
 
   Widget _buildNotificationCard(Map<String, dynamic> n) {
-    final isRead   = n['is_read'] == true;
-    final type     = n['type'] as String? ?? 'general';
-    final config   = _typeConfig(type);
+    final isRead    = n['is_read'] == true;
+    final config    = _typeConfig(n);
     final bookingId = n['booking_id'] as String?;
-    final timeAgo  = _timeAgo(n['created_at'] as String);
+    final timeAgo   = _timeAgo(n['created_at'] as String? ?? '');
 
     return GestureDetector(
       onTap: () {
@@ -232,60 +232,49 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: isRead ? Colors.white : const Color(0xFFECFEFF),
+          color: isRead ? Colors.white : const Color(0xFF00B1FC),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
-              color: isRead
-                  ? _border
-                  : const Color(0xFFA5F3FC),
+              color: isRead ? _border : const Color(0xFF00B1FC),
               width: isRead ? 1 : 1.5),
           boxShadow: [BoxShadow(
-              color: Colors.black.withValues(
-                  alpha: isRead ? 0.03 : 0.06),
+              color: Colors.black.withValues(alpha: isRead ? 0.03 : 0.06),
               blurRadius: 10, offset: const Offset(0, 3))]),
         child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-          // Icon
           Container(
             width: 46, height: 46,
             decoration: BoxDecoration(
               color: config['bg'] as Color,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(
-                  color: (config['color'] as Color)
-                      .withValues(alpha: 0.2))),
-            child: Center(child: Text(
-                config['emoji'] as String,
-                style: const TextStyle(fontSize: 22)))),
+                  color: (config['color'] as Color).withValues(alpha: 0.2))),
+            child: Center(
+                child: Text(config['emoji'] as String,
+                    style: const TextStyle(fontSize: 22)))),
           const SizedBox(width: 12),
-
-          // Content
           Expanded(child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
             Row(children: [
               Expanded(
-                child: Text(n['title'] as String,
+                child: Text(n['title'] as String? ?? '',
                     style: TextStyle(
                         fontSize: 14,
-                        fontWeight: isRead
-                            ? FontWeight.w700
-                            : FontWeight.w900,
+                        fontWeight: isRead ? FontWeight.w700 : FontWeight.w900,
                         color: _ink)),
               ),
               if (!isRead)
                 Container(
                   width: 8, height: 8,
                   decoration: const BoxDecoration(
-                      color: _cyan,
-                      shape: BoxShape.circle)),
+                      color: Colors.black, shape: BoxShape.circle)),
             ]),
             const SizedBox(height: 4),
-            Text(n['body'] as String,
+            Text(n['body'] as String? ?? '',
                 style: const TextStyle(
-                    color: _muted, fontSize: 12,
-                    height: 1.4),
+                    color: _muted, fontSize: 12, height: 1.4),
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis),
             const SizedBox(height: 6),
@@ -300,14 +289,12 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   padding: const EdgeInsets.symmetric(
                       horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFECFEFF),
+                    color: const Color(0xFF00B1FC),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(
-                        color: const Color(0xFFA5F3FC))),
+                    border: Border.all(color: const Color(0xFF00B1FC))),
                   child: const Text('View Booking →',
-                      style: TextStyle(color: _cyanDk,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700))),
+                      style: TextStyle(color: Colors.black,
+                          fontSize: 10, fontWeight: FontWeight.w700))),
               ],
             ]),
           ])),
