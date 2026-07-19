@@ -1,10 +1,12 @@
 import 'dart:async';
-import 'package:go_router/go_router.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
+import '../../services/cart_service.dart';
 import 'service_detail_screen.dart';
+import 'booking_flow_screen.dart';
 
 class ServicesScreen extends StatefulWidget {
   const ServicesScreen({super.key});
@@ -16,8 +18,8 @@ class _ServicesScreenState extends State<ServicesScreen>
     with TickerProviderStateMixin {
   final _supabase   = Supabase.instance.client;
   final _scrollCtrl = ScrollController();
+  final _cart       = CartService.instance;
 
-  // Hero banner carousel
   late final PageController _bannerCtrl;
   Timer? _bannerAutoTimer;
   bool _userInteractingWithBanner = false;
@@ -26,16 +28,13 @@ class _ServicesScreenState extends State<ServicesScreen>
   late final AnimationController _intro;
   late final Animation<double>   _fade;
   late final Animation<Offset>   _slide;
-
-  // Subtle ambient animation for shimmer + pulse
   late final AnimationController _ambientCtrl;
 
-  // ── Cyan blue + white palette ───────────────────────────────
-  static const _cyan    = Color(0xFF06B6D4);
-  static const _cyanDk  = Color(0xFF0891B2);
-  static const _cyanDp  = Color(0xFF0E7490);
-  static const _cyanBg  = Color(0xFFECFEFF);
-  static const _cyanBg2 = Color(0xFFCFFAFE);
+  static const _cyan    = Color(0xFF00B1FC);
+  static const _cyanDk  = Color(0xFF00B1FC);
+  static const _cyanDp  = Color(0xFF00B1FC);
+  static const _cyanBg  = Color(0xFF00B1FC);
+  static const _cyanBg2 = Color(0xFF00B1FC);
   static const _ink     = Color(0xFF0F172A);
   static const _muted   = Color(0xFF64748B);
   static const _faint   = Color(0xFF94A3B8);
@@ -44,17 +43,12 @@ class _ServicesScreenState extends State<ServicesScreen>
   static const _amber   = Color(0xFFF59E0B);
   static const _greenDk = Color(0xFF059669);
 
-  // Hero banner images — pure photo carousel, no text/button overlay.
   static const _bannerImages = [
     'assets/banners/offer1.png',
     'assets/banners/offer2.png',
     'assets/banners/offer3.png',
   ];
 
-  // ── Fixed display order — services always sort into this order
-  // (not alphabetical), regardless of Supabase's default ordering.
-  // Any service whose name isn't in this list falls to the end,
-  // keeping its relative original order.
   static const List<String> _serviceOrder = [
     'Bathroom Cleaning',
     'Utensil Cleaning',
@@ -71,8 +65,7 @@ class _ServicesScreenState extends State<ServicesScreen>
     'After-Party Cleanup',
   ];
 
-  List<Map<String, dynamic>> _applyCustomOrder(
-      List<Map<String, dynamic>> list) {
+  List<Map<String, dynamic>> _applyCustomOrder(List<Map<String, dynamic>> list) {
     final ordered = [...list];
     ordered.sort((a, b) {
       final an = a['name'] as String? ?? '';
@@ -86,8 +79,6 @@ class _ServicesScreenState extends State<ServicesScreen>
     return ordered;
   }
 
-  // Same 5 services eligible for the ₹25 first-booking price, matching
-  // service_detail_screen.dart's _firstBookingEligible set.
   static const Set<String> _firstBookingEligible = {
     'Bathroom Cleaning',
     'Balcony Cleaning',
@@ -98,21 +89,36 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   bool _isFirstBooking = false;
 
-  // ── Exact service.id → local asset mapping (reliable) ─────────
   static const Map<String, String> _assetMap = {
-    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning.png',  // Bathroom Cleaning
-    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe.png',           // Wardrobe Cleaning
-    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning.png', // Full House Cleaning
-    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning.png',       // Fan Cleaning
-    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping.png',     // Dusting & Wiping
-    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping.png',   // Sweeping & Mopping
-    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning.png',    // Refrigerator Cleaning
-    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning.png',   // Kitchen Cleaning
-    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning.png',  // Utensil Cleaning
-    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet.png',            // Kitchen Cabinet Cleaning
-    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning.png',   // Balcony Cleaning
-    'c104cecf-dc59-4514-bbaa-33301da6db1e': 'assets/services/after.png',              // After-Party Cleanup
-    '44a7c787-41f1-4ed9-b8e6-5066dcc009ce': 'assets/services/pre.png',                // Pre-Party Cleaning
+    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning.png',
+    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe.png',
+    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning.png',
+    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning.png',
+    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping.png',
+    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping.png',
+    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning.png',
+    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning.png',
+    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning.png',
+    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet.png',
+    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning.png',
+    'c104cecf-dc59-4514-bbaa-33301da6db1e': 'assets/services/after.png',
+    '44a7c787-41f1-4ed9-b8e6-5066dcc009ce': 'assets/services/pre.png',
+  };
+
+  static const Map<String, String> _emojis = {
+    'Bathroom Cleaning':          '🚿',
+    'Kitchen Cleaning':           '🍳',
+    'Kitchen Cabinet Cleaning':   '🗄️',
+    'Fan Cleaning':               '💨',
+    'Balcony Cleaning':           '🌿',
+    'Dusting & Wiping':           '🧹',
+    'Sweeping & Mopping':         '🧺',
+    'Utensil Cleaning':           '🍽️',
+    'Wardrobe Cleaning':          '👔',
+    'Refrigerator Cleaning':      '❄️',
+    'Full House Cleaning':        '🏠',
+    'Pre-Party Cleaning':         '🎉',
+    'After-Party Cleanup':        '🧽',
   };
 
   List<Map<String, dynamic>> _services   = [];
@@ -121,11 +127,10 @@ class _ServicesScreenState extends State<ServicesScreen>
   bool   _loading      = true;
   String _userName     = 'there';
 
-  // Location
-  String _locationLabel   = ''; // e.g. "Home", "Office"
+  String _locationLabel   = '';
   String _locationArea    = '';
   String _locationCity    = '';
-  String _locationAddress = ''; // full address line, for the subtitle
+  String _locationAddress = '';
   bool   _locationLoading = true;
 
   @override
@@ -140,6 +145,7 @@ class _ServicesScreenState extends State<ServicesScreen>
     _ambientCtrl = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 2600))
       ..repeat(reverse: true);
+    _cart.addListener(_onCartChanged);
     _load();
     _startBannerAutoSlide();
   }
@@ -151,21 +157,19 @@ class _ServicesScreenState extends State<ServicesScreen>
     _intro.dispose();
     _ambientCtrl.dispose();
     _scrollCtrl.dispose();
+    _cart.removeListener(_onCartChanged);
     super.dispose();
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // RESPONSIVE SCALE
-  // ═══════════════════════════════════════════════════════════════
-  double _scale(BuildContext context) {
-    final w = MediaQuery.of(context).size.width;
-    final factor = w / 375.0;
-    return factor.clamp(0.92, 1.15);
+  void _onCartChanged() {
+    if (mounted) setState(() {});
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // DATA
-  // ═══════════════════════════════════════════════════════════════
+  double _scale(BuildContext context) {
+    final w = MediaQuery.of(context).size.width;
+    return (w / 375.0).clamp(0.92, 1.15);
+  }
+
   Future<void> _load() async {
     final userId = await SupabaseService.loadCachedUserId() ??
         SupabaseService.currentUserId;
@@ -180,11 +184,9 @@ class _ServicesScreenState extends State<ServicesScreen>
             .select('label,area,city,flat_no,building,full_address,is_default')
             .eq('user_id', userId).eq('is_deleted', false)
             .order('is_default', ascending: false).limit(1).maybeSingle(),
-        // First-booking check — same status filter as service_detail_screen.
         _supabase.from('bookings').select('id')
             .eq('customer_id', userId)
-            .inFilter('status', ['completed', 'accepted',
-                'in_progress', 'pending'])
+            .inFilter('status', ['completed', 'accepted', 'in_progress', 'pending'])
             .limit(1),
       ]);
       if (!mounted) return;
@@ -217,19 +219,14 @@ class _ServicesScreenState extends State<ServicesScreen>
               .where((e) => e != null && e.toString().isNotEmpty)
               .join(', ');
         }
-        _isFirstBooking   = bookingsRows.isEmpty;
-        _locationLoading   = false;
-        _loading    = false;
+        _isFirstBooking  = bookingsRows.isEmpty;
+        _locationLoading = false;
+        _loading         = false;
       });
       _intro.forward();
     } catch (e) {
       debugPrint('Services load error: $e');
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _locationLoading = false;
-        });
-      }
+      if (mounted) setState(() { _loading = false; _locationLoading = false; });
     }
   }
 
@@ -252,15 +249,12 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   IconData _iconFor(String text) {
     final s = text.toLowerCase();
-    if (s.contains('bath'))                              return Icons.bathtub_outlined;
-    if (s.contains('kitchen'))                           return Icons.countertops_outlined;
-    if (s.contains('sofa') || s.contains('uphol'))       return Icons.weekend_outlined;
+    if (s.contains('bath'))   return Icons.bathtub_outlined;
+    if (s.contains('kitchen')) return Icons.countertops_outlined;
     if (s.contains('fridge') || s.contains('appliance')) return Icons.kitchen_outlined;
-    if (s.contains('window') || s.contains('glass'))     return Icons.window_outlined;
-    if (s.contains('floor') || s.contains('tile'))       return Icons.grid_4x4_outlined;
-    if (s.contains('party') || s.contains('event'))      return Icons.celebration_outlined;
-    if (s.contains('home') || s.contains('full'))        return Icons.home_outlined;
-    if (s.contains('all'))                               return Icons.apps_outlined;
+    if (s.contains('party') || s.contains('event')) return Icons.celebration_outlined;
+    if (s.contains('home') || s.contains('full')) return Icons.home_outlined;
+    if (s.contains('all')) return Icons.apps_outlined;
     return Icons.cleaning_services_outlined;
   }
 
@@ -280,6 +274,47 @@ class _ServicesScreenState extends State<ServicesScreen>
         builder: (_) => ServiceDetailScreen(serviceId: svc['id'] as String)));
   }
 
+  // ── Quick add to cart from grid card ─────────────────────────
+  CartItem _templateFor(Map<String, dynamic> svc) {
+    final name  = svc['name'] as String? ?? '';
+    final price = _isFirstBooking && _firstBookingEligible.contains(name)
+        ? 25
+        : (svc['base_price'] as num?)?.toInt() ?? CartService.defaultPriceFor(name);
+    return CartItem(
+      serviceId:       svc['id'] as String,
+      serviceName:     name,
+      pricePerUnit:    price,
+      durationPerUnit: CartService.durationFor(name),
+      emoji:           _emojis[name],
+      maxQty:          CartService.maxQtyFor(name),
+      type:            CartService.typeOf(name),
+    );
+  }
+
+  void _increment(Map<String, dynamic> svc) {
+    final name = svc['name'] as String? ?? '';
+    if (!CartService.isCartable(name)) return;
+    HapticFeedback.selectionClick();
+    // silently ignore if cart is full
+    _cart.increment(_templateFor(svc));
+    setState(() {});
+  }
+
+  void _decrement(Map<String, dynamic> svc) {
+    HapticFeedback.selectionClick();
+    _cart.decrement(svc['id'] as String);
+    setState(() {});
+  }
+
+  void _openCart() {
+    if (_cart.isEmpty) return;
+    HapticFeedback.selectionClick();
+    // Navigate to booking flow with cart items
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => _CartSheet(cart: _cart, isFirstBooking: _isFirstBooking),
+    ));
+  }
+
   void _openNotifications() {
     HapticFeedback.selectionClick();
     showModalBottomSheet(
@@ -297,9 +332,6 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   bool get isAllTab => _activeTab == 'All';
 
-  // ═══════════════════════════════════════════════════════════════
-  // BUILD
-  // ═══════════════════════════════════════════════════════════════
   @override
   Widget build(BuildContext context) {
     final topPad = MediaQuery.of(context).padding.top;
@@ -309,12 +341,9 @@ class _ServicesScreenState extends State<ServicesScreen>
       return const Scaffold(
         backgroundColor: _bg,
         body: Center(child: CircularProgressIndicator(
-            color: _cyan, strokeWidth: 2.5)),
-      );
+            color: Colors.black, strokeWidth: 2.5)));
     }
 
-    // No more separate "Popular" bucket — every service goes into the
-    // single 2-column grid below, in the fixed custom order.
     final grid = isAllTab ? _services : _filtered;
 
     return Scaffold(
@@ -324,9 +353,7 @@ class _ServicesScreenState extends State<ServicesScreen>
           controller: _scrollCtrl,
           physics: const BouncingScrollPhysics(),
           slivers: [
-            SliverToBoxAdapter(
-                child: _anim(_buildHeroBanner(topPad))),
-
+            SliverToBoxAdapter(child: _anim(_buildHeroBanner(topPad))),
             if (_services.isEmpty)
               SliverToBoxAdapter(child: _buildEmpty())
             else ...[
@@ -336,16 +363,9 @@ class _ServicesScreenState extends State<ServicesScreen>
               ] else
                 SliverToBoxAdapter(child: _buildEmpty()),
             ],
-
             SliverToBoxAdapter(child: SizedBox(height: botPad + 24)),
           ],
         ),
-
-        // Floating header — sits ON TOP of the banner image (transparent
-        // at rest, so the photo shows straight through it), then fades
-        // to solid white once the user scrolls, same as before — but
-        // now it's a true overlay instead of a pinned sliver, so it can
-        // sit directly over the full-bleed photo like the reference.
         Positioned(
           top: 0, left: 0, right: 0,
           child: _TopHeaderBar(
@@ -362,32 +382,33 @@ class _ServicesScreenState extends State<ServicesScreen>
                 : ((_locationLabel.isNotEmpty || _locationArea.isNotEmpty)
                     ? _locationAddress
                     : 'Add your address to get started'),
-            userInitial: _userName.isNotEmpty
-                ? _userName[0].toUpperCase() : 'A',
+            userInitial: _userName.isNotEmpty ? _userName[0].toUpperCase() : 'A',
+            cartCount: _cart.totalQuantity,
             onLocationTap: _openLocationPicker,
             onNotificationsTap: _openNotifications,
             onProfileTap: () => context.go('/account'),
+            onCartTap: _openCart,
           ),
         ),
+        // Sticky cart bottom bar
+        if (_cart.isNotEmpty)
+          Positioned(
+            left: 16, right: 16, bottom: botPad + 16,
+            child: _CartBottomBar(cart: _cart, onCheckout: _openCart),
+          ),
       ]),
     );
   }
 
-  // ── Hero promo banner — pure image slideshow, full-bleed, extends
-  // behind the status bar so the floating header can sit on top of it ─
   Widget _buildHeroBanner(double topPad) {
-    // Extra height at the top so the photo itself extends behind the
-    // status bar / floating header, instead of starting below it.
     const visibleBannerHeight = 320.0;
     final totalHeight = topPad + visibleBannerHeight;
-
     return Column(children: [
       SizedBox(
         height: totalHeight,
         child: NotificationListener<ScrollNotification>(
           onNotification: (notif) {
-            if (notif is ScrollStartNotification &&
-                notif.dragDetails != null) {
+            if (notif is ScrollStartNotification && notif.dragDetails != null) {
               _userInteractingWithBanner = true;
             } else if (notif is ScrollEndNotification) {
               _userInteractingWithBanner = false;
@@ -412,76 +433,59 @@ class _ServicesScreenState extends State<ServicesScreen>
           width: active ? 18 : 7, height: 7,
           decoration: BoxDecoration(
             color: active ? _cyan : _border,
-            borderRadius: BorderRadius.circular(4)),
-        );
+            borderRadius: BorderRadius.circular(4)));
       })),
       const SizedBox(height: 8),
     ]);
   }
 
-  // Full-bleed image — no side padding, no top rounding (so it runs
-  // flush behind the status bar and the floating header sits directly
-  // on top of it, matching the reference). Slight rounding only at the
-  // bottom, where it meets the white "All house help services" section.
   Widget _heroBannerCard(String imagePath) {
     return ClipRRect(
       borderRadius: const BorderRadius.only(
-        bottomLeft: Radius.circular(28),
-        bottomRight: Radius.circular(28),
-      ),
+        bottomLeft: Radius.circular(28), bottomRight: Radius.circular(28)),
       child: SizedBox(
-        width: double.infinity,
-        height: double.infinity,
-        child: Image.asset(
-          imagePath,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft, end: Alignment.bottomRight,
-                colors: [_cyanDp, _cyan]),
-            ),
-            child: const Center(
-              child: Icon(Icons.image_outlined,
-                  size: 48, color: Colors.white70),
-            ),
-          ),
-        ),
-      ),
-    );
+        width: double.infinity, height: double.infinity,
+        child: Image.asset(imagePath, fit: BoxFit.cover,
+            errorBuilder: (_, __, ___) => Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft, end: Alignment.bottomRight,
+                  colors: [_cyanDp, _cyan])),
+              child: const Center(child: Icon(Icons.image_outlined,
+                  size: 48, color: Colors.white70))))));
   }
 
-  // ── Grid of smaller photo cards ───────────────────────────────
   Widget _buildGrid(List<Map<String, dynamic>> svcs) {
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
       sliver: SliverGrid(
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount:   2,
-          crossAxisSpacing: 14,
-          mainAxisSpacing:  18,
-          mainAxisExtent:   190,
-        ),
+          crossAxisCount: 2, crossAxisSpacing: 14,
+          mainAxisSpacing: 18, mainAxisExtent: 210),
         delegate: SliverChildBuilderDelegate(
-          (_, i) => FadeTransition(
-              opacity: _fade, child: _gridCard(svcs[i])),
-          childCount: svcs.length,
-        ),
+          (_, i) => FadeTransition(opacity: _fade, child: _gridCard(svcs[i])),
+          childCount: svcs.length),
       ),
     );
   }
 
-  // ── Grid card — plain image on top, name + price below ──────────
-  // Shows ₹25 first-booking price (with original struck through) for
-  // eligible services when this is the customer's first booking.
   Widget _gridCard(Map<String, dynamic> svc) {
-    final name      = svc['name'] as String? ?? 'Service';
-    final basePrice = (svc['base_price'] as num?)?.toInt() ?? 0;
-    final icon      = _iconFor('${svc['category'] ?? ''} $name');
-    final s         = _scale(context);
+    final name       = svc['name'] as String? ?? 'Service';
+    final basePrice  = (svc['base_price'] as num?)?.toInt() ?? 0;
+    final icon       = _iconFor('${svc['category'] ?? ''} $name');
+    final s          = _scale(context);
+    final isCartable = CartService.isCartable(name);
+    final itemType   = CartService.typeOf(name);
+    final qty        = _cart.quantityOf(svc['id'] as String? ?? '');
+    final inCart     = qty > 0;
+    final dur        = CartService.durationFor(name);
+    final totalDur   = dur * (qty > 0 ? qty : 1);
+    final isFirstPrice = _isFirstBooking && _firstBookingEligible.contains(name);
+    final unitPrice  = isFirstPrice ? 25 : basePrice;
+    final totalPrice = unitPrice * (qty > 0 ? qty : 1);
 
-    final isFirstBookingPrice =
-        _isFirstBooking && _firstBookingEligible.contains(name);
+    // Full House — no cart, just open detail
+    final isFullHouse = name == 'Full House Cleaning';
 
     return GestureDetector(
       onTap: () => _open(svc),
@@ -495,50 +499,147 @@ class _ServicesScreenState extends State<ServicesScreen>
               child: Stack(fit: StackFit.expand, children: [
                 _serviceImage(svc, icon),
                 Positioned(top: 8, right: 8, child: _ratingBadge(svc)),
+
+                // ── Duration badge (bottom-left, always shown) ──
+                Positioned(
+                  bottom: inCart ? 46 : 8, left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 7, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      borderRadius: BorderRadius.circular(8)),
+                    child: Text(
+                      inCart
+                          ? '${totalDur} min'
+                          : itemType == CartItemType.hourly
+                              ? '60 min/hr'
+                              : '$dur min',
+                      style: const TextStyle(color: Colors.white,
+                          fontSize: 9, fontWeight: FontWeight.w700)))),
+
+                // ── Counter overlay (shown when in cart) ──────
+                if (inCart && isCartable)
+                  Positioned(
+                    bottom: 8, left: 8, right: 8,
+                    child: Container(
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        boxShadow: [BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.15),
+                            blurRadius: 8, offset: const Offset(0, 2))]),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          GestureDetector(
+                            onTap: () => _decrement(svc),
+                            behavior: HitTestBehavior.opaque,
+                            child: Container(width: 34, height: 34,
+                                alignment: Alignment.center,
+                                child: const Icon(Icons.remove_rounded,
+                                    color: _cyan, size: 18))),
+                          Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text('$qty', style: const TextStyle(
+                                  fontSize: 13, fontWeight: FontWeight.w900,
+                                  color: _ink)),
+                              Text(
+                                itemType == CartItemType.hourly
+                                    ? 'hr' : 'qty',
+                                style: const TextStyle(fontSize: 8,
+                                    color: _muted,
+                                    fontWeight: FontWeight.w600)),
+                            ]),
+                          GestureDetector(
+                            onTap: () => _increment(svc),
+                            behavior: HitTestBehavior.opaque,
+                            child: Container(width: 34, height: 34,
+                                alignment: Alignment.center,
+                                child: Icon(Icons.add_rounded,
+                                    color: qty < CartService.maxQtyFor(name)
+                                        ? _cyan : _faint,
+                                    size: 18))),
+                        ])),
+                  ),
+
+                // ── Add button (not in cart, cartable) ────────
+                if (!inCart && isCartable && !isFullHouse)
+                  Positioned(
+                    bottom: 8, right: 8,
+                    child: GestureDetector(
+                      onTap: () => _increment(svc),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        width: 30, height: 30,
+                        decoration: BoxDecoration(
+                          color: _cyan,
+                          borderRadius: BorderRadius.circular(8),
+                          boxShadow: [BoxShadow(
+                              color: _cyan.withValues(alpha: 0.4),
+                              blurRadius: 6,
+                              offset: const Offset(0, 2))]),
+                        child: const Icon(Icons.add_rounded,
+                            color: Colors.white, size: 18)))),
               ]),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           Text(name, maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(color: _ink,
-                  fontSize: 14 * s, fontWeight: FontWeight.w800,
-                  letterSpacing: 0.1)),
+                  fontSize: 13 * s, fontWeight: FontWeight.w800)),
           const SizedBox(height: 3),
-          isFirstBookingPrice
-              ? Row(children: [
-                  Text('₹25',
-                      style: TextStyle(color: _greenDk,
-                          fontSize: 15 * s, fontWeight: FontWeight.w900)),
-                  const SizedBox(width: 6),
-                  Text('₹$basePrice',
-                      style: TextStyle(color: _faint,
-                          fontSize: 11.5 * s, fontWeight: FontWeight.w600,
+          Row(children: [
+            Expanded(
+              child: isFirstPrice
+                  ? Row(children: [
+                      Text(inCart ? '₹$totalPrice' : '₹25',
+                          style: TextStyle(color: _greenDk,
+                              fontSize: 13 * s, fontWeight: FontWeight.w900)),
+                      const SizedBox(width: 4),
+                      Text('₹$basePrice', style: TextStyle(color: _faint,
+                          fontSize: 10 * s,
                           decoration: TextDecoration.lineThrough)),
-                ])
-              : Text('₹$basePrice ', maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                      color: _cyanDk,
-                      fontSize: 13.5 * s, fontWeight: FontWeight.w800)),
+                    ])
+                  : Text(
+                      inCart ? '₹$totalPrice' : '₹$basePrice',
+                      style: TextStyle(
+                        color: inCart ? _cyan : Colors.black,
+                        fontSize: 13 * s, fontWeight: FontWeight.w800)),
+            ),
+            if (inCart && qty > 1)
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: _cyan.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(6)),
+                child: Text(
+                  itemType == CartItemType.hourly
+                      ? '×${qty}hr' : '×$qty',
+                  style: TextStyle(color: _cyan,
+                      fontSize: 11 * s,
+                      fontWeight: FontWeight.w800))),
+          ]),
         ],
       ),
     );
   }
 
-  // ── Shared pieces ─────────────────────────────────────────────
   Widget _ratingBadge(Map<String, dynamic> svc) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
     decoration: BoxDecoration(
       color: Colors.white, borderRadius: BorderRadius.circular(20),
-      boxShadow: [BoxShadow(
-          color: Colors.black.withValues(alpha: 0.08),
+      boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.08),
           blurRadius: 6, offset: const Offset(0, 2))]),
     child: Row(mainAxisSize: MainAxisSize.min, children: [
       const Icon(Icons.star_rounded, size: 12, color: _amber),
       const SizedBox(width: 2),
       Text(_rating(svc), style: const TextStyle(fontSize: 10.5,
           fontWeight: FontWeight.w800, color: _ink)),
-    ]),
-  );
+    ]));
 
   String _rating(Map<String, dynamic> svc) {
     final r = svc['rating'];
@@ -548,36 +649,27 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   Widget _serviceImage(Map<String, dynamic> svc, IconData icon) {
     final url = (svc['image_url'] as String?)?.trim();
-
     Widget placeholder() => Container(
       decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-          colors: [_cyanBg, _cyanBg2])),
+        gradient: LinearGradient(begin: Alignment.topLeft,
+            end: Alignment.bottomRight, colors: [_cyanBg, _cyanBg2])),
       child: Center(child: Icon(icon, size: 40,
-          color: _cyanDk.withValues(alpha: 0.50))),
-    );
+          color: Colors.black.withValues(alpha: 0.50))));
 
     if (url != null && url.isNotEmpty) {
       return Image.network(url, fit: BoxFit.cover,
-        loadingBuilder: (ctx, child, prog) =>
-            prog == null ? child : Container(color: const Color(0xFFF1F5F9)),
-        errorBuilder: (ctx, e, s) {
-          final asset = _assetFor(svc);
-          if (asset != null) {
-            return Image.asset(asset, fit: BoxFit.cover,
+          loadingBuilder: (ctx, child, prog) =>
+              prog == null ? child : Container(color: const Color(0xFFF1F5F9)),
+          errorBuilder: (ctx, e, s) {
+            final asset = _assetFor(svc);
+            if (asset != null) return Image.asset(asset, fit: BoxFit.cover,
                 errorBuilder: (_, __, ___) => placeholder());
-          }
-          return placeholder();
-        });
+            return placeholder();
+          });
     }
-
     final asset = _assetFor(svc);
-    if (asset != null) {
-      return Image.asset(asset, fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => placeholder());
-    }
-
+    if (asset != null) return Image.asset(asset, fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => placeholder());
     return placeholder();
   }
 
@@ -592,31 +684,288 @@ class _ServicesScreenState extends State<ServicesScreen>
       const SizedBox(height: 2),
       const Text('Schedule & book for later',
           style: TextStyle(fontSize: 12.5, color: _ink)),
-    ]),
-  );
+    ]));
 
   Widget _buildEmpty() => Padding(
     padding: const EdgeInsets.symmetric(vertical: 52),
     child: Column(children: [
       Container(width: 66, height: 66,
-        decoration: const BoxDecoration(color: _cyanBg, shape: BoxShape.circle),
-        child: const Icon(Icons.search_off_rounded, size: 28, color: _cyanDk)),
+        decoration: const BoxDecoration(
+            color: Color(0xFFECFEFF), shape: BoxShape.circle),
+        child: const Icon(Icons.search_off_rounded, size: 28, color: Colors.black)),
       const SizedBox(height: 14),
       const Text('No services found', style: TextStyle(color: _ink,
           fontSize: 15, fontWeight: FontWeight.w800)),
       const SizedBox(height: 4),
       const Text('Try a different category',
           style: TextStyle(color: _ink, fontSize: 13)),
-    ]),
-  );
+    ]));
 }
 
-// ═══════════════════════════════════════════════════════════════
-// TOP HEADER BAR — transparent at rest, fades to solid white once
-// the user scrolls past a small threshold. Listens to the scroll
-// controller directly so only this small widget rebuilds on scroll,
-// not the whole screen.
-// ═══════════════════════════════════════════════════════════════
+// ── Cart Bottom Bar ───────────────────────────────────────────────
+class _CartBottomBar extends StatelessWidget {
+  final CartService cart;
+  final VoidCallback onCheckout;
+  const _CartBottomBar({required this.cart, required this.onCheckout});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: cart,
+      builder: (ctx, _) {
+        final totalQty = cart.totalQuantity;
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0F172A),
+            borderRadius: BorderRadius.circular(16),
+            boxShadow: [BoxShadow(
+                color: Colors.black.withValues(alpha: 0.25),
+                blurRadius: 20, offset: const Offset(0, 8))]),
+          child: Row(children: [
+            GestureDetector(
+              onTap: onCheckout,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                child: Row(children: [
+                  const Icon(Icons.keyboard_arrow_up_rounded,
+                      color: Colors.white70, size: 18),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$totalQty item${totalQty == 1 ? "" : "s"}',
+                    style: const TextStyle(color: Colors.white,
+                        fontSize: 13, fontWeight: FontWeight.w700)),
+                ]))),
+            Container(width: 1, height: 28,
+                color: Colors.white.withValues(alpha: 0.12)),
+            Expanded(
+              child: GestureDetector(
+                onTap: onCheckout,
+                child: Container(
+                  margin: const EdgeInsets.all(4),
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00B1FC),
+                    borderRadius: BorderRadius.circular(12)),
+                  child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                    Text('Go to cart · ₹${cart.totalPrice}',
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 13, fontWeight: FontWeight.w900)),
+                    const SizedBox(width: 6),
+                    const Icon(Icons.arrow_forward_rounded,
+                        color: Colors.white, size: 15),
+                  ])))),
+          ]),
+        );
+      });
+  }
+}
+
+// ── Cart Sheet (review before booking) ────────────────────────────
+class _CartSheet extends StatelessWidget {
+  final CartService cart;
+  final bool isFirstBooking;
+  const _CartSheet({required this.cart, required this.isFirstBooking});
+
+  @override
+  Widget build(BuildContext context) {
+    final botPad = MediaQuery.of(context).padding.bottom;
+    return Scaffold(
+      backgroundColor: const Color(0xFFF8FAFC),
+      body: Column(children: [
+        // Header
+        Container(
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft, end: Alignment.bottomRight,
+              colors: [Color(0xFF0C4A6E), Color(0xFF00B1FC)]),
+          ),
+          child: SafeArea(bottom: false, child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+            child: Row(children: [
+              GestureDetector(
+                onTap: () => Navigator.pop(context),
+                child: Container(
+                  width: 38, height: 38,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.25))),
+                  child: const Icon(Icons.arrow_back_ios_new,
+                      color: Colors.white, size: 16))),
+              const SizedBox(width: 12),
+              const Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Your Cart', style: TextStyle(color: Colors.white,
+                    fontSize: 18, fontWeight: FontWeight.w900)),
+                Text('Review services before booking',
+                    style: TextStyle(color: Colors.white70, fontSize: 11)),
+              ])),
+            ]),
+          )),
+        ),
+        // Items
+        Expanded(child: ListenableBuilder(
+          listenable: cart,
+          builder: (ctx, _) => ListView(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+            children: [
+              ...cart.items.map((item) => Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFE2E8F0))),
+                child: Row(children: [
+                  Container(
+                    width: 44, height: 44,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFECFEFF),
+                      borderRadius: BorderRadius.circular(12)),
+                    child: Center(child: Text(item.emoji ?? '🧹',
+                        style: const TextStyle(fontSize: 22)))),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(item.serviceName, style: const TextStyle(
+                        fontWeight: FontWeight.w800, fontSize: 14,
+                        color: Color(0xFF0F172A))),
+                    Text('${item.quantity} × ${item.durationPerUnit} min · ₹${item.pricePerUnit} each',
+                        style: const TextStyle(color: Color(0xFF94A3B8),
+                            fontSize: 11)),
+                  ])),
+                  // Quantity counter
+                  Row(children: [
+                    GestureDetector(
+                      onTap: () => cart.decrement(item.serviceId),
+                      child: Container(
+                        width: 28, height: 28,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFECFEFF),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFF00B1FC))),
+                        child: const Icon(Icons.remove_rounded,
+                            color: Color(0xFF00B1FC), size: 14))),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Text('${item.quantity}',
+                          style: const TextStyle(fontWeight: FontWeight.w900,
+                              fontSize: 15, color: Color(0xFF0F172A)))),
+                    GestureDetector(
+                      onTap: () => cart.increment(item),
+                      child: Container(
+                        width: 28, height: 28,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00B1FC),
+                          borderRadius: BorderRadius.circular(8)),
+                        child: const Icon(Icons.add_rounded,
+                            color: Colors.white, size: 14))),
+                    const SizedBox(width: 8),
+                    Text('₹${item.totalPrice}', style: const TextStyle(
+                        fontWeight: FontWeight.w900, fontSize: 15,
+                        color: Color(0xFF0F172A))),
+                  ]),
+                ]),
+              )),
+              // Summary
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFECFEFF),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0xFFA5F3FC))),
+                child: Column(children: [
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                    const Text('Total Duration',
+                        style: TextStyle(color: Color(0xFF0891B2), fontSize: 13)),
+                    Text('${cart.totalDurationMins} min',
+                        style: const TextStyle(fontWeight: FontWeight.w800,
+                            color: Color(0xFF0F172A), fontSize: 13)),
+                  ]),
+                  const SizedBox(height: 8),
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                    const Text('Total Price',
+                        style: TextStyle(color: Color(0xFF0891B2), fontSize: 13)),
+                    Text('₹${cart.totalPrice}',
+                        style: const TextStyle(fontWeight: FontWeight.w900,
+                            color: Color(0xFF0F172A), fontSize: 18)),
+                  ]),
+                ]),
+              ),
+            ],
+          ),
+        )),
+        // Checkout button
+        Container(
+          padding: EdgeInsets.fromLTRB(16, 14, 16, botPad + 14),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(top: BorderSide(color: Color(0xFFE2E8F0)))),
+          child: ListenableBuilder(
+            listenable: cart,
+            builder: (ctx, _) => cart.isEmpty
+                ? const SizedBox.shrink()
+                : Column(mainAxisSize: MainAxisSize.min, children: [
+                    GestureDetector(
+                      onTap: () {
+                        Navigator.pop(context);
+                        Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => BookingFlowScreen(
+                            mode:           'schedule',
+                            cartItems:      cart.toCartItems(),
+                            isFirstBooking: isFirstBooking,
+                          ),
+                        ));
+                      },
+                      child: Container(
+                        height: 54, width: double.infinity,
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                              colors: [Color(0xFF00B1FC), Color(0xFF0E7490)]),
+                          borderRadius: BorderRadius.circular(16),
+                          boxShadow: [BoxShadow(
+                              color: const Color(0xFF00B1FC).withValues(alpha: 0.4),
+                              blurRadius: 14, offset: const Offset(0, 5))]),
+                        child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                          const Icon(Icons.calendar_month_rounded,
+                              color: Colors.white, size: 20),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Schedule ${cart.count} Service${cart.count == 1 ? '' : 's'} · ₹${cart.totalPrice}',
+                            style: const TextStyle(color: Colors.white,
+                                fontSize: 15, fontWeight: FontWeight.w900)),
+                        ]),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    GestureDetector(
+                      onTap: () {
+                        cart.clear();
+                        Navigator.pop(context);
+                      },
+                      child: const Text('Clear cart',
+                          style: TextStyle(color: Color(0xFF94A3B8),
+                              fontSize: 13, fontWeight: FontWeight.w600))),
+                  ]),
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
+
+// Proxy widget to launch BookingFlowScreen — keeps services_screen
+
+// ── Top Header Bar ────────────────────────────────────────────────
 class _TopHeaderBar extends StatefulWidget {
   final ScrollController scrollController;
   final double topPad;
@@ -626,9 +975,11 @@ class _TopHeaderBar extends StatefulWidget {
   final String primaryLabel;
   final String secondaryLine;
   final String userInitial;
+  final int cartCount;
   final VoidCallback onLocationTap;
   final VoidCallback onNotificationsTap;
   final VoidCallback onProfileTap;
+  final VoidCallback onCartTap;
 
   const _TopHeaderBar({
     required this.scrollController,
@@ -639,9 +990,11 @@ class _TopHeaderBar extends StatefulWidget {
     required this.primaryLabel,
     required this.secondaryLine,
     required this.userInitial,
+    required this.cartCount,
     required this.onLocationTap,
     required this.onNotificationsTap,
     required this.onProfileTap,
+    required this.onCartTap,
   });
 
   @override
@@ -650,10 +1003,9 @@ class _TopHeaderBar extends StatefulWidget {
 
 class _TopHeaderBarState extends State<_TopHeaderBar> {
   static const _ink    = Color(0xFF0F172A);
-  static const _muted  = Color(0xFF64748B);
   static const _border = Color(0xFFE8EDF2);
-  static const _cyan   = Color(0xFF06B6D4);
-  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyan   = Color(0xFF00B1FC);
+  static const _cyanDk = Color(0xFF00B1FC);
 
   static const _scrollThreshold = 24.0;
   bool _solid = false;
@@ -676,9 +1028,7 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
   void _onScroll() {
     if (!widget.scrollController.hasClients) return;
     final shouldBeSolid = widget.scrollController.offset > _scrollThreshold;
-    if (shouldBeSolid != _solid) {
-      setState(() => _solid = shouldBeSolid);
-    }
+    if (shouldBeSolid != _solid) setState(() => _solid = shouldBeSolid);
   }
 
   @override
@@ -690,7 +1040,6 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
   @override
   Widget build(BuildContext context) {
     final s = widget.scale;
-
     return FadeTransition(
       opacity: widget.fade,
       child: AnimatedContainer(
@@ -698,12 +1047,9 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
         curve: Curves.easeOut,
         decoration: BoxDecoration(
           color: _solid ? Colors.white : Colors.transparent,
-          boxShadow: _solid
-              ? [BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 10, offset: const Offset(0, 4))]
-              : [],
-        ),
+          boxShadow: _solid ? [BoxShadow(
+              color: Colors.black.withValues(alpha: 0.05),
+              blurRadius: 10, offset: const Offset(0, 4))] : []),
         child: Padding(
           padding: EdgeInsets.fromLTRB(20, widget.topPad + 14, 20, 14),
           child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -712,16 +1058,12 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
                 onTap: widget.onLocationTap,
                 behavior: HitTestBehavior.opaque,
                 child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
+                    crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Row(children: [
-                    Flexible(
-                      child: Text(widget.primaryLabel,
-                          maxLines: 1, overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              color: _ink, fontSize: 20 * s,
-                              fontWeight: FontWeight.w800)),
-                    ),
+                    Flexible(child: Text(widget.primaryLabel,
+                        maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: _ink, fontSize: 20 * s,
+                            fontWeight: FontWeight.w800))),
                     const SizedBox(width: 2),
                     const Icon(Icons.keyboard_arrow_down_rounded,
                         size: 22, color: _ink),
@@ -729,14 +1071,42 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
                   const SizedBox(height: 2),
                   Text(widget.secondaryLine,
                       maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                          color: _ink,
-                          fontSize: 12.5 * s,
-                          fontWeight: FontWeight.w600)),
+                      style: TextStyle(color: _ink,
+                          fontSize: 12.5 * s, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 10),
+            // Cart icon with badge
+            GestureDetector(
+              onTap: widget.onCartTap,
+              child: Stack(clipBehavior: Clip.none, children: [
+                Container(
+                  width: 42, height: 42,
+                  decoration: BoxDecoration(
+                    color: widget.cartCount > 0
+                        ? const Color(0xFF0F172A) : Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: _border),
+                    boxShadow: [BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.04),
+                        blurRadius: 6, offset: const Offset(0, 2))]),
+                  child: Icon(Icons.shopping_cart_rounded,
+                      color: widget.cartCount > 0 ? Colors.white : _ink,
+                      size: 20)),
+                if (widget.cartCount > 0)
+                  Positioned(top: -2, right: -2,
+                    child: Container(
+                      width: 18, height: 18,
+                      decoration: const BoxDecoration(
+                          color: Color(0xFF00B1FC), shape: BoxShape.circle),
+                      child: Center(child: Text('${widget.cartCount}',
+                          style: const TextStyle(color: Colors.white,
+                              fontSize: 9, fontWeight: FontWeight.w900))))),
+              ]),
+            ),
+            const SizedBox(width: 8),
+            // Notifications
             GestureDetector(
               onTap: widget.onNotificationsTap,
               child: Stack(clipBehavior: Clip.none, children: [
@@ -758,12 +1128,11 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
                       width: 8, height: 8,
                       decoration: BoxDecoration(
                         color: const Color(0xFFEF4444), shape: BoxShape.circle,
-                        border: Border.all(color: Colors.white, width: 1.5))),
-                  ),
-                )),
+                        border: Border.all(color: Colors.white, width: 1.5)))))),
               ]),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
+            // Profile
             GestureDetector(
               onTap: widget.onProfileTap,
               child: Container(
@@ -772,13 +1141,11 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
                   gradient: const LinearGradient(colors: [_cyan, _cyanDk]),
                   shape: BoxShape.circle,
                   boxShadow: [BoxShadow(
-                      color: _cyan.withValues(alpha: 0.30),
+                      color: Colors.black.withValues(alpha: 0.30),
                       blurRadius: 10, offset: const Offset(0, 4))]),
-                child: Center(child: Text(
-                  widget.userInitial,
-                  style: const TextStyle(color: Colors.white,
-                      fontWeight: FontWeight.w800, fontSize: 16))),
-              ),
+                child: Center(child: Text(widget.userInitial,
+                    style: const TextStyle(color: Colors.white,
+                        fontWeight: FontWeight.w800, fontSize: 16)))),
             ),
           ]),
         ),
@@ -787,9 +1154,7 @@ class _TopHeaderBarState extends State<_TopHeaderBar> {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-// NOTIFICATIONS SHEET
-// ═══════════════════════════════════════════════════════════════
+// ── Notifications Sheet (unchanged) ──────────────────────────────
 class _NotificationsSheet extends StatefulWidget {
   final SupabaseClient supabase;
   const _NotificationsSheet({required this.supabase});
@@ -798,8 +1163,8 @@ class _NotificationsSheet extends StatefulWidget {
 }
 
 class _NotificationsSheetState extends State<_NotificationsSheet> {
-  static const _cyan   = Color(0xFF06B6D4);
-  static const _cyanDk = Color(0xFF0891B2);
+  static const _cyan   = Color(0xFF00B1FC);
+  static const _cyanDk = Color(0xFF00B1FC);
   static const _cyanBg = Color(0xFFECFEFF);
   static const _ink    = Color(0xFF0F172A);
   static const _muted  = Color(0xFF64748B);
@@ -846,16 +1211,8 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
           return;
         }
       }
-    } catch (e) {
-      debugPrint('Notifications sheet load error: $e');
-    }
-    if (mounted) {
-      setState(() {
-        _new = _sampleNew;
-        _earlier = _sampleEarlier;
-        _loading = false;
-      });
-    }
+    } catch (e) { debugPrint('Notifications sheet load error: $e'); }
+    if (mounted) setState(() { _new = []; _earlier = []; _loading = false; });
   }
 
   String _ago(DateTime t, DateTime now) {
@@ -867,28 +1224,6 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
     if (d.inDays < 7)     return '${d.inDays}d ago';
     return '${(d.inDays / 7).floor()}w ago';
   }
-
-  static final _sampleNew = [
-    _Notif(title: 'Booking confirmed',
-        body: 'Your bathroom deep clean is scheduled for tomorrow, 10:00 AM.',
-        time: '2h ago', unread: true, isNew: true,
-        icon: Icons.event_available_rounded),
-    _Notif(title: 'Offer applied',
-        body: 'You saved ₹100 with code CLEAN20 on your last booking.',
-        time: '5h ago', unread: true, isNew: true,
-        icon: Icons.local_offer_rounded),
-  ];
-  static final _sampleEarlier = [
-    _Notif(title: 'Your pro is on the way',
-        body: 'Rahul is arriving for your kitchen deep clean.',
-        time: 'Yesterday', icon: Icons.directions_car_rounded),
-    _Notif(title: 'Rate your service',
-        body: 'How was your sofa cleaning? Tap to leave a review.',
-        time: '2d ago', icon: Icons.star_rounded),
-    _Notif(title: 'Welcome to Cleenzo',
-        body: 'Book your first clean and get 20% off your order.',
-        time: '1w ago', icon: Icons.celebration_rounded),
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -902,8 +1237,8 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
         child: Column(children: [
           const SizedBox(height: 10),
           Container(width: 40, height: 4,
-            decoration: BoxDecoration(
-              color: _border, borderRadius: BorderRadius.circular(2))),
+            decoration: BoxDecoration(color: _border,
+                borderRadius: BorderRadius.circular(2))),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
             child: Row(
@@ -913,16 +1248,29 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
               GestureDetector(
                 onTap: () => Navigator.pop(ctx),
                 child: Container(width: 32, height: 32,
-                  decoration: const BoxDecoration(
-                      color: _cyanBg, shape: BoxShape.circle),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFF1F5F9),
+                      borderRadius: BorderRadius.circular(10)),
                   child: const Icon(Icons.close_rounded,
-                      size: 18, color: _cyanDk))),
+                      size: 18, color: Color(0xFF64748B)))),
             ])),
           Expanded(child: _loading
             ? const Center(child: CircularProgressIndicator(
-                color: _cyan, strokeWidth: 2.5))
+                color: Color(0xFF00B1FC), strokeWidth: 2.5))
             : (_new.isEmpty && _earlier.isEmpty)
-              ? _empty()
+              ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                  Container(width: 66, height: 66,
+                    decoration: const BoxDecoration(
+                        color: Color(0xFFECFEFF), shape: BoxShape.circle),
+                    child: const Icon(Icons.notifications_none_rounded,
+                        size: 30, color: Colors.black)),
+                  const SizedBox(height: 14),
+                  const Text("You're all caught up", style: TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
+                  const SizedBox(height: 4),
+                  const Text('No notifications yet',
+                      style: TextStyle(fontSize: 13, color: _muted)),
+                ]))
               : ListView(
                   controller: scrollCtrl,
                   padding: const EdgeInsets.fromLTRB(20, 4, 20, 30),
@@ -950,8 +1298,7 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
     decoration: BoxDecoration(
       color: n.unread ? _cyanBg : Colors.white,
       borderRadius: BorderRadius.circular(14),
-      border: Border.all(
-          color: n.unread ? const Color(0xFFCFFAFE) : _border)),
+      border: Border.all(color: n.unread ? _cyan : _border)),
     child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Container(width: 38, height: 38,
         decoration: const BoxDecoration(
@@ -966,7 +1313,7 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
               fontSize: 13.5, fontWeight: FontWeight.w800, color: _ink))),
           if (n.unread) Container(width: 7, height: 7,
             decoration: const BoxDecoration(
-                color: _cyan, shape: BoxShape.circle)),
+                color: Colors.black, shape: BoxShape.circle)),
         ]),
         const SizedBox(height: 3),
         Text(n.body, style: const TextStyle(
@@ -975,22 +1322,7 @@ class _NotificationsSheetState extends State<_NotificationsSheet> {
         Text(n.time, style: const TextStyle(
             fontSize: 10.5, color: _ink, fontWeight: FontWeight.w600)),
       ])),
-    ]),
-  );
-
-  Widget _empty() => Center(child: Column(
-      mainAxisSize: MainAxisSize.min, children: [
-    Container(width: 66, height: 66,
-      decoration: const BoxDecoration(color: _cyanBg, shape: BoxShape.circle),
-      child: const Icon(Icons.notifications_none_rounded,
-          size: 30, color: _cyanDk)),
-    const SizedBox(height: 14),
-    const Text("You're all caught up", style: TextStyle(
-        fontSize: 15, fontWeight: FontWeight.w800, color: _ink)),
-    const SizedBox(height: 4),
-    const Text('No notifications yet',
-        style: TextStyle(fontSize: 13, color: _ink)),
-  ]));
+    ]));
 }
 
 class _Notif {

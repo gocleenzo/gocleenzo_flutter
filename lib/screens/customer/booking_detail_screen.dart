@@ -57,6 +57,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   // Mark-work-done state
   bool _markingDone = false;
 
+  // Extra time state
+  bool _addingExtraTime = false;
+
   // Review popup state
   bool _reviewPromptShown = false;
 
@@ -163,6 +166,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   // ── Status helpers ───────────────────────────────────────────
   String get _status => _booking?['status'] as String? ?? 'pending';
+  int    get _extraTimeMins => (_booking?['extra_time_mins'] as num?)?.toInt() ?? 0;
   String get _paymentStatus => _booking?['payment_status'] as String? ?? 'cod';
   bool get _isInstant => (_booking?['booking_type'] as String?) == 'instant';
   bool get _hasWorker => _booking?['worker_id'] != null;
@@ -498,6 +502,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               if (_status == 'accepted') _buildVerifyProfessionalCard(),
               if (_status == 'accepted') const SizedBox(height: 14),
               if (_status == 'in_progress') _buildMarkDoneCard(),
+              if (_status == 'in_progress') const SizedBox(height: 14),
+              if (_status == 'in_progress') _buildExtraTimeCard(),
               if (_status == 'in_progress') const SizedBox(height: 14),
               _buildBookingInfoCard(),
               const SizedBox(height: 14),
@@ -1014,6 +1020,11 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       subtitle: 'Payment summary',
       child: Column(children: [
         _priceRow('Service Total', '₹$base', _muted, _ink),
+        if (((_booking?['extra_time_price'] as num?)?.toInt() ?? 0) > 0)
+          _priceRow(
+            '+20 min Extra Time',
+            '₹${(_booking!['extra_time_price'] as num).toInt()}',
+            _muted, const Color(0xFF7C3AED)),
         if (discount > 0)
           _priceRow(
               promo != null ? 'Promo ($promo)' : 'Discount',
@@ -1231,6 +1242,120 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   }
 
   // ── Card helper ──────────────────────────────────────────────
+
+  // ── Extra Time Card (shown while in_progress) ─────────────────
+  Widget _buildExtraTimeCard() {
+    final alreadyAdded = _extraTimeMins > 0;
+
+    return _card(
+      icon: Icons.more_time_rounded,
+      iconColor: const Color(0xFF7C3AED),
+      iconBg: const Color(0xFFEDE9FE),
+      title: 'Need More Time?',
+      subtitle: 'Add 20 extra minutes if the service is still in progress',
+      child: alreadyAdded
+          // ── Already added: show confirmation chip ────────────
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: const Color(0xFF6EE7B7))),
+              child: const Row(children: [
+                Icon(Icons.check_circle_rounded,
+                    color: Color(0xFF059669), size: 18),
+                SizedBox(width: 10),
+                Expanded(child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('+20 min added · ₹59 extra',
+                      style: TextStyle(color: Color(0xFF059669),
+                          fontWeight: FontWeight.w900, fontSize: 13)),
+                  SizedBox(height: 2),
+                  Text('Pay ₹59 extra to the worker in cash',
+                      style: TextStyle(color: Color(0xFF6EE7B7),
+                          fontSize: 11)),
+                ])),
+              ]))
+          // ── Not yet added: show Add button ───────────────────
+          : GestureDetector(
+              onTap: _addingExtraTime ? null : _addExtraTime,
+              child: Container(
+                height: 52,
+                width: double.infinity,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                      colors: [Color(0xFF7C3AED), Color(0xFF6D28D9)]),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [BoxShadow(
+                      color: const Color(0xFF7C3AED).withValues(alpha: 0.35),
+                      blurRadius: 14, offset: const Offset(0, 5))]),
+                child: _addingExtraTime
+                    ? const SizedBox(width: 22, height: 22,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2.5))
+                    : const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.more_time_rounded,
+                              color: Colors.white, size: 18),
+                          SizedBox(width: 8),
+                          Text('+20 min · ₹59',
+                              style: TextStyle(color: Colors.white,
+                                  fontWeight: FontWeight.w900, fontSize: 15)),
+                          SizedBox(width: 8),
+                          Text('Add Extra Time',
+                              style: TextStyle(color: Colors.white70,
+                                  fontSize: 13)),
+                        ]),
+              )),
+    );
+  }
+
+  // ── Add extra time logic ────────────────────────────────────────
+  Future<void> _addExtraTime() async {
+    if (_addingExtraTime) return;
+    setState(() => _addingExtraTime = true);
+
+    try {
+      final bookingId   = widget.bookingId;
+      final currentDur  = (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 0;
+      final currentFinal = (_booking?['final_amount'] as num?)?.toInt() ?? 0;
+
+      // Update booking: +20 mins duration, +₹59 final amount,
+      // set extra_time_mins = 20, extra_time_price = 59
+      await _supabase.from('bookings').update({
+        'extra_time_mins':         20,
+        'extra_time_price':        59,
+        'booking_duration_minutes': currentDur + 20,
+        'final_amount':             currentFinal + 59,
+      }).eq('id', bookingId);
+
+      // Reload booking to reflect changes in UI
+      await _loadBooking();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('✅ +20 min added! Pay ₹59 extra to the worker.'),
+          backgroundColor: Color(0xFF059669),
+          duration: Duration(seconds: 3),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      debugPrint('Extra time error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Failed to add extra time. Please try again.'),
+          backgroundColor: Color(0xFFDC2626),
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _addingExtraTime = false);
+    }
+  }
+
   Widget _card({
     required IconData icon,
     Color? iconColor,
