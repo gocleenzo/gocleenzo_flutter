@@ -45,3 +45,5 @@ app.*.map.json
 /android/app/release
 ios/Pods/
 ios/.symlinks/
+flutter_macos_arm64_3.32.2-stable.zip
+*.zip
