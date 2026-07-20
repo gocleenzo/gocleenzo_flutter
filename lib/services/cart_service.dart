@@ -1,32 +1,78 @@
 import 'package:flutter/foundation.dart';
 
-// ── Cart item types ───────────────────────────────────────────
-enum CartItemType { perUnit, fixed, hourly }
+// ── Tier definition ───────────────────────────────────────────────
+class ServiceTier {
+  final int mins;
+  final int price;
+  const ServiceTier(this.mins, this.price);
+}
+
+// ── Cart item types ───────────────────────────────────────────────
+enum CartItemType { tiered, hourly, fixed }
 
 /// A single cart entry.
 class CartItem {
   final String       serviceId;
   final String       serviceName;
-  final int          pricePerUnit;  // price per unit/hour/fixed
-  final int          durationPerUnit; // mins per unit (30 / 60 / fixed)
   final String?      emoji;
-  final int          maxQty;        // hard cap on quantity
   final CartItemType type;
-  int                quantity;      // units / hours added
+  final List<ServiceTier> tiers; // empty for fixed/hourly
+  final int          pricePerUnit;   // for hourly/fixed
+  final int          durationPerUnit; // for hourly/fixed
+  final int          maxQty;
+  int                quantity; // tier index (0=30min,1=60min,2=90min) OR hours for hourly
 
   CartItem({
     required this.serviceId,
     required this.serviceName,
-    required this.pricePerUnit,
-    required this.durationPerUnit,
     this.emoji,
-    this.maxQty = 1,
-    this.type   = CartItemType.fixed,
+    required this.type,
+    this.tiers = const [],
+    this.pricePerUnit = 0,
+    this.durationPerUnit = 0,
+    this.maxQty = 3,
     this.quantity = 1,
   });
 
-  int get totalPrice    => pricePerUnit * quantity;
-  int get totalDuration => durationPerUnit * quantity;
+  // For tiered services: index into tiers list
+  ServiceTier? get currentTier =>
+      type == CartItemType.tiered && quantity <= tiers.length
+          ? tiers[quantity - 1]
+          : null;
+
+  int get totalPrice {
+    switch (type) {
+      case CartItemType.tiered:
+        return currentTier?.price ?? 0;
+      case CartItemType.hourly:
+        return pricePerUnit * quantity;
+      case CartItemType.fixed:
+        return pricePerUnit;
+    }
+  }
+
+  int get totalDuration {
+    switch (type) {
+      case CartItemType.tiered:
+        return currentTier?.mins ?? 0;
+      case CartItemType.hourly:
+        return durationPerUnit * quantity;
+      case CartItemType.fixed:
+        return durationPerUnit;
+    }
+  }
+
+  // Label shown on counter (e.g. "30 min", "2 hr", "180 min")
+  String get durationLabel {
+    switch (type) {
+      case CartItemType.tiered:
+        return '${currentTier?.mins ?? 0} min';
+      case CartItemType.hourly:
+        return '${quantity}hr';
+      case CartItemType.fixed:
+        return '$durationPerUnit min';
+    }
+  }
 
   Map<String, dynamic> toBookingItem() => {
     'service_id':       serviceId,
@@ -36,105 +82,244 @@ class CartItem {
   };
 }
 
-/// Global singleton cart — drives both the services grid and detail screen.
+/// Global singleton cart.
 class CartService extends ChangeNotifier {
   CartService._();
   static final CartService instance = CartService._();
 
-  // ── Service config ────────────────────────────────────────────
-  // Full House is NOT in this map — it has no cart button.
-  static const _config = <String, Map<String, dynamic>>{
-    // 6 × 30min per-unit services
-    'Bathroom Cleaning':  {'type': 'perUnit', 'duration': 30,  'maxQty': 6,  'price': 149},
-    'Utensil Cleaning':   {'type': 'perUnit', 'duration': 30,  'maxQty': 1,  'price': 129},
-    'Fan Cleaning':       {'type': 'perUnit', 'duration': 30,  'maxQty': 10, 'price': 49},
-    'Sweeping & Mopping': {'type': 'perUnit', 'duration': 30,  'maxQty': 1,  'price': 129},
-    'Dusting & Wiping':   {'type': 'perUnit', 'duration': 30,  'maxQty': 1,  'price': 129},
-    'Balcony Cleaning':   {'type': 'perUnit', 'duration': 30,  'maxQty': 4,  'price': 129},
-    // Fixed duration services (add once only)
-    'Kitchen Cleaning':         {'type': 'fixed', 'duration': 60,  'maxQty': 1, 'price': 149},
-    'Refrigerator Cleaning':    {'type': 'fixed', 'duration': 60,  'maxQty': 1, 'price': 249},
-    'Wardrobe Cleaning':        {'type': 'fixed', 'duration': 150, 'maxQty': 1, 'price': 349},
-    'Kitchen Cabinet Cleaning': {'type': 'fixed', 'duration': 180, 'maxQty': 1, 'price': 599},
-    'Pre-Party Cleaning':       {'type': 'fixed', 'duration': 120, 'maxQty': 1, 'price': 299},
-    'After-Party Cleanup':      {'type': 'fixed', 'duration': 120, 'maxQty': 1, 'price': 379},
-    // Hourly service — each unit = 60min, max 4 units (240min)
-    'Hourly Cleaning':          {'type': 'hourly', 'duration': 60, 'maxQty': 4, 'price': 99},
+  // ── Service config ─────────────────────────────────────────────
+  // Standard tiers (30/60/90 min)
+  static const _standardTiers = [
+    ServiceTier(30,  79),
+    ServiceTier(60,  149),
+    ServiceTier(90,  209),
+  ];
+
+  // First-booking tiers (₹25 for 30min, then standard)
+  static const _firstBookingTiers = [
+    ServiceTier(30,  25),
+    ServiceTier(60,  149),
+    ServiceTier(90,  209),
+  ];
+
+  // Hourly tiers (each unit = 1hr = ₹99)
+  static const _hourlyMaxQty = 4; // max 4 hours = 240min
+
+  static const _tieredServices = {
+    'Bathroom Cleaning',
+    'Utensil Cleaning',
+    'Fan Cleaning',
+    'Sweeping & Mopping',
+    'Dusting & Wiping',
+    'Balcony Cleaning',
+    'Kitchen Cleaning',
+    'Refrigerator Cleaning',
   };
 
-  // Total cart duration cap in minutes (except hourly which has own cap)
-  static const int cartMaxMins = 180;
+  static const _firstBookingEligible = {
+    'Bathroom Cleaning',
+    'Utensil Cleaning',
+    'Fan Cleaning',
+    'Sweeping & Mopping',
+    'Dusting & Wiping',
+    'Balcony Cleaning',
+  };
 
-  static bool isCartable(String name) => _config.containsKey(name);
+  static const _hourlyServices = {'Hourly Cleaning'};
+  static const _noCartServices = {'Full House Cleaning'};
+
+  static bool isCartable(String name) => !_noCartServices.contains(name);
 
   static CartItemType typeOf(String name) {
-    final t = _config[name]?['type'] as String? ?? 'fixed';
-    switch (t) {
-      case 'perUnit': return CartItemType.perUnit;
-      case 'hourly':  return CartItemType.hourly;
-      default:        return CartItemType.fixed;
+    if (_tieredServices.contains(name)) return CartItemType.tiered;
+    if (_hourlyServices.contains(name)) return CartItemType.hourly;
+    return CartItemType.fixed;
+  }
+
+  static List<ServiceTier> tiersFor(String name, {bool isFirstBooking = false}) {
+    if (!_tieredServices.contains(name)) return [];
+    if (isFirstBooking && _firstBookingEligible.contains(name)) {
+      return _firstBookingTiers;
     }
+    return _standardTiers;
   }
 
-  static int maxQtyFor(String name)     => (_config[name]?['maxQty']   as int?) ?? 1;
-  static int durationFor(String name)   => (_config[name]?['duration'] as int?) ?? 60;
-  static int defaultPriceFor(String name) => (_config[name]?['price'] as int?) ?? 0;
+  static int maxQtyFor(String name) {
+    if (_hourlyServices.contains(name)) return _hourlyMaxQty;
+    if (_tieredServices.contains(name)) return 3; // 3 tiers
+    return 1; // fixed services: max 1
+  }
 
-  // ── State ─────────────────────────────────────────────────────
+  static int durationFor(String name) {
+    if (_hourlyServices.contains(name)) return 60;
+    if (_tieredServices.contains(name)) return 30; // base duration
+    // Fixed services
+    const fixedDurations = {
+      'Kitchen Cabinet Cleaning': 180,
+      'Wardrobe Cleaning':        150,
+  
+    };
+    return fixedDurations[name] ?? 60;
+  }
+
+  static int defaultPriceFor(String name) {
+    if (_tieredServices.contains(name)) return 79;
+    if (_hourlyServices.contains(name)) return 99;
+    const fixedPrices = {
+      'Kitchen Cabinet Cleaning': 499,
+      'Wardrobe Cleaning':        349,
+  
+    };
+    return fixedPrices[name] ?? 0;
+  }
+
+  // ── State ──────────────────────────────────────────────────────
   final Map<String, CartItem> _items = {};
+  bool _isFirstBooking = false;
 
-  List<CartItem> get items           => _items.values.toList();
-  int  get count                     => _items.length;
-  int  get totalQuantity             => _items.values.fold(0, (s, i) => s + i.quantity);
-  bool get isEmpty                   => _items.isEmpty;
-  bool get isNotEmpty                => _items.isNotEmpty;
-  int  get totalPrice                => _items.values.fold(0, (s, i) => s + i.totalPrice);
-  int  get totalDurationMins         => _items.values.fold(0, (s, i) => s + i.totalDuration);
-
-  bool contains(String serviceId)    => _items.containsKey(serviceId);
-  int  quantityOf(String serviceId)  => _items[serviceId]?.quantity ?? 0;
-
-  // ── Can we add more? (respects 180min cap) ───────────────────
-  bool canAdd(String name, {int addDuration = 0}) {
-    final dur = addDuration > 0 ? addDuration : durationFor(name);
-    // Hourly bypasses cart cap (has its own 240min cap)
-    if (typeOf(name) == CartItemType.hourly) return true;
-    return totalDurationMins + dur <= cartMaxMins;
+  void setFirstBooking(bool v) {
+    _isFirstBooking = v;
+    notifyListeners();
   }
 
-  // ── Mutations ─────────────────────────────────────────────────
+  List<CartItem> get items          => _items.values.toList();
+  int  get count                    => _items.length;
+  int  get totalQuantity            => _items.values.fold(0, (s, i) => s + i.quantity);
+  bool get isEmpty                  => _items.isEmpty;
+  bool get isNotEmpty               => _items.isNotEmpty;
+  int  get totalPrice               => _items.values.fold(0, (s, i) => s + i.totalPrice);
+  int  get totalDurationMins        => _items.values.fold(0, (s, i) => s + i.totalDuration);
 
-  /// Add 1 unit — respects maxQty and cartMaxMins cap.
-  /// Returns true if added, false if blocked.
-  bool increment(CartItem template) {
-    final name = template.serviceName;
-    final dur  = template.durationPerUnit;
+  bool contains(String serviceId)   => _items.containsKey(serviceId);
+  int  quantityOf(String serviceId) => _items[serviceId]?.quantity ?? 0;
+  CartItem? itemFor(String serviceId) => _items[serviceId];
 
-    if (_items.containsKey(template.serviceId)) {
-      final item = _items[template.serviceId]!;
-      if (item.quantity >= item.maxQty) return false;
-      // Check total duration cap (skip for hourly)
-      if (item.type != CartItemType.hourly && !canAdd(name, addDuration: dur)) return false;
-      item.quantity++;
-    } else {
-      // Check total duration cap before adding new item
-      if (template.type != CartItemType.hourly && !canAdd(name, addDuration: dur)) return false;
-      _items[template.serviceId] = CartItem(
-        serviceId:       template.serviceId,
+  CartItem _makeItem(String serviceId, String name,
+      int basePrice, String? emoji) {
+    final t = typeOf(name);
+    if (t == CartItemType.tiered) {
+      return CartItem(
+        serviceId:  serviceId,
+        serviceName: name,
+        emoji:      emoji,
+        type:       CartItemType.tiered,
+        tiers:      tiersFor(name, isFirstBooking: _isFirstBooking),
+        maxQty:     3,
+        quantity:   1,
+      );
+    } else if (t == CartItemType.hourly) {
+      return CartItem(
+        serviceId:       serviceId,
         serviceName:     name,
-        pricePerUnit:    template.pricePerUnit,
-        durationPerUnit: dur,
-        emoji:           template.emoji,
-        maxQty:          template.maxQty,
-        type:            template.type,
+        emoji:           emoji,
+        type:            CartItemType.hourly,
+        pricePerUnit:    basePrice > 0 ? basePrice : 99,
+        durationPerUnit: 60,
+        maxQty:          _hourlyMaxQty,
+        quantity:        1,
+      );
+    } else {
+      return CartItem(
+        serviceId:       serviceId,
+        serviceName:     name,
+        emoji:           emoji,
+        type:            CartItemType.fixed,
+        pricePerUnit:    basePrice > 0 ? basePrice : defaultPriceFor(name),
+        durationPerUnit: durationFor(name),
+        maxQty:          1,
         quantity:        1,
       );
     }
-    notifyListeners();
-    return true;
   }
 
-  /// Remove 1 unit — removes item entirely when qty reaches 0.
+  // ── Cap logic ──────────────────────────────────────────────────
+
+  /// Whether the cart contains any hourly service.
+  bool get _hasHourly => _items.values
+      .any((i) => i.type == CartItemType.hourly);
+
+  /// Whether the cart contains any non-hourly service.
+  bool get _hasNonHourly => _items.values
+      .any((i) => i.type != CartItemType.hourly);
+
+  /// Effective max total duration in minutes:
+  /// - Hourly only → 240 min
+  /// - Mixed or non-hourly → 180 min
+  int get effectiveMaxMins {
+    if (_hasHourly && !_hasNonHourly) return 240;
+    return 180;
+  }
+
+  /// How many minutes adding the next step of this service would cost.
+  int _nextStepDuration(CartItem template) {
+    final existing = _items[template.serviceId];
+    if (existing == null) {
+      // First add — costs first tier duration
+      if (template.type == CartItemType.tiered) {
+        final tiers = tiersFor(template.serviceName,
+            isFirstBooking: _isFirstBooking);
+        return tiers.isNotEmpty ? tiers[0].mins : 30;
+      }
+      return template.durationPerUnit > 0
+          ? template.durationPerUnit
+          : durationFor(template.serviceName);
+    }
+    // Already in cart — costs the difference between next and current tier
+    if (existing.type == CartItemType.tiered &&
+        existing.quantity < existing.maxQty) {
+      final tiers = tiersFor(existing.serviceName,
+          isFirstBooking: _isFirstBooking);
+      final nextMins = tiers[existing.quantity].mins;   // next tier
+      final currMins = tiers[existing.quantity - 1].mins; // current tier
+      return nextMins - currMins;
+    }
+    return existing.durationPerUnit;
+  }
+
+  /// Check if adding the next step of this service would exceed the cap.
+  /// Returns null if OK, or the cap exceeded (180 or 240).
+  int? wouldExceedCap(CartItem template) {
+    final isHourly = template.type == CartItemType.hourly;
+
+    // Figure out what the cap would be AFTER adding this item
+    final wouldHaveHourly  = _hasHourly || isHourly;
+    final wouldHaveOther   = _hasNonHourly || !isHourly;
+    final capAfterAdd = (wouldHaveHourly && !wouldHaveOther) ? 240 : 180;
+
+    final step = _nextStepDuration(template);
+    if (totalDurationMins + step > capAfterAdd) return capAfterAdd;
+    return null;
+  }
+
+  // ── Mutations ──────────────────────────────────────────────────
+
+  /// Increment tier/quantity.
+  /// Returns null if OK, or the cap value (180/240) if blocked.
+  int? increment(CartItem template) {
+    final name = template.serviceName;
+
+    // Check per-item max
+    if (_items.containsKey(template.serviceId)) {
+      final item = _items[template.serviceId]!;
+      if (item.quantity >= item.maxQty) return -1; // at item max
+    }
+
+    // Check duration cap
+    final cap = wouldExceedCap(template);
+    if (cap != null) return cap; // blocked by cap
+
+    if (_items.containsKey(template.serviceId)) {
+      _items[template.serviceId]!.quantity++;
+    } else {
+      _items[template.serviceId] = _makeItem(
+        template.serviceId, name,
+        template.pricePerUnit, template.emoji);
+    }
+    notifyListeners();
+    return null; // success
+  }
+
+  /// Decrement tier/quantity. Removes item when reaches 0.
   void decrement(String serviceId) {
     final item = _items[serviceId];
     if (item == null) return;

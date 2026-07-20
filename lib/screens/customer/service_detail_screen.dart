@@ -111,20 +111,21 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     'Hourly Cleaning':            '⏰',
   };
 
+  // Detail hero images — using 1.png until separate hero images are added
+  // To add hero images: create servicename.png and update these paths
   static const Map<String, String> _assetMap = {
-    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning.png',
-    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe.png',
-    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning.png',
-    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning.png',
-    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping.png',
-    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping.png',
-    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning.png',
-    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning.png',
-    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning.png',
-    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet.png',
-    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning.png',
-    'c104cecf-dc59-4514-bbaa-33301da6db1e': 'assets/services/after.png',
-    '44a7c787-41f1-4ed9-b8e6-5066dcc009ce': 'assets/services/pre.png',
+    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning1.png',
+    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe1.png',
+    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning1.png',
+    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning1.png',
+    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping1.png',
+    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping1.png',
+    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning1.png',
+    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning1.png',
+    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning1.png',
+    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet1.png',
+    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning1.png',
+    'e89d50c0-493a-44d6-a49e-7ab5737a464d': 'assets/services/hourly1.png',
   };
 
   String? _assetFor(Map<String, dynamic> svc) =>
@@ -136,11 +137,13 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   bool get _inCart => _cart.quantityOf(widget.serviceId) > 0;
 
   CartItem _buildCartItem() {
-    final name = _service?['name'] as String? ?? '';
+    final name      = _service?['name'] as String? ?? '';
+    final basePrice = (_service?['base_price'] as num?)?.toInt()
+        ?? CartService.defaultPriceFor(name);
     return CartItem(
       serviceId:       widget.serviceId,
       serviceName:     name,
-      pricePerUnit:    _computedPrice,
+      pricePerUnit:    basePrice,
       durationPerUnit: CartService.durationFor(name),
       emoji:           _emojis[name],
       maxQty:          CartService.maxQtyFor(name),
@@ -724,8 +727,12 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   }
 
   Widget _heroImage(Map<String, dynamic> svc, String emoji) {
-    final asset = _assetFor(svc);
-    final url   = (svc['image_url'] as String?)?.trim();
+    // Use detail_image_url for hero banner, fallback to image_url
+    final detailUrl = (svc['detail_image_url'] as String?)?.trim();
+    final fallbackUrl = (svc['image_url'] as String?)?.trim();
+    final url = (detailUrl != null && detailUrl.isNotEmpty)
+        ? detailUrl : fallbackUrl;
+
     Widget placeholder() => Stack(fit: StackFit.expand, children: [
       Container(color: const Color(0xFFECFEFF)),
       Positioned(top: -80, right: -80, child: Container(width: 280, height: 280,
@@ -743,16 +750,13 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
               ]),
           child: Center(child: Text(emoji, style: const TextStyle(fontSize: 54))))),
     ]);
-    if (asset != null) {
-      return Image.asset(asset, fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) {
-            if (url != null && url.isNotEmpty) {
-              return Image.network(url, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => placeholder());
-            }
-            return placeholder();
-          });
+
+    // Local asset path (starts with 'assets/')
+    if (url != null && url.startsWith('assets/')) {
+      return Image.asset(url, fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => placeholder());
     }
+    // Network URL
     if (url != null && url.isNotEmpty) {
       return Image.network(url, fit: BoxFit.cover,
           loadingBuilder: (ctx, child, prog) =>
@@ -786,6 +790,12 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
       color: Colors.white,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         if (_isFirstBookingEligible) _buildFirstBookingBanner(),
+        // BHK selector only for Full House (by_bhk pricing)
+        if (_pricing['type'] == 'by_bhk') ...[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+            child: _buildBhkSelector(_pricing)),
+        ],
         _buildPriceDisplay(),
         const SizedBox(height: 8),
         Divider(color: _border, height: 1, indent: 20, endIndent: 20),
@@ -1203,9 +1213,11 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     final itemType = CartService.typeOf(name);
     final qty      = _cart.quantityOf(widget.serviceId);
     final inCart   = qty > 0;
-    final durPer   = CartService.durationFor(name);
-    final totalDur = durPer * (qty > 0 ? qty : 1);
-    final totalPr  = price * (qty > 0 ? qty : 1);
+    final cartItem_ = _cart.itemFor(widget.serviceId);
+    final durPer    = CartService.durationFor(name);
+    final totalDur  = cartItem_?.totalDuration ?? durPer;
+    final totalPr   = cartItem_?.totalPrice ?? price;
+    final durLabel_ = cartItem_?.durationLabel ?? '$durPer min';
 
     return Positioned(
       left: 0, right: 0, bottom: 0,
@@ -1244,17 +1256,10 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
                 Row(children: [
                   const Icon(Icons.timer_outlined, size: 12, color: _cyan),
                   const SizedBox(width: 4),
-                  Text('$totalDur min total',
+                  Text('$totalDur min',
                       style: const TextStyle(color: _cyan, fontSize: 11,
                           fontWeight: FontWeight.w600)),
-                  if (qty > 1) ...[
-                    const SizedBox(width: 6),
-                    Text(
-                      itemType == CartItemType.hourly
-                          ? '($qty × 60 min)'
-                          : '($qty × $durPer min)',
-                      style: const TextStyle(color: _faint, fontSize: 10)),
-                  ],
+
                 ]),
               ])),
               const SizedBox(width: 12),
@@ -1263,7 +1268,19 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
                 // Not in cart — show Add to Cart button
                 GestureDetector(
                   onTap: () {
-                    _cart.increment(_buildCartItem());
+                    final blocked = _cart.increment(_buildCartItem());
+                    if (blocked != null && blocked != -1 && mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                        content: Text(blocked == 240
+                            ? 'Maximum 4 hours reached'
+                            : 'Cart limit reached ($blocked min)'),
+                        backgroundColor: const Color(0xFF0891B2),
+                        duration: const Duration(seconds: 2),
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                      ));
+                    }
                     setState(() {});
                   },
                   child: Container(
@@ -1321,7 +1338,19 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
                     GestureDetector(
                       onTap: qty < CartService.maxQtyFor(name)
                           ? () {
-                              _cart.increment(_buildCartItem());
+                              final bl = _cart.increment(_buildCartItem());
+                              if (bl != null && bl != -1 && mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                                  content: Text(bl == 240
+                                      ? 'Maximum 4 hours reached'
+                                      : 'Cart limit reached ($bl min)'),
+                                  backgroundColor: const Color(0xFF0891B2),
+                                  duration: const Duration(seconds: 2),
+                                  behavior: SnackBarBehavior.floating,
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12)),
+                                ));
+                              }
                               setState(() {});
                             }
                           : null,

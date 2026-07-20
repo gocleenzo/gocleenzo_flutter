@@ -113,14 +113,9 @@ class _SplashScreenState extends State<SplashScreen>
           return;
         }
 
-        final role = profile['role'] ?? 'customer';
-        if (role == 'worker') {
-          context.go('/worker/dashboard');
-        } else if (role == 'owner') {
-          context.go('/admin-overview');
-        } else {
-          context.go('/services');
-        }
+        // In the customer app, all roles go to /services
+        // Workers should use the separate worker app
+        context.go('/services');
       } catch (e) {
         if (mounted) context.go('/login');
       }
@@ -131,13 +126,9 @@ class _SplashScreenState extends State<SplashScreen>
     final profile = await SupabaseService.getUserProfile(supaUser!.id);
     final role = profile?['role'] ?? 'customer';
     if (!mounted) return;
-    if (role == 'worker') {
-      context.go('/worker/dashboard');
-    } else if (role == 'owner') {
-      context.go('/admin-overview');
-    } else {
-      context.go('/services');
-    }
+    // In the customer app, all roles go to /services
+    // Workers should use the separate worker app
+    context.go('/services');
   }
 
   @override

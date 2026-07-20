@@ -61,8 +61,6 @@ class _ServicesScreenState extends State<ServicesScreen>
     'Wardrobe Cleaning',
     'Kitchen Cabinet Cleaning',
     'Full House Cleaning',
-    'Pre-Party Cleaning',
-    'After-Party Cleanup',
   ];
 
   List<Map<String, dynamic>> _applyCustomOrder(List<Map<String, dynamic>> list) {
@@ -89,20 +87,20 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   bool _isFirstBooking = false;
 
+  // Grid card thumbnails — servicename1.png
   static const Map<String, String> _assetMap = {
-    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning.png',
-    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe.png',
-    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning.png',
-    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning.png',
-    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping.png',
-    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping.png',
-    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning.png',
-    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning.png',
-    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning.png',
-    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet.png',
-    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning.png',
-    'c104cecf-dc59-4514-bbaa-33301da6db1e': 'assets/services/after.png',
-    '44a7c787-41f1-4ed9-b8e6-5066dcc009ce': 'assets/services/pre.png',
+    '6f150323-d018-44c0-bfe2-2037efa1f5c0': 'assets/services/bathroom-cleaning1.png',
+    '6201b258-ed2c-4c83-b8e7-bd413cc5b67b': 'assets/services/wardrobe1.png',
+    '6678a63d-059c-4ca5-ad11-3781f8449bb0': 'assets/services/full-home-cleaning1.png',
+    'b7e6db9d-455d-46d5-ba4d-8e993fe1255d': 'assets/services/fan-cleaning1.png',
+    '42719385-f88c-41ab-9e59-6ac4856f6112': 'assets/services/dusting-wiping1.png',
+    '2b3bd63d-c1d5-40cf-a818-33501e9e61b4': 'assets/services/sweeping-mopping1.png',
+    'ab1004e9-de4e-4ab6-9d34-30d7b23913a3': 'assets/services/fridge-cleaning1.png',
+    '423a1354-d995-49df-ba67-effcb43befbf': 'assets/services/kitchen-cleaning1.png',
+    '5af62745-c480-4579-a81a-a6a267cef2c3': 'assets/services/Utensils-cleaning1.png',
+    '581ee014-e42b-43bf-9818-692b08a0ac53': 'assets/services/cabinet1.png',
+    'ae4eac44-3444-4d45-b4a3-6387c043d5cf': 'assets/services/balcony-cleaning1.png',
+    'e89d50c0-493a-44d6-a49e-7ab5737a464d': 'assets/services/hourly1.png',
   };
 
   static const Map<String, String> _emojis = {
@@ -117,8 +115,6 @@ class _ServicesScreenState extends State<ServicesScreen>
     'Wardrobe Cleaning':          '👔',
     'Refrigerator Cleaning':      '❄️',
     'Full House Cleaning':        '🏠',
-    'Pre-Party Cleaning':         '🎉',
-    'After-Party Cleanup':        '🧽',
   };
 
   List<Map<String, dynamic>> _services   = [];
@@ -220,6 +216,7 @@ class _ServicesScreenState extends State<ServicesScreen>
               .join(', ');
         }
         _isFirstBooking  = bookingsRows.isEmpty;
+        _cart.setFirstBooking(bookingsRows.isEmpty);
         _locationLoading = false;
         _loading         = false;
       });
@@ -276,14 +273,13 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   // ── Quick add to cart from grid card ─────────────────────────
   CartItem _templateFor(Map<String, dynamic> svc) {
-    final name  = svc['name'] as String? ?? '';
-    final price = _isFirstBooking && _firstBookingEligible.contains(name)
-        ? 25
-        : (svc['base_price'] as num?)?.toInt() ?? CartService.defaultPriceFor(name);
+    final name     = svc['name'] as String? ?? '';
+    final basePrice = (svc['base_price'] as num?)?.toInt()
+        ?? CartService.defaultPriceFor(name);
     return CartItem(
       serviceId:       svc['id'] as String,
       serviceName:     name,
-      pricePerUnit:    price,
+      pricePerUnit:    basePrice,
       durationPerUnit: CartService.durationFor(name),
       emoji:           _emojis[name],
       maxQty:          CartService.maxQtyFor(name),
@@ -295,8 +291,22 @@ class _ServicesScreenState extends State<ServicesScreen>
     final name = svc['name'] as String? ?? '';
     if (!CartService.isCartable(name)) return;
     HapticFeedback.selectionClick();
-    // silently ignore if cart is full
-    _cart.increment(_templateFor(svc));
+    final blocked = _cart.increment(_templateFor(svc));
+    if (blocked != null && blocked != -1) {
+      // Duration cap hit — show snackbar
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          blocked == 240
+              ? 'Maximum 4 hours reached for hourly booking'
+              : 'Cart limit reached ($blocked min). Checkout to book more.',
+        ),
+        backgroundColor: const Color(0xFF0891B2),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+      ));
+    }
     setState(() {});
   }
 
@@ -478,14 +488,24 @@ class _ServicesScreenState extends State<ServicesScreen>
     final itemType   = CartService.typeOf(name);
     final qty        = _cart.quantityOf(svc['id'] as String? ?? '');
     final inCart     = qty > 0;
-    final dur        = CartService.durationFor(name);
-    final totalDur   = dur * (qty > 0 ? qty : 1);
-    final isFirstPrice = _isFirstBooking && _firstBookingEligible.contains(name);
-    final unitPrice  = isFirstPrice ? 25 : basePrice;
-    final totalPrice = unitPrice * (qty > 0 ? qty : 1);
-
-    // Full House — no cart, just open detail
+    final cartItem   = _cart.itemFor(svc['id'] as String? ?? '');
     final isFullHouse = name == 'Full House Cleaning';
+
+    // Display price — from cart item if in cart, else base
+    final displayPrice = inCart && cartItem != null
+        ? cartItem.totalPrice
+        : (itemType == CartItemType.tiered
+            ? CartService.tiersFor(name, isFirstBooking: _isFirstBooking).first.price
+            : basePrice);
+
+    // Duration label
+    final durLabel = inCart && cartItem != null
+        ? cartItem.durationLabel
+        : (itemType == CartItemType.tiered
+            ? '30 min'
+            : itemType == CartItemType.hourly
+                ? '60 min/hr'
+                : '${CartService.durationFor(name)} min');
 
     return GestureDetector(
       onTap: () => _open(svc),
@@ -498,9 +518,8 @@ class _ServicesScreenState extends State<ServicesScreen>
               borderRadius: BorderRadius.circular(18),
               child: Stack(fit: StackFit.expand, children: [
                 _serviceImage(svc, icon),
-                Positioned(top: 8, right: 8, child: _ratingBadge(svc)),
 
-                // ── Duration badge (bottom-left, always shown) ──
+                // Duration badge — always visible
                 Positioned(
                   bottom: inCart ? 46 : 8, left: 8,
                   child: Container(
@@ -509,17 +528,12 @@ class _ServicesScreenState extends State<ServicesScreen>
                     decoration: BoxDecoration(
                       color: Colors.black.withValues(alpha: 0.55),
                       borderRadius: BorderRadius.circular(8)),
-                    child: Text(
-                      inCart
-                          ? '${totalDur} min'
-                          : itemType == CartItemType.hourly
-                              ? '60 min/hr'
-                              : '$dur min',
-                      style: const TextStyle(color: Colors.white,
-                          fontSize: 9, fontWeight: FontWeight.w700)))),
+                    child: Text(durLabel,
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 9, fontWeight: FontWeight.w700)))),
 
-                // ── Counter overlay (shown when in cart) ──────
-                if (inCart && isCartable)
+                // Counter overlay (in cart)
+                if (inCart && isCartable && !isFullHouse)
                   Positioned(
                     bottom: 8, left: 8, right: 8,
                     child: Container(
@@ -540,19 +554,14 @@ class _ServicesScreenState extends State<ServicesScreen>
                                 alignment: Alignment.center,
                                 child: const Icon(Icons.remove_rounded,
                                     color: _cyan, size: 18))),
-                          Column(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              Text('$qty', style: const TextStyle(
-                                  fontSize: 13, fontWeight: FontWeight.w900,
-                                  color: _ink)),
-                              Text(
-                                itemType == CartItemType.hourly
-                                    ? 'hr' : 'qty',
-                                style: const TextStyle(fontSize: 8,
-                                    color: _muted,
-                                    fontWeight: FontWeight.w600)),
-                            ]),
+                          // Show duration for tiered, qty for others
+                          Text(
+                            inCart && cartItem != null
+                                ? cartItem.durationLabel
+                                : durLabel,
+                            style: const TextStyle(
+                                fontSize: 12, fontWeight: FontWeight.w900,
+                                color: _ink)),
                           GestureDetector(
                             onTap: () => _increment(svc),
                             behavior: HitTestBehavior.opaque,
@@ -565,7 +574,7 @@ class _ServicesScreenState extends State<ServicesScreen>
                         ])),
                   ),
 
-                // ── Add button (not in cart, cartable) ────────
+                // Add button (not in cart)
                 if (!inCart && isCartable && !isFullHouse)
                   Positioned(
                     bottom: 8, right: 8,
@@ -593,35 +602,23 @@ class _ServicesScreenState extends State<ServicesScreen>
           const SizedBox(height: 3),
           Row(children: [
             Expanded(
-              child: isFirstPrice
-                  ? Row(children: [
-                      Text(inCart ? '₹$totalPrice' : '₹25',
-                          style: TextStyle(color: _greenDk,
-                              fontSize: 13 * s, fontWeight: FontWeight.w900)),
-                      const SizedBox(width: 4),
-                      Text('₹$basePrice', style: TextStyle(color: _faint,
-                          fontSize: 10 * s,
-                          decoration: TextDecoration.lineThrough)),
-                    ])
-                  : Text(
-                      inCart ? '₹$totalPrice' : '₹$basePrice',
-                      style: TextStyle(
-                        color: inCart ? _cyan : Colors.black,
-                        fontSize: 13 * s, fontWeight: FontWeight.w800)),
+              child: Text(
+                '₹$displayPrice',
+                style: TextStyle(
+                  color: inCart ? _cyan : Colors.black,
+                  fontSize: 13 * s, fontWeight: FontWeight.w800)),
             ),
-            if (inCart && qty > 1)
+            // Tier indicator when in cart
+            if (inCart && itemType == CartItemType.tiered)
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 6, vertical: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: _cyan.withValues(alpha: 0.12),
                   borderRadius: BorderRadius.circular(6)),
                 child: Text(
-                  itemType == CartItemType.hourly
-                      ? '×${qty}hr' : '×$qty',
+                  cartItem?.durationLabel ?? '',
                   style: TextStyle(color: _cyan,
-                      fontSize: 11 * s,
-                      fontWeight: FontWeight.w800))),
+                      fontSize: 10 * s, fontWeight: FontWeight.w800))),
           ]),
         ],
       ),
@@ -648,6 +645,7 @@ class _ServicesScreenState extends State<ServicesScreen>
   }
 
   Widget _serviceImage(Map<String, dynamic> svc, IconData icon) {
+    // Use image_url for grid card thumbnail
     final url = (svc['image_url'] as String?)?.trim();
     Widget placeholder() => Container(
       decoration: const BoxDecoration(
@@ -656,20 +654,18 @@ class _ServicesScreenState extends State<ServicesScreen>
       child: Center(child: Icon(icon, size: 40,
           color: Colors.black.withValues(alpha: 0.50))));
 
+    // Local asset path (starts with 'assets/')
+    if (url != null && url.startsWith('assets/')) {
+      return Image.asset(url, fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => placeholder());
+    }
+    // Network URL
     if (url != null && url.isNotEmpty) {
       return Image.network(url, fit: BoxFit.cover,
           loadingBuilder: (ctx, child, prog) =>
               prog == null ? child : Container(color: const Color(0xFFF1F5F9)),
-          errorBuilder: (ctx, e, s) {
-            final asset = _assetFor(svc);
-            if (asset != null) return Image.asset(asset, fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => placeholder());
-            return placeholder();
-          });
+          errorBuilder: (_, __, ___) => placeholder());
     }
-    final asset = _assetFor(svc);
-    if (asset != null) return Image.asset(asset, fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => placeholder());
     return placeholder();
   }
 
@@ -833,7 +829,7 @@ class _CartSheet extends StatelessWidget {
                     Text(item.serviceName, style: const TextStyle(
                         fontWeight: FontWeight.w800, fontSize: 14,
                         color: Color(0xFF0F172A))),
-                    Text('${item.quantity} × ${item.durationPerUnit} min · ₹${item.pricePerUnit} each',
+                    Text('${item.durationLabel} · ₹${item.totalPrice}',
                         style: const TextStyle(color: Color(0xFF94A3B8),
                             fontSize: 11)),
                   ])),
