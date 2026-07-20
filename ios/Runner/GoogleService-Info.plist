@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<key>API_KEY</key>
+<string>AIzaSyBQLf2PHbxMXkiCfw69TRoFMriglpSO_tA</string>
+<key>GCM_SENDER_ID</key>
+<string>404053308024</string>
+<key>PLIST_VERSION</key>
+<string>1</string>
+<key>BUNDLE_ID</key>
+<string>com.cubicleventurespvtltd.cleenzoapp</string>
+<key>PROJECT_ID</key>
+<string>cleenzo-b6de5</string>
+<key>STORAGE_BUCKET</key>
+<string>cleenzo-b6de5.firebasestorage.app</string>
+<key>IS_ADS_ENABLED</key>
+<false></false>
+<key>IS_ANALYTICS_ENABLED</key>
+<false></false>
+<key>IS_APPINVITE_ENABLED</key>
+<true></true>
+<key>IS_GCM_ENABLED</key>
+<true></true>
+<key>IS_SIGNIN_ENABLED</key>
+<true></true>
+<key>GOOGLE_APP_ID</key>
+<string>1:404053308024:ios:896761d04d88328ff0f38d</string>
+<key>CLIENT_ID</key>
+<string>404053308024-deb7js0n61c5pavue2ff2kkusgai80qs.apps.googleusercontent.com</string>
+<key>REVERSED_CLIENT_ID</key>
+<string>com.googleusercontent.apps.404053308024-deb7js0n61c5pavue2ff2kkusgai80qs</string>
+</dict>
+</plist>
