@@ -228,7 +228,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           onChanged: _search,
                           style: const TextStyle(
                               fontSize: 14, color: _ink),
-                          decoration: InputDecoration(
+                          decoration: const InputDecoration(
                             hintText:
                                 'Area, building, landmark…',
                             hintStyle: TextStyle(
@@ -247,8 +247,8 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           child: Container(
                             margin: const EdgeInsets.only(right: 8),
                             width: 28, height: 28,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFFF1F5F9),
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFF1F5F9),
                               shape: BoxShape.circle),
                             child: const Icon(Icons.close_rounded,
                                 size: 14, color: _muted))),
@@ -269,11 +269,11 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
         // ── Results / suggestions ─────────────────────────────
         Expanded(
           child: _selecting
-              ? Center(child: Column(
+              ? const Center(child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                  const CircularProgressIndicator(color: Colors.black),
-                  const SizedBox(height: 16),
+                  CircularProgressIndicator(color: Colors.black),
+                  SizedBox(height: 16),
                   Text('Loading location…',
                       style: TextStyle(color: _faint, fontSize: 13)),
                 ]))
@@ -382,11 +382,11 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
                               color: const Color(0xFF00B1FC))),
-                        child: Column(
+                        child: const Column(
                             crossAxisAlignment:
                                 CrossAxisAlignment.start,
                             children: [
-                          const Row(children: [
+                          Row(children: [
                             Text('🗺️',
                                 style: TextStyle(fontSize: 16)),
                             SizedBox(width: 8),
@@ -395,8 +395,8 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                                     fontSize: 12,
                                     fontWeight: FontWeight.w800)),
                           ]),
-                          const SizedBox(height: 8),
-                          const Text(
+                          SizedBox(height: 8),
+                          Text(
                             'We currently serve Vile Parle, Juhu '
                             'and Andheri areas in Mumbai. '
                             'More areas coming soon!',

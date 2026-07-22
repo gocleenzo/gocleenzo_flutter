@@ -149,7 +149,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
         final full    = [
           p.street, p.subLocality, p.locality,
           p.administrativeArea, p.postalCode,
-        ].where((e) => e != null && e!.isNotEmpty).join(', ');
+        ].where((e) => e != null && e.isNotEmpty).join(', ');
 
         setState(() {
           _area        = area;

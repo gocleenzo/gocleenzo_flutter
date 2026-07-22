@@ -67,7 +67,7 @@ class PhoneInput extends StatelessWidget {
                 ),
               ),
               if (val.text.length == 10)
-                Text('✓',
+                const Text('✓',
                     style: TextStyle(
                         color: AppColors.cyanDark,
                         fontWeight: FontWeight.w700)),
@@ -98,8 +98,12 @@ class _OtpInputRowState extends State<OtpInputRow> {
 
   @override
   void dispose() {
-    for (final c in _ctrls) c.dispose();
-    for (final n in _nodes) n.dispose();
+    for (final c in _ctrls) {
+      c.dispose();
+    }
+    for (final n in _nodes) {
+      n.dispose();
+    }
     super.dispose();
   }
 
@@ -231,18 +235,18 @@ class ErrorBox extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppColors.error.withOpacity(0.1),
+        color: AppColors.error.withValues(alpha: 0.1),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.error.withOpacity(0.2)),
+        border: Border.all(color: AppColors.error.withValues(alpha: 0.2)),
       ),
       child: Row(
         children: [
-          Icon(Icons.error_outline, color: AppColors.error, size: 16),
+          const Icon(Icons.error_outline, color: AppColors.error, size: 16),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
               message!,
-              style: TextStyle(
+              style: const TextStyle(
                   color: AppColors.error,
                   fontSize: 13,
                   fontWeight: FontWeight.w600),

@@ -323,7 +323,7 @@ class _BookScreenState extends State<BookScreen> {
                       width: 36,
                       height: 36,
                       decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
+                          color: Colors.white.withValues(alpha: 0.2),
                           borderRadius: BorderRadius.circular(12)),
                       child: const Icon(Icons.arrow_back_ios_new,
                           color: Colors.white, size: 18),
@@ -382,7 +382,7 @@ class _BookScreenState extends State<BookScreen> {
                           decoration: BoxDecoration(
                             color: done || active
                                 ? Colors.white
-                                : Colors.white.withOpacity(0.25),
+                                : Colors.white.withValues(alpha: 0.25),
                             shape: BoxShape.circle,
                           ),
                           child: Center(
@@ -390,7 +390,7 @@ class _BookScreenState extends State<BookScreen> {
                                 style: TextStyle(
                                     color: done || active
                                         ? AppTheme.primary
-                                        : Colors.white.withOpacity(0.7),
+                                        : Colors.white.withValues(alpha: 0.7),
                                     fontSize: 10,
                                     fontWeight: FontWeight.w900)),
                           ),
@@ -401,8 +401,8 @@ class _BookScreenState extends State<BookScreen> {
                                 style: TextStyle(
                                     color: active
                                         ? Colors.white
-                                        : Colors.white.withOpacity(
-                                            done ? 0.8 : 0.5),
+                                        : Colors.white.withValues(
+                                            alpha: done ? 0.8 : 0.5),
                                     fontSize: 11,
                                     fontWeight: FontWeight.w600),
                                 overflow: TextOverflow.ellipsis)),
@@ -411,7 +411,7 @@ class _BookScreenState extends State<BookScreen> {
                               child: Container(
                                   height: 1,
                                   color: Colors.white
-                                      .withOpacity(done ? 0.6 : 0.2),
+                                      .withValues(alpha: done ? 0.6 : 0.2),
                                   margin: const EdgeInsets.symmetric(
                                       horizontal: 4))),
                       ],
@@ -424,7 +424,7 @@ class _BookScreenState extends State<BookScreen> {
                 borderRadius: BorderRadius.circular(4),
                 child: LinearProgressIndicator(
                   value: progress,
-                  backgroundColor: Colors.white.withOpacity(0.2),
+                  backgroundColor: Colors.white.withValues(alpha: 0.2),
                   valueColor:
                       const AlwaysStoppedAnimation<Color>(Colors.white),
                   minHeight: 6,
@@ -443,7 +443,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -492,7 +492,7 @@ class _BookScreenState extends State<BookScreen> {
                           ? [
                               BoxShadow(
                                   color:
-                                      AppTheme.primary.withOpacity(0.45),
+                                      AppTheme.primary.withValues(alpha: 0.45),
                                   blurRadius: 14,
                                   offset: const Offset(0, 4))
                             ]
@@ -547,7 +547,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         children: [
@@ -590,7 +590,7 @@ class _BookScreenState extends State<BookScreen> {
                       boxShadow: active
                           ? [
                               BoxShadow(
-                                  color: AppTheme.primary.withOpacity(0.4),
+                                  color: AppTheme.primary.withValues(alpha: 0.4),
                                   blurRadius: 14,
                                   offset: const Offset(0, 4))
                             ]
@@ -633,7 +633,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         children: [
@@ -818,7 +818,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -857,7 +857,7 @@ class _BookScreenState extends State<BookScreen> {
               focusedBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
                   borderSide: BorderSide(
-                      color: AppTheme.primary.withOpacity(0.5))),
+                      color: AppTheme.primary.withValues(alpha: 0.5))),
             ),
           ),
         ],
@@ -899,7 +899,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         children: [
@@ -974,7 +974,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1015,7 +1015,7 @@ class _BookScreenState extends State<BookScreen> {
                     focusedBorder: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16),
                         borderSide: BorderSide(
-                            color: AppTheme.primary.withOpacity(0.5))),
+                            color: AppTheme.primary.withValues(alpha: 0.5))),
                   ),
                 ),
               ),
@@ -1032,7 +1032,7 @@ class _BookScreenState extends State<BookScreen> {
                     borderRadius: BorderRadius.circular(16),
                     boxShadow: [
                       BoxShadow(
-                          color: AppTheme.primary.withOpacity(0.3),
+                          color: AppTheme.primary.withValues(alpha: 0.3),
                           blurRadius: 12)
                     ],
                   ),
@@ -1082,7 +1082,7 @@ class _BookScreenState extends State<BookScreen> {
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [
-            BoxShadow(color: Colors.black.withOpacity(0.07), blurRadius: 12)
+            BoxShadow(color: Colors.black.withValues(alpha: 0.07), blurRadius: 12)
           ]),
       child: Column(
         children: [
@@ -1230,7 +1230,7 @@ class _BookScreenState extends State<BookScreen> {
                   boxShadow: canProceed
                       ? [
                           BoxShadow(
-                              color: AppTheme.primary.withOpacity(0.45),
+                              color: AppTheme.primary.withValues(alpha: 0.45),
                               blurRadius: 20,
                               offset: const Offset(0, 6))
                         ]
@@ -1292,7 +1292,7 @@ class _SectionIcon extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
-                color: AppTheme.primary.withOpacity(0.3), blurRadius: 8)
+                color: AppTheme.primary.withValues(alpha: 0.3), blurRadius: 8)
           ]),
       child: Icon(icon, color: Colors.white, size: 18),
     );

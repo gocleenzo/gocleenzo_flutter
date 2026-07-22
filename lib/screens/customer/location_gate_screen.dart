@@ -257,14 +257,14 @@ class _LocationGateScreenState extends State<LocationGateScreen>
               const SizedBox(height: 12),
 
               // Divider with OR
-              Row(children: [
-                const Expanded(child: Divider(color: _border)),
+              const Row(children: [
+                Expanded(child: Divider(color: _border)),
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  padding: EdgeInsets.symmetric(horizontal: 12),
                   child: Text('OR',
                       style: TextStyle(color: _faint, fontSize: 11,
                           fontWeight: FontWeight.w700))),
-                const Expanded(child: Divider(color: _border)),
+                Expanded(child: Divider(color: _border)),
               ]),
 
               const SizedBox(height: 12),

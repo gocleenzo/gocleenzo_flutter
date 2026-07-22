@@ -119,7 +119,7 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   List<Map<String, dynamic>> _services   = [];
   List<String>               _categories = ['All'];
-  String _activeTab    = 'All';
+  final String _activeTab    = 'All';
   bool   _loading      = true;
   String _userName     = 'there';
 
@@ -273,17 +273,22 @@ class _ServicesScreenState extends State<ServicesScreen>
 
   // ── Quick add to cart from grid card ─────────────────────────
   CartItem _templateFor(Map<String, dynamic> svc) {
-    final name     = svc['name'] as String? ?? '';
+    final name      = svc['name'] as String? ?? '';
     final basePrice = (svc['base_price'] as num?)?.toInt()
-        ?? CartService.defaultPriceFor(name);
+        ?? CartService.defaultPriceFor(svc);
+    final t = CartService.typeOf(name);
     return CartItem(
       serviceId:       svc['id'] as String,
       serviceName:     name,
+      emoji:           _emojis[name],
+      type:            t,
+      // Tiers built from database price columns — no hardcoded prices
+      tiers:           t == CartItemType.tiered
+          ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking)
+          : [],
       pricePerUnit:    basePrice,
       durationPerUnit: CartService.durationFor(name),
-      emoji:           _emojis[name],
       maxQty:          CartService.maxQtyFor(name),
-      type:            CartService.typeOf(name),
     );
   }
 
@@ -492,20 +497,23 @@ class _ServicesScreenState extends State<ServicesScreen>
     final isFullHouse = name == 'Full House Cleaning';
 
     // Display price — from cart item if in cart, else base
+    final originalPrice = (svc['original_price'] as num?)?.toInt();
     final displayPrice = inCart && cartItem != null
         ? cartItem.totalPrice
         : (itemType == CartItemType.tiered
-            ? CartService.tiersFor(name, isFirstBooking: _isFirstBooking).first.price
+            ? (CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).isNotEmpty ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).first.price : basePrice)
             : basePrice);
 
-    // Duration label
+    // Duration label — hidden for Full House (BHK based, no single duration)
     final durLabel = inCart && cartItem != null
         ? cartItem.durationLabel
         : (itemType == CartItemType.tiered
             ? '30 min'
             : itemType == CartItemType.hourly
                 ? '60 min/hr'
-                : '${CartService.durationFor(name)} min');
+                : isFullHouse
+                    ? ''
+                    : '${CartService.durationFor(name)} min');
 
     return GestureDetector(
       onTap: () => _open(svc),
@@ -519,7 +527,8 @@ class _ServicesScreenState extends State<ServicesScreen>
               child: Stack(fit: StackFit.expand, children: [
                 _serviceImage(svc, icon),
 
-                // Duration badge — always visible
+                // Duration badge — hidden when label is empty (e.g. Full House)
+                if (durLabel.isNotEmpty)
                 Positioned(
                   bottom: inCart ? 46 : 8, left: 8,
                   child: Container(
@@ -602,11 +611,20 @@ class _ServicesScreenState extends State<ServicesScreen>
           const SizedBox(height: 3),
           Row(children: [
             Expanded(
-              child: Text(
-                '₹$displayPrice',
-                style: TextStyle(
-                  color: inCart ? _cyan : Colors.black,
-                  fontSize: 13 * s, fontWeight: FontWeight.w800)),
+              child: Row(children: [
+                Text(
+                  '₹$displayPrice',
+                  style: TextStyle(
+                    color: inCart ? _cyan : Colors.black,
+                    fontSize: 13 * s, fontWeight: FontWeight.w800)),
+                if (originalPrice != null && originalPrice != basePrice && !inCart) ...[
+                  const SizedBox(width: 4),
+                  Text('₹$originalPrice',
+                      style: TextStyle(color: _faint,
+                          fontSize: 10 * s,
+                          decoration: TextDecoration.lineThrough)),
+                ],
+              ]),
             ),
             // Tier indicator when in cart
             if (inCart && itemType == CartItemType.tiered)
@@ -1326,6 +1344,5 @@ class _Notif {
   final bool unread, isNew;
   final IconData icon;
   _Notif({required this.title, required this.body, required this.time,
-      this.unread = false, this.isNew = false,
-      this.icon = Icons.notifications_rounded});
+      this.unread = false, this.isNew = false}) : icon = Icons.notifications_rounded;
 }

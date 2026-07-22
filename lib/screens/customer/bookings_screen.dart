@@ -1,8 +1,6 @@
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
-import '../../utils/theme.dart';
 import '../../services/supabase_service.dart';
 
 class BookingsScreen extends StatefulWidget {
@@ -185,10 +183,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                         width: 46,
                         height: 46,
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.18),
+                          color: Colors.white.withValues(alpha: 0.18),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
-                              color: Colors.white.withOpacity(0.3), width: 1),
+                              color: Colors.white.withValues(alpha: 0.3), width: 1),
                         ),
                         child: const Center(
                           child:
@@ -212,7 +210,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                             Text(
                               'Track & manage your services',
                               style: TextStyle(
-                                color: Colors.white.withOpacity(0.75),
+                                color: Colors.white.withValues(alpha: 0.75),
                                 fontSize: 12.5,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -227,10 +225,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.18),
+                            color: Colors.white.withValues(alpha: 0.18),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: Colors.white.withOpacity(0.25),
+                                color: Colors.white.withValues(alpha: 0.25),
                                 width: 1),
                           ),
                           child: const Icon(Icons.refresh_rounded,
@@ -261,10 +259,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                   child: Container(
                     height: 46,
                     decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.15),
+                      color: Colors.white.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(18),
                       border: Border.all(
-                          color: Colors.white.withOpacity(0.2), width: 1),
+                          color: Colors.white.withValues(alpha: 0.2), width: 1),
                     ),
                     child: TabBar(
                       controller: _tabController,
@@ -273,7 +271,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                         borderRadius: BorderRadius.circular(15),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withOpacity(0.08),
+                            color: Colors.black.withValues(alpha: 0.08),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),
@@ -282,7 +280,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                       indicatorSize: TabBarIndicatorSize.tab,
                       indicatorPadding: const EdgeInsets.all(4),
                       labelColor: const Color(0xFF0891B2),
-                      unselectedLabelColor: Colors.white.withOpacity(0.85),
+                      unselectedLabelColor: Colors.white.withValues(alpha: 0.85),
                       dividerColor: Colors.transparent,
                       labelStyle: const TextStyle(
                           fontWeight: FontWeight.w800, fontSize: 13),
@@ -341,10 +339,10 @@ class _BookingsScreenState extends State<BookingsScreen>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.15),
+          color: Colors.white.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(14),
           border:
-              Border.all(color: Colors.white.withOpacity(0.22), width: 1),
+              Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1),
         ),
         child: Row(
           children: [
@@ -360,7 +358,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                         fontWeight: FontWeight.w900)),
                 Text(label,
                     style: TextStyle(
-                        color: Colors.white.withOpacity(0.75),
+                        color: Colors.white.withValues(alpha: 0.75),
                         fontSize: 11,
                         fontWeight: FontWeight.w500)),
               ],
@@ -458,9 +456,9 @@ class _BookingsScreenState extends State<BookingsScreen>
               const SizedBox(height: 28),
               _PulseButton(
                 onTap: () => context.go('/services'),
-                child: Row(
+                child: const Row(
                   mainAxisSize: MainAxisSize.min,
-                  children: const [
+                  children: [
                     Icon(Icons.add_rounded, color: Colors.white, size: 20),
                     SizedBox(width: 8),
                     Text(
@@ -505,7 +503,7 @@ class _BookingsScreenState extends State<BookingsScreen>
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF06B6D4).withOpacity(0.06),
+            color: const Color(0xFF06B6D4).withValues(alpha: 0.06),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -583,12 +581,12 @@ class _BookingsScreenState extends State<BookingsScreen>
           ),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF06B6D4).withOpacity(0.07),
+              color: const Color(0xFF06B6D4).withValues(alpha: 0.07),
               blurRadius: 18,
               offset: const Offset(0, 5),
             ),
             BoxShadow(
-              color: Colors.white.withOpacity(0.8),
+              color: Colors.white.withValues(alpha: 0.8),
               blurRadius: 4,
               offset: const Offset(0, -1),
             ),
@@ -609,7 +607,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                     end: Alignment.bottomCenter,
                     colors: [
                       statusColor,
-                      statusColor.withOpacity(0.4),
+                      statusColor.withValues(alpha: 0.4),
                     ],
                   ),
                   borderRadius: const BorderRadius.only(
@@ -634,8 +632,8 @@ class _BookingsScreenState extends State<BookingsScreen>
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                         colors: [
-                          const Color(0xFF06B6D4).withOpacity(0.15),
-                          const Color(0xFF22D3EE).withOpacity(0.08),
+                          const Color(0xFF06B6D4).withValues(alpha: 0.15),
+                          const Color(0xFF22D3EE).withValues(alpha: 0.08),
                         ],
                       ),
                       borderRadius: BorderRadius.circular(16),
@@ -674,10 +672,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 9, vertical: 5),
                               decoration: BoxDecoration(
-                                color: statusColor.withOpacity(0.1),
+                                color: statusColor.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                    color: statusColor.withOpacity(0.25),
+                                    color: statusColor.withValues(alpha: 0.25),
                                     width: 1),
                               ),
                               child: Text(
@@ -871,7 +869,7 @@ class _PulseButtonState extends State<_PulseButton>
             borderRadius: BorderRadius.circular(20),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF06B6D4).withOpacity(0.4),
+                color: const Color(0xFF06B6D4).withValues(alpha: 0.4),
                 blurRadius: 18,
                 offset: const Offset(0, 6),
               ),

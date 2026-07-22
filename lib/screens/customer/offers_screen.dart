@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../utils/theme.dart';
 
 class OffersScreen extends StatefulWidget {
   const OffersScreen({super.key});
@@ -248,10 +247,10 @@ class _OffersScreenState extends State<OffersScreen>
                         child: Container(
                           width: 40, height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.18),
+                            color: Colors.white.withValues(alpha: 0.18),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: Colors.white.withOpacity(0.25), width: 1),
+                                color: Colors.white.withValues(alpha: 0.25), width: 1),
                           ),
                           child: const Icon(Icons.arrow_back_ios_new,
                               color: Colors.white, size: 16),
@@ -266,7 +265,7 @@ class _OffersScreenState extends State<OffersScreen>
                             Text(
                               'CLEENZO REWARDS',
                               style: TextStyle(
-                                color: Colors.white.withOpacity(0.7),
+                                color: Colors.white.withValues(alpha: 0.7),
                                 fontSize: 10,
                                 fontWeight: FontWeight.w700,
                                 letterSpacing: 2,
@@ -292,10 +291,10 @@ class _OffersScreenState extends State<OffersScreen>
                         child: Container(
                           width: 40, height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.18),
+                            color: Colors.white.withValues(alpha: 0.18),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: Colors.white.withOpacity(0.25), width: 1),
+                                color: Colors.white.withValues(alpha: 0.25), width: 1),
                           ),
                           child: const Icon(Icons.refresh_rounded,
                               color: Colors.white, size: 20),
@@ -333,9 +332,9 @@ class _OffersScreenState extends State<OffersScreen>
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white.withOpacity(0.15),
+          color: Colors.white.withValues(alpha: 0.15),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.white.withOpacity(0.22), width: 1),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1),
         ),
         child: Row(children: [
           Icon(icon, color: Colors.white, size: 16),
@@ -345,7 +344,7 @@ class _OffersScreenState extends State<OffersScreen>
               style: const TextStyle(color: Colors.white,
                   fontSize: 16, fontWeight: FontWeight.w900)),
             Text(label,
-              style: TextStyle(color: Colors.white.withOpacity(0.75),
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.75),
                   fontSize: 11, fontWeight: FontWeight.w500)),
           ]),
         ]),
@@ -469,7 +468,7 @@ class _OffersScreenState extends State<OffersScreen>
           color: Colors.white,
           borderRadius: BorderRadius.circular(24),
           boxShadow: [BoxShadow(
-            color: const Color(0xFF06B6D4).withOpacity(0.06),
+            color: const Color(0xFF06B6D4).withValues(alpha: 0.06),
             blurRadius: 16, offset: const Offset(0, 4))],
         ),
         child: ClipRRect(
@@ -550,8 +549,8 @@ class _PromoCard extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             color: usedByMe
-                ? Colors.black.withOpacity(0.04)
-                : const Color(0xFF06B6D4).withOpacity(0.09),
+                ? Colors.black.withValues(alpha: 0.04)
+                : const Color(0xFF06B6D4).withValues(alpha: 0.09),
             blurRadius: 18, offset: const Offset(0, 5)),
         ],
       ),
@@ -599,7 +598,7 @@ class _PromoCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.18),
+                        color: Colors.white.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(6)),
                       child: Text('max ₹$maxDisc',
                         style: const TextStyle(color: Color(0xFFE0F7FF),
@@ -643,7 +642,7 @@ class _PromoCard extends StatelessWidget {
                           color: const Color(0xFFF1F5F9),
                           borderRadius: BorderRadius.circular(10),
                           border: Border.all(color: const Color(0xFFE2E8F0))),
-                        child: Row(mainAxisSize: MainAxisSize.min, children: const [
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
                           Icon(Icons.check_circle_outline_rounded,
                             size: 12, color: Color(0xFF64748B)),
                           SizedBox(width: 5),
@@ -681,10 +680,10 @@ class _PromoCard extends StatelessWidget {
                           const Color(0xFFBAE6FD),
                           const Color(0xFF0891B2)),
                       if (expiringSoon && !usedByMe)
-                        _Tag('⚡ Ending soon',
-                          const Color(0xFFFEF2F2),
-                          const Color(0xFFFCA5A5),
-                          const Color(0xFFDC2626)),
+                        const _Tag('⚡ Ending soon',
+                          Color(0xFFFEF2F2),
+                          Color(0xFFFCA5A5),
+                          Color(0xFFDC2626)),
                     ]),
 
                     // Expiry

@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../services/supabase_service.dart';
 import 'review_popup.dart';
 
 class BookingDetailScreen extends StatefulWidget {
@@ -1145,8 +1144,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       final h = durSec ~/ 3600;
       final m = (durSec % 3600) ~/ 60;
       final s = durSec % 60;
-      if (h > 0) duration = '${h}h ${m}m ${s}s';
-      else if (m > 0) duration = '${m}m ${s}s';
+      if (h > 0) {
+        duration = '${h}h ${m}m ${s}s';
+      } else if (m > 0) duration = '${m}m ${s}s';
       else duration = '${s}s';
     }
 
@@ -1163,10 +1163,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
             color: const Color(0xFFECFDF5),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0xFF6EE7B7))),
-          child: Row(children: [
-            const Text('✅', style: TextStyle(fontSize: 28)),
-            const SizedBox(width: 12),
-            const Expanded(child: Column(
+          child: const Row(children: [
+            Text('✅', style: TextStyle(fontSize: 28)),
+            SizedBox(width: 12),
+            Expanded(child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Service Completed!',
                   style: TextStyle(fontWeight: FontWeight.w900,

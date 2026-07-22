@@ -203,7 +203,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(24),
                           border: Border.all(color: const Color(0xFFE5E7EB)),
-                          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.06), blurRadius: 24, offset: const Offset(0, 12))],
+                          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 24, offset: const Offset(0, 12))],
                         ),
                         child: AnimatedSwitcher(
                           duration: const Duration(milliseconds: 320),
@@ -271,8 +271,8 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
           ),
           child: Stack(
             children: [
-              Positioned(top: -80, right: -80, child: _PulsingCircle(size: 200, color: AppTheme.primary.withOpacity(0.12))),
-              Positioned(bottom: -50, left: -50, child: _PulsingCircle(size: 140, color: AppTheme.primary.withOpacity(0.08), reverse: true)),
+              Positioned(top: -80, right: -80, child: _PulsingCircle(size: 200, color: AppTheme.primary.withValues(alpha: 0.12))),
+              Positioned(bottom: -50, left: -50, child: _PulsingCircle(size: 140, color: AppTheme.primary.withValues(alpha: 0.08), reverse: true)),
               Positioned.fill(
                 child: SafeArea(
                   child: Padding(
@@ -396,17 +396,17 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildNoResults() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 32),
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 32),
       child: Column(
         children: [
-          const Text('🔍', style: TextStyle(fontSize: 40)),
-          const SizedBox(height: 12),
-          const Text('No matching questions',
+          Text('🔍', style: TextStyle(fontSize: 40)),
+          SizedBox(height: 12),
+          Text('No matching questions',
               style: TextStyle(color: Color(0xFF0C4A6E), fontSize: 15, fontWeight: FontWeight.w700)),
-          const SizedBox(height: 4),
+          SizedBox(height: 4),
           Text('Try a different search or browse all categories',
-              style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
+              style: TextStyle(color: Color(0xFF9CA3AF), fontSize: 13)),
         ],
       ),
     );
@@ -424,7 +424,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
         color: Colors.white,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0xFFE5E7EB)),
-        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 12)],
+        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 12)],
       ),
       child: Column(
         children: [
@@ -500,7 +500,7 @@ class _HelpScreenState extends State<HelpScreen> with TickerProviderStateMixin {
       ),
       child: Row(children: [
         Container(width: 44, height: 44, decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: AppTheme.primary.withOpacity(0.12), blurRadius: 8)]),
+          boxShadow: [BoxShadow(color: AppTheme.primary.withValues(alpha: 0.12), blurRadius: 8)]),
           child: Center(child: Text(item['icon']!, style: const TextStyle(fontSize: 20)))),
         const SizedBox(width: 14),
         Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -751,7 +751,7 @@ class _AnimatedSubmitButtonState extends State<_AnimatedSubmitButton> {
               end: Alignment.centerRight,
             ),
             borderRadius: BorderRadius.circular(26),
-            boxShadow: [BoxShadow(color: AppTheme.primary.withOpacity(0.4), blurRadius: 16, offset: const Offset(0, 6))],
+            boxShadow: [BoxShadow(color: AppTheme.primary.withValues(alpha: 0.4), blurRadius: 16, offset: const Offset(0, 6))],
           ),
           child: Center(
             child: widget.loading

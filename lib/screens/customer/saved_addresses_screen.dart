@@ -98,7 +98,7 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
               width: 64, height: 64,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                   color: _redLt, shape: BoxShape.circle),
               child: const Center(
                   child: Text('🗑️',

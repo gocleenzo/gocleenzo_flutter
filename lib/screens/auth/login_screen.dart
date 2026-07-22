@@ -81,32 +81,40 @@ class _LoginScreenState extends State<LoginScreen> {
         },
         verificationFailed: (fb.FirebaseAuthException e) {
           debugPrint('Verification failed: ${e.message}');
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _error   = e.message ?? 'Failed to send OTP. Try again.';
             _loading = false;
           });
+          }
         },
         codeSent: (String verificationId, int? resendToken) {
           debugPrint('OTP sent. verificationId set.');
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _verificationId = verificationId;
             _step           = 'otp';
             _loading        = false;
           });
+          }
         },
         codeAutoRetrievalTimeout: (String verificationId) {
           debugPrint('Auto retrieval timeout');
-          if (mounted) setState(() {
+          if (mounted) {
+            setState(() {
             _verificationId = verificationId;
           });
+          }
         },
       );
     } catch (e) {
       debugPrint('Send OTP error: $e');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = 'Failed to send OTP. Please try again.';
         _loading = false;
       });
+      }
     }
   }
 
@@ -130,18 +138,22 @@ class _LoginScreenState extends State<LoginScreen> {
       await _signInWithCredential(credential);
     } on fb.FirebaseAuthException catch (e) {
       debugPrint('FirebaseAuthException: ${e.code} - ${e.message}');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = e.code == 'invalid-verification-code'
             ? 'Invalid OTP. Please try again.'
             : e.message ?? 'Verification failed.';
         _loading = false;
       });
+      }
     } catch (e) {
       debugPrint('Verify OTP error: $e');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = 'Something went wrong. Please try again.';
         _loading = false;
       });
+      }
     }
   }
 
@@ -175,26 +187,32 @@ class _LoginScreenState extends State<LoginScreen> {
       debugPrint('Edge function response: $data');
     } on fb.FirebaseAuthException catch (e) {
       debugPrint('Firebase sign in error: ${e.code} - ${e.message}');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = e.message ?? 'Sign in failed.';
         _loading = false;
       });
+      }
       return;
     } on FunctionException catch (e) {
       // Thrown by supabase_flutter when the edge function returns
       // a non-2xx status or can't be reached.
       debugPrint('Edge function error: ${e.status} - ${e.details}');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = 'Could not verify your account. Please try again.';
         _loading = false;
       });
+      }
       return;
     } catch (e) {
       debugPrint('Sign in error: $e');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _error   = 'Sign in failed. Please try again.';
         _loading = false;
       });
+      }
       return;
     }
 
@@ -413,11 +431,11 @@ class _LoginScreenState extends State<LoginScreen> {
   // ── Phone step ────────────────────────────────────────────────
   Widget _phoneStep() {
     return Column(children: [
-      Align(
+      const Align(
         alignment: Alignment.centerLeft,
         child: Text('MOBILE NUMBER',
             style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900,
-                color: const Color.fromARGB(255, 0, 0, 0), letterSpacing: 1.5)),
+                color: Color.fromARGB(255, 0, 0, 0), letterSpacing: 1.5)),
       ),
       const SizedBox(height: 8),
       _phoneField(),
@@ -493,7 +511,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: GestureDetector(
           onTap: () => setState(
               () { _step = 'phone'; _error = ''; _verificationId = null; }),
-          child: Row(mainAxisSize: MainAxisSize.min, children: [
+          child: const Row(mainAxisSize: MainAxisSize.min, children: [
             Icon(Icons.arrow_back_ios, size: 16, color: AppColors.cyan),
             Text('Back', style: TextStyle(
                 color: AppColors.cyan, fontWeight: FontWeight.w700)),
@@ -501,7 +519,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       const SizedBox(height: 16),
-      Text('Enter the 6-digit code sent to',
+      const Text('Enter the 6-digit code sent to',
           style: TextStyle(color: AppColors.gray500, fontSize: 13)),
       const SizedBox(height: 4),
       Text('+91 ${_phoneCtrl.text}',
@@ -529,7 +547,7 @@ class _LoginScreenState extends State<LoginScreen> {
       const SizedBox(height: 8),
       TextButton(
         onPressed: _loading ? null : _sendOtp,
-        child: Text('Resend OTP',
+        child: const Text('Resend OTP',
             style: TextStyle(
                 color: AppColors.cyan, fontWeight: FontWeight.w600)),
       ),
@@ -552,7 +570,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 onTap: () => setState(() { _step = 'otp'; _error = ''; }),
                 child: Container(
                   width: 44, height: 44,
-                  decoration: BoxDecoration(
+                  decoration: const BoxDecoration(
                     color: _kCyanBg, shape: BoxShape.circle),
                   child: const Icon(Icons.arrow_back_rounded,
                       color: _kCyanDk, size: 22),
@@ -570,13 +588,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       fontWeight: FontWeight.w900, height: 1.15,
                       color: _kInk)),
               const SizedBox(height: 8),
-              Text("Let's set up your profile so we can\npersonalise your cleans.",
+              const Text("Let's set up your profile so we can\npersonalise your cleans.",
                   style: TextStyle(fontSize: 15, height: 1.5,
                       color: _kFaint, fontWeight: FontWeight.w500)),
               const SizedBox(height: 36),
 
               // Name
-              Text('YOUR NAME',
+              const Text('YOUR NAME',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
                       color: AppColors.gray400, letterSpacing: 1.5)),
               const SizedBox(height: 12),
@@ -584,7 +602,7 @@ class _LoginScreenState extends State<LoginScreen> {
               const SizedBox(height: 32),
 
               // Gender
-              Text('GENDER (OPTIONAL)',
+              const Text('GENDER (OPTIONAL)',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
                       color: AppColors.gray400, letterSpacing: 1.5)),
               const SizedBox(height: 14),
@@ -687,7 +705,7 @@ class _LoginScreenState extends State<LoginScreen> {
         builder: (_, val, __) => val.text.isNotEmpty
             ? GestureDetector(
                 onTap: () => _nameCtrl.clear(),
-                child: Icon(Icons.cancel_rounded,
+                child: const Icon(Icons.cancel_rounded,
                     size: 20, color: AppColors.cyanLight))
             : const SizedBox.shrink(),
       ),
@@ -697,13 +715,13 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _termsLine() => RichText(
     textAlign: TextAlign.center,
     text: TextSpan(
-      style: TextStyle(color: AppColors.gray400, fontSize: 11),
+      style: const TextStyle(color: AppColors.gray400, fontSize: 11),
       children: [
         const TextSpan(text: 'By proceeding, I accept the '),
         WidgetSpan(
           child: GestureDetector(
             onTap: () => _openExternalLink('https://www.gocleenzo.com/terms'),
-            child: Text('Terms of use',
+            child: const Text('Terms of use',
                 style: TextStyle(color: AppColors.cyan,
                     fontWeight: FontWeight.w600, fontSize: 11)),
           ),
@@ -712,7 +730,7 @@ class _LoginScreenState extends State<LoginScreen> {
         WidgetSpan(
           child: GestureDetector(
             onTap: () => _openExternalLink('https://www.gocleenzo.com/terms'),
-            child: Text('Privacy policy',
+            child: const Text('Privacy policy',
                 style: TextStyle(color: AppColors.cyan,
                     fontWeight: FontWeight.w600, fontSize: 11)),
           ),

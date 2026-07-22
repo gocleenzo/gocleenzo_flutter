@@ -72,8 +72,8 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   late Animation<double>   _entranceFade;
   late Animation<Offset>   _entranceSlide;
 
-  int    _quantity     = 1;
-  int    _selectedHours = 1;
+  final int    _quantity     = 1;
+  final int    _selectedHours = 1;
   String _selectedBhk  = '2 BHK';
   bool   _isFirstBooking = false;
 
@@ -139,15 +139,21 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
   CartItem _buildCartItem() {
     final name      = _service?['name'] as String? ?? '';
     final basePrice = (_service?['base_price'] as num?)?.toInt()
-        ?? CartService.defaultPriceFor(name);
+        ?? CartService.defaultPriceFor(_service ?? {});
+    final t = CartService.typeOf(name);
     return CartItem(
       serviceId:       widget.serviceId,
       serviceName:     name,
+      emoji:           _emojis[name],
+      type:            t,
+      // Tiers built from database price columns — no hardcoded prices
+      tiers:           t == CartItemType.tiered && _service != null
+          ? CartService.buildTiers(_service!,
+              isFirstBooking: _isFirstBookingEligible)
+          : [],
       pricePerUnit:    basePrice,
       durationPerUnit: CartService.durationFor(name),
-      emoji:           _emojis[name],
       maxQty:          CartService.maxQtyFor(name),
-      type:            CartService.typeOf(name),
     );
   }
 
@@ -214,7 +220,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
       final label = (rawLabel != null && rawLabel.isNotEmpty)
           ? rawLabel
           : _fallbackUnitLabel(svc['name'] as String? ?? 'Unit');
-      final maxByTime = (_maxServiceMinutes / durationPerUnit!).floor();
+      final maxByTime = (_maxServiceMinutes / durationPerUnit).floor();
       return {
         'type': 'per_unit',
         'unit': label,
@@ -241,6 +247,24 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
       default:        return (_service?['base_price'] as num?)?.toInt() ?? 0;
     }
   }
+
+  // Original/crossed-out price from database — admin can update anytime
+  int? get _dbOriginalPrice =>
+      (_service?['original_price'] as num?)?.toInt();
+
+  // For BHK services — only show strikethrough if DB original > current BHK price
+  // For other services — use DB original_price or fallback calculation
+  int get _displayOriginalPrice {
+    if (_pricing['type'] == 'by_bhk') {
+      final dbOrig  = _dbOriginalPrice;
+      final current = _originalPrice;
+      if (dbOrig != null && dbOrig > current) return dbOrig;
+      return current; // no discount for this BHK
+    }
+    return _dbOriginalPrice ?? (_originalPrice * 1.4).round();
+  }
+
+  bool get _hasDiscount => _displayOriginalPrice > _computedPrice;
 
   static const _firstBookingEligible = {
     'Bathroom Cleaning',
@@ -798,7 +822,7 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
         ],
         _buildPriceDisplay(),
         const SizedBox(height: 8),
-        Divider(color: _border, height: 1, indent: 20, endIndent: 20),
+        const Divider(color: _border, height: 1, indent: 20, endIndent: 20),
         _buildTabs(),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 200),
@@ -923,22 +947,25 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
           Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
             Text('₹$display', style: TextStyle(fontSize: 38, fontWeight: FontWeight.w900,
                 color: isFirst ? const Color(0xFF10B981) : _ink, height: 1.0)),
-            const SizedBox(width: 10),
-            Padding(padding: const EdgeInsets.only(bottom: 4),
-              child: Text(isFirst ? '₹$original' : '₹${(display * 1.4).round()}',
-                  style: const TextStyle(fontSize: 16, color: _faint,
-                      decoration: TextDecoration.lineThrough))),
+            if (isFirst || _hasDiscount) ...[
+              const SizedBox(width: 10),
+              Padding(padding: const EdgeInsets.only(bottom: 4),
+                child: Text(isFirst ? '₹$original' : '₹$_displayOriginalPrice',
+                    style: const TextStyle(fontSize: 16, color: _faint,
+                        decoration: TextDecoration.lineThrough))),
+            ],
           ]),
           const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(color: const Color(0xFFECFDF5),
-                borderRadius: BorderRadius.circular(20)),
-            child: Text(
-              isFirst ? '🎉 ₹${original - display} off for first booking'
-                  : 'Save ₹${(display * 0.4).round()}',
-              style: const TextStyle(color: Color(0xFF065F46),
-                  fontSize: 11, fontWeight: FontWeight.w700))),
+          if (isFirst || _hasDiscount)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(color: const Color(0xFFECFDF5),
+                  borderRadius: BorderRadius.circular(20)),
+              child: Text(
+                isFirst ? '🎉 ₹${original - display} off for first booking'
+                    : 'Save ₹${_displayOriginalPrice - display}',
+                style: const TextStyle(color: Color(0xFF065F46),
+                    fontSize: 11, fontWeight: FontWeight.w700))),
         ])),
         const SizedBox(width: 16),
         Column(crossAxisAlignment: CrossAxisAlignment.end, children: [

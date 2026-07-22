@@ -109,7 +109,7 @@ class _TypeTile extends StatelessWidget {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(14),
-              boxShadow: [BoxShadow(color: accent.withOpacity(0.15), blurRadius: 10)],
+              boxShadow: [BoxShadow(color: accent.withValues(alpha: 0.15), blurRadius: 10)],
             ),
             child: Center(child: Text(emoji, style: const TextStyle(fontSize: 26))),
           ),

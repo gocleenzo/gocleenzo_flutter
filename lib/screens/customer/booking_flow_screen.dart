@@ -256,12 +256,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .select('platform_fee, search_fee, search_fee_enabled')
           .eq('id', 'global')
           .single();
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _platformFee      = (data['platform_fee'] as num?)?.toInt() ?? 5;
         _searchFee        = (data['search_fee'] as num?)?.toInt() ?? 19;
         _searchFeeEnabled = data['search_fee_enabled'] as bool? ?? true;
         _settingsLoading  = false;
       });
+      }
     } catch (e) {
       debugPrint('app_settings load error: $e');
       if (mounted) setState(() => _settingsLoading = false);
@@ -316,11 +318,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
         // Check worker shift AND that duration fits before shift end
         if (!_isWorkerInShift(schedule, dayName, now,
-            durationMins: durationMins)) continue;
+            durationMins: durationMins)) {
+          continue;
+        }
 
         // Check worker is not currently on a job
         if (!_isWorkerFreeAtSlot(workerId, now, durationMins,
-            activeBookings)) continue;
+            activeBookings)) {
+          continue;
+        }
 
         // Found a free worker who can complete the job
         return null;
@@ -367,8 +373,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
               width: 64, height: 64,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFF7ED),
+              decoration: const BoxDecoration(
+                color: Color(0xFFFFF7ED),
                 shape: BoxShape.circle),
               child: const Center(
                   child: Text('🕐', style: TextStyle(fontSize: 32)))),
@@ -618,7 +624,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           if (holidayWorkerIds.contains(workerId)) continue;
           final schedule = worker['schedule'] as Map<String, dynamic>?;
           if (!_isWorkerInShift(schedule, dayName, slotDt,
-              durationMins: durationMins)) continue;
+              durationMins: durationMins)) {
+            continue;
+          }
           if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings)) continue;
           anyWorkerFree = true;
           break;
@@ -626,7 +634,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         availability[slot] = anyWorkerFree;
       }
 
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _slotAvailability = availability;
         _slotsLoading     = false;
         if (_selectedTime.isNotEmpty &&
@@ -634,12 +643,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           _selectedTime = '';
         }
       });
+      }
     } catch (e) {
       debugPrint('slot availability error: $e');
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _slotAvailability = {for (final s in _timeSlots) s: true};
         _slotsLoading = false;
       });
+      }
     }
   }
 
@@ -746,17 +758,21 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         final limit = p['usage_limit'] ?? p['max_uses'];
         if (limit != null) {
           if ((p['used_count'] as num? ?? 0).toInt() >=
-              (limit as num).toInt()) return false;
+              (limit as num).toInt()) {
+            return false;
+          }
         }
         return true;
       }).toList();
 
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _promos        = available;
         _usedPromos    = usedPromos;
         _usedPromoIds  = usedIds;
         _promosLoading = false;
       });
+      }
     } catch (_) {
       if (mounted) setState(() => _promosLoading = false);
     }
@@ -970,20 +986,20 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   color: const Color(0xFFF8FAFC),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: const Color(0xFFE2E8F0))),
-                child: Row(children: [
-                  const Icon(Icons.money_rounded,
+                child: const Row(children: [
+                  Icon(Icons.money_rounded,
                       color: Color(0xFF059669), size: 24),
-                  const SizedBox(width: 12),
+                  SizedBox(width: 12),
                   Expanded(child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    const Text('Cash on Delivery',
+                    Text('Cash on Delivery',
                         style: TextStyle(color: Color(0xFF0F172A),
                             fontWeight: FontWeight.w900, fontSize: 15)),
                     Text('Pay ₹\$_finalAmount cash to professional',
-                        style: const TextStyle(
+                        style: TextStyle(
                             color: Color(0xFF64748B), fontSize: 12)),
                   ])),
-                  const Icon(Icons.arrow_forward_ios_rounded,
+                  Icon(Icons.arrow_forward_ios_rounded,
                       color: Color(0xFF94A3B8), size: 14),
                 ]),
               ),
@@ -1440,8 +1456,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             Row(children: [
               GestureDetector(
                 onTap: () {
-                  if (_step > 1) setState(() => _step--);
-                  else Navigator.pop(context);
+                  if (_step > 1) {
+                    setState(() => _step--);
+                  } else {
+                    Navigator.pop(context);
+                  }
                 },
                 child: Container(
                   width: 40, height: 40,
@@ -2207,13 +2226,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
               color: _cyanBg,
               borderRadius: BorderRadius.circular(14),
               border: Border.all(color: _cyanBg2)),
-            child: Row(
+            child: const Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-              const Icon(Icons.payments_rounded,
+              Icon(Icons.payments_rounded,
                   color: _cyanDk, size: 20),
-              const SizedBox(width: 10),
-              const Expanded(child: Column(
+              SizedBox(width: 10),
+              Expanded(child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                 Text('Online Payment',

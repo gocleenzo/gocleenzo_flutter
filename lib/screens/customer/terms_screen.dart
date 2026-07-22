@@ -356,7 +356,7 @@ class _TermsScreenState extends State<TermsScreen>
         icon: Container(
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.15),
+            color: Colors.white.withValues(alpha: 0.15),
             shape: BoxShape.circle,
           ),
           child: const Icon(Icons.arrow_back_rounded,
@@ -376,24 +376,24 @@ class _TermsScreenState extends State<TermsScreen>
                   end: Alignment.bottomRight,
                   colors: [
                     AppTheme.primary,
-                    AppTheme.primary.withOpacity(0.85),
-                    AppTheme.primary.withOpacity(0.7),
+                    AppTheme.primary.withValues(alpha: 0.85),
+                    AppTheme.primary.withValues(alpha: 0.7),
                   ],
                 ),
               ),
             ),
             // Decorative floating circles
-            Positioned(
+            const Positioned(
               right: -40,
               top: -40,
               child: _FloatingCircle(size: 180, opacity: 0.08),
             ),
-            Positioned(
+            const Positioned(
               left: -30,
               bottom: 30,
               child: _FloatingCircle(size: 110, opacity: 0.07),
             ),
-            Positioned(
+            const Positioned(
               right: 60,
               bottom: -10,
               child: _FloatingCircle(size: 60, opacity: 0.1),
@@ -416,10 +416,10 @@ class _TermsScreenState extends State<TermsScreen>
                           Container(
                             padding: const EdgeInsets.all(10),
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.18),
+                              color: Colors.white.withValues(alpha: 0.18),
                               borderRadius: BorderRadius.circular(14),
                               border: Border.all(
-                                  color: Colors.white.withOpacity(0.25)),
+                                  color: Colors.white.withValues(alpha: 0.25)),
                             ),
                             child: const Icon(
                               Icons.gavel_rounded,
@@ -440,13 +440,13 @@ class _TermsScreenState extends State<TermsScreen>
                         ],
                       ),
                       const SizedBox(height: 8),
-                      Row(
+                      const Row(
                         children: [
                           _Pill(
                             icon: Icons.update_rounded,
                             label: 'Updated Jul 1, 2026',
                           ),
-                          const SizedBox(width: 8),
+                          SizedBox(width: 8),
                           _Pill(
                             icon: Icons.touch_app_rounded,
                             label: 'Tap to expand',
@@ -469,7 +469,7 @@ class _TermsScreenState extends State<TermsScreen>
           child: Container(
             margin: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.12),
+              color: Colors.white.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(30),
             ),
             child: TabBar(
@@ -575,7 +575,7 @@ class _FloatingCircle extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: Colors.white.withOpacity(opacity),
+        color: Colors.white.withValues(alpha: opacity),
       ),
     );
   }
@@ -585,7 +585,7 @@ class _DotPatternPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
-      ..color = Colors.white.withOpacity(0.06)
+      ..color = Colors.white.withValues(alpha: 0.06)
       ..style = PaintingStyle.fill;
     const spacing = 18.0;
     for (double x = 0; x < size.width; x += spacing) {
@@ -609,9 +609,9 @@ class _Pill extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.16),
+        color: Colors.white.withValues(alpha: 0.16),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.white.withOpacity(0.22)),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -692,12 +692,12 @@ class _IntroCard extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            AppTheme.primary.withOpacity(0.10),
-            AppTheme.primary.withOpacity(0.02),
+            AppTheme.primary.withValues(alpha: 0.10),
+            AppTheme.primary.withValues(alpha: 0.02),
           ],
         ),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppTheme.primary.withOpacity(0.18)),
+        border: Border.all(color: AppTheme.primary.withValues(alpha: 0.18)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -705,7 +705,7 @@ class _IntroCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: AppTheme.primary.withOpacity(0.12),
+              color: AppTheme.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
@@ -721,7 +721,7 @@ class _IntroCard extends StatelessWidget {
               children: [
                 Text(
                   isPrivacy ? 'Your Privacy Matters' : 'Agreement to Terms',
-                  style: TextStyle(
+                  style: const TextStyle(
                     color: AppTheme.primary,
                     fontWeight: FontWeight.w700,
                     fontSize: 15.5,
@@ -772,15 +772,15 @@ class _AccordionCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isOpen
-              ? AppTheme.primary.withOpacity(0.35)
+              ? AppTheme.primary.withValues(alpha: 0.35)
               : const Color(0xFFE7EBF0),
           width: isOpen ? 1.4 : 1,
         ),
         boxShadow: [
           BoxShadow(
             color: isOpen
-                ? AppTheme.primary.withOpacity(0.10)
-                : Colors.black.withOpacity(0.035),
+                ? AppTheme.primary.withValues(alpha: 0.10)
+                : Colors.black.withValues(alpha: 0.035),
             blurRadius: isOpen ? 18 : 8,
             offset: const Offset(0, 4),
           ),
@@ -806,7 +806,7 @@ class _AccordionCard extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: isOpen
                             ? AppTheme.primary
-                            : AppTheme.primary.withOpacity(0.10),
+                            : AppTheme.primary.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(11),
                       ),
                       child: Icon(
@@ -860,7 +860,7 @@ class _AccordionCard extends StatelessWidget {
                                                 const EdgeInsets.only(top: 6),
                                             width: 5,
                                             height: 5,
-                                            decoration: BoxDecoration(
+                                            decoration: const BoxDecoration(
                                               color: AppTheme.primary,
                                               shape: BoxShape.circle,
                                             ),
@@ -907,7 +907,7 @@ class _ContactCard extends StatelessWidget {
         border: Border.all(color: const Color(0xFFE7EBF0)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.035),
+            color: Colors.black.withValues(alpha: 0.035),
             blurRadius: 10,
             offset: const Offset(0, 3),
           ),
@@ -921,7 +921,7 @@ class _ContactCard extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(9),
                 decoration: BoxDecoration(
-                  color: AppTheme.primary.withOpacity(0.10),
+                  color: AppTheme.primary.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(
@@ -955,13 +955,13 @@ class _ContactCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 14),
-          _ContactRow(icon: Icons.email_outlined, text: 'gocleenzo@gmail.com'),
+          const _ContactRow(icon: Icons.email_outlined, text: 'gocleenzo@gmail.com'),
           const SizedBox(height: 10),
-          _ContactRow(
+          const _ContactRow(
               icon: Icons.location_on_outlined,
               text: 'Yavatmal, Maharashtra, India'),
           const SizedBox(height: 10),
-          _ContactRow(
+          const _ContactRow(
               icon: Icons.access_time_outlined,
               text: 'Monday – Saturday, 9:00 AM – 7:00 PM IST'),
         ],

@@ -177,7 +177,7 @@ class NotificationService {
       // Fallback to cached userId for Firebase Phone Auth flow
       if (userId == null) {
         final prefs = await SharedPreferences.getInstance();
-        userId = prefs.getString('cached_user_id');
+        userId = prefs.getString('app_user_id');
       }
 
       if (userId == null) return;
@@ -202,7 +202,7 @@ class NotificationService {
       String? userId = user?.id;
       if (userId == null) {
         final prefs = await SharedPreferences.getInstance();
-        userId = prefs.getString('cached_user_id');
+        userId = prefs.getString('app_user_id');
       }
       if (userId == null) return;
       await _supabase.from('users').update({
