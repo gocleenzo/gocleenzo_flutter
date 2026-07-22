@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
 import 'booking_detail_screen.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 
 class BookingFlowScreen extends StatefulWidget {
   final String  mode;
@@ -55,6 +56,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   int  _step    = 1;
   bool _loading = false;
   bool _checkingInstant = false;
+
+  // ── Razorpay ──────────────────────────────────────────────────
+  late Razorpay _razorpay;
+  // Test key — replace with live key when going live
+  static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
+  String? _pendingPaymentBookingId; // set after booking created, before payment
 
   DateTime _selectedDate = DateTime.now();
   String   _selectedTime = '';
@@ -188,12 +195,17 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   @override
   void initState() {
     super.initState();
+    _razorpay = Razorpay();
+    _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
+    _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR,   _onPaymentError);
+    _razorpay.on(Razorpay.EVENT_EXTERNAL_WALLET, _onExternalWallet);
     _loadData();
     if (_isInstant) _step = 1;
   }
 
   @override
   void dispose() {
+    _razorpay.clear();
     _notesCtrl.dispose();
     super.dispose();
   }
@@ -891,10 +903,266 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       ),
     );
 
-    if (confirmed == true) _confirmBooking();
+    if (confirmed == true) _confirmBookingWithPayment('online');
+  }
+
+  // ── Ask payment method ────────────────────────────────────────
+  Future<void> _askPaymentMethod() async {
+    final method = await showDialog<String>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.45),
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(22),
+          child: Column(mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('Choose Payment Method',
+                style: TextStyle(fontSize: 17,
+                    fontWeight: FontWeight.w900, color: Color(0xFF0F172A))),
+            const SizedBox(height: 6),
+            const Text('How would you like to pay?',
+                style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
+            const SizedBox(height: 20),
+            // Online Payment
+            GestureDetector(
+              onTap: () => Navigator.pop(ctx, 'online'),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                      colors: [Color(0xFF06B6D4), Color(0xFF0891B2)]),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [BoxShadow(
+                      color: const Color(0xFF06B6D4).withValues(alpha: 0.35),
+                      blurRadius: 10, offset: const Offset(0, 4))]),
+                child: Row(children: [
+                  const Icon(Icons.payment_rounded,
+                      color: Colors.white, size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Pay Online',
+                        style: TextStyle(color: Colors.white,
+                            fontWeight: FontWeight.w900, fontSize: 15)),
+                    Text('UPI, Card, Netbanking · ₹\$_finalAmount',
+                        style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.8),
+                            fontSize: 12)),
+                  ])),
+                  const Icon(Icons.arrow_forward_ios_rounded,
+                      color: Colors.white70, size: 14),
+                ]),
+              ),
+            ),
+            // COD
+            GestureDetector(
+              onTap: () => Navigator.pop(ctx, 'cod'),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFE2E8F0))),
+                child: Row(children: [
+                  const Icon(Icons.money_rounded,
+                      color: Color(0xFF059669), size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('Cash on Delivery',
+                        style: TextStyle(color: Color(0xFF0F172A),
+                            fontWeight: FontWeight.w900, fontSize: 15)),
+                    Text('Pay ₹\$_finalAmount cash to professional',
+                        style: const TextStyle(
+                            color: Color(0xFF64748B), fontSize: 12)),
+                  ])),
+                  const Icon(Icons.arrow_forward_ios_rounded,
+                      color: Color(0xFF94A3B8), size: 14),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Center(child: TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel',
+                  style: TextStyle(color: Color(0xFF94A3B8))))),
+          ]),
+        ),
+      ),
+    );
+
+    if (method == 'online') {
+      _confirmBookingWithPayment('online');
+    }
   }
 
 
+
+
+  // ── Razorpay: open payment for online bookings ────────────────
+  Future<void> _confirmBookingWithPayment(String paymentMethod) async {
+    if (_selectedAddressId.isEmpty) {
+      _showSnack('Please select an address', isError: true); return;
+    }
+    setState(() => _loading = true);
+
+    final userId = _userId ?? await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (userId == null) { if (mounted) context.go('/login'); return; }
+    _userId = userId;
+
+    // First create the booking in pending state
+    final scheduledAt = _isInstant
+        ? DateTime.now().toUtc()
+        : _buildScheduledAt();
+    final otp = (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
+
+    try {
+      final result = await _supabase.rpc('try_claim_slot', params: {
+        'p_customer_id':          userId,
+        'p_address_id':           _selectedAddressId,
+        'p_scheduled_at':         scheduledAt.toIso8601String(),
+        'p_duration_mins':        _serviceDurationMins,
+        'p_base_price':           _baseAmount,
+        'p_discount_amount':      _discount,
+        'p_final_amount':         _finalAmount,
+        'p_otp':                  otp,
+        'p_booking_type':         _isInstant ? 'instant' : 'schedule',
+        'p_payment_status':       'pending',
+        'p_payment_method':       'online',
+        'p_service_id':           widget.serviceId,
+        'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+        'p_promo_code':           _appliedPromoCode.isNotEmpty ? _appliedPromoCode : null,
+        'p_selected_bhk':         widget.selectedBhk,
+        'p_quantity':             widget.quantity,
+        'p_is_first_booking':     widget.isFirstBooking,
+        'p_estimated_arrival':    _isInstant ? 15 : null,
+        'p_booking_duration_minutes': _serviceDurationMins,
+      });
+
+      if (!mounted) return;
+
+      final res = result as Map<String, dynamic>;
+      final success = res['success'] as bool? ?? false;
+
+      if (!success) {
+        setState(() => _loading = false);
+        final reason = res['reason'] as String? ?? 'error';
+        if (reason == 'slot_full') {
+          _isInstant ? _showNoWorkersDialog() : _showSlotFullDialog();
+        } else if (reason == 'no_workers') {
+          _showNoWorkersDialog();
+        } else {
+          _showSnack('Booking failed: ${res['message'] ?? reason}', isError: true);
+        }
+        return;
+      }
+
+      final bookingId = res['booking_id'] as String;
+      _pendingPaymentBookingId = bookingId;
+
+      // Save cart items
+      if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+        try {
+          await _supabase.from('booking_items').insert(
+            widget.cartItems!.map((c) => {
+              'booking_id':  bookingId,
+              'service_id':  c['service_id'] as String,
+              'quantity':    (c['quantity'] as num).toInt(),
+              'unit_price':  (c['price'] as num).toInt(),
+              'total_price': (c['price'] as num).toInt() *
+                  (c['quantity'] as num).toInt(),
+            }).toList(),
+          );
+        } catch (e) { debugPrint('booking_items skipped: $e'); }
+      }
+
+      setState(() => _loading = false);
+
+      // Open Razorpay payment sheet
+      final options = {
+        'key':          _razorpayKey,
+        'amount':       _finalAmount * 100, // Razorpay expects paise
+        'name':         'Cleenzo',
+        'description':  (_service?['name'] as String? ?? 'Home Cleaning Service'),
+        'prefill': {
+          'contact': '',
+          'email':   '',
+        },
+        'notes': {
+          'booking_id': bookingId,
+        },
+        'theme': {
+          'color': '#06B6D4',
+        },
+        'method': {
+          'upi':          true,
+          'netbanking':   true,
+          'card':         false,
+          'wallet':       false,
+          'emi':          false,
+          'cardless_emi': false,
+          'paylater':     false,
+        },
+        'upi': {
+          'flow': 'intent',
+        },
+      };
+
+      _razorpay.open(options);
+    } catch (e) {
+      setState(() => _loading = false);
+      _showSnack('Something went wrong. Please try again.', isError: true);
+    }
+  }
+
+  // ── Razorpay callbacks ────────────────────────────────────────
+  Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
+    final bookingId = _pendingPaymentBookingId;
+    if (bookingId == null) return;
+
+    // Update booking payment status to paid
+    try {
+      await _supabase.from('bookings').update({
+        'payment_status': 'paid',
+        'payment_id':     response.paymentId,
+      }).eq('id', bookingId);
+    } catch (e) {
+      debugPrint('Payment status update error: $e');
+    }
+
+    _pendingPaymentBookingId = null;
+
+    if (!mounted) return;
+    // Navigate to booking detail
+    Navigator.pushReplacement(context, MaterialPageRoute(
+      builder: (_) => BookingDetailScreen(bookingId: bookingId),
+    ));
+  }
+
+  void _onPaymentError(PaymentFailureResponse response) {
+    final bookingId = _pendingPaymentBookingId;
+    // Mark booking as payment_failed
+    if (bookingId != null) {
+      _supabase.from('bookings').update({
+        'payment_status': 'failed',
+      }).eq('id', bookingId).then((_) {}).catchError((_) {});
+    }
+    _pendingPaymentBookingId = null;
+    _showSnack('Payment failed: ${response.message ?? "Please try again"}',
+        isError: true);
+  }
+
+  void _onExternalWallet(ExternalWalletResponse response) {
+    _showSnack('External wallet: ${response.walletName}');
+  }
 
   // ── COD Confirm Booking — atomic via Postgres RPC ────────────
   Future<void> _confirmBooking() async {
@@ -1223,7 +1491,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                         ? 'First booking!'
                         : _discount > 0
                             ? '-₹$_discount saved'
-                            : 'Pay cash',
+                            : 'Pay online',
                     style: const TextStyle(
                         color: _cyanDk,
                         fontSize: 9.5, fontWeight: FontWeight.w700)),
@@ -1724,7 +1992,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       {'icon': Icons.location_on_rounded, 'label': 'Address',
         'value': addr.isNotEmpty
             ? '${addr['area']}, ${addr['city']}' : '—'},
-      {'icon': Icons.payments_rounded, 'label': 'Payment',  'value': 'Cash on Delivery'},
+      {'icon': Icons.payments_rounded, 'label': 'Payment',  'value': 'Online Payment (UPI / Netbanking)'},
       if (_notesCtrl.text.isNotEmpty)
         {'icon': Icons.chat_bubble_rounded, 'label': 'Notes', 'value': _notesCtrl.text},
     ];
@@ -1948,10 +2216,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
               const Expanded(child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                Text('Cash on Delivery',
+                Text('Online Payment',
                     style: TextStyle(color: _ink,
                         fontSize: 13, fontWeight: FontWeight.w800)),
-                Text('Pay cash to the worker after service is done',
+                Text('Pay via UPI or Netbanking',
                     style: TextStyle(color: _muted, fontSize: 10.5)),
               ])),
             ]),
@@ -2089,7 +2357,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                           _isInstant && _step == 1 && !isLast
                               ? 'Check Availability'
                               : isLast
-                                  ? 'Confirm Booking'
+                                  ? 'Choose Payment & Confirm'
                                   : 'Continue',
                           style: TextStyle(
                             color: canProceed ? Colors.white : _faint,
