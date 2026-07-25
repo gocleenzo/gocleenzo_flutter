@@ -44,12 +44,24 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+
+>>>>>>> 265433a5cdc1d7dec966c40d706282028823e3fe
 ios/Pods/
 ios/.symlinks/
 flutter_macos_arm64_3.32.2-stable.zip
 *.zip
+<<<<<<< HEAD
 =======
 
 android/key.properties
 cleenzo-release-key.jks
 >>>>>>> c00f882 (razorpay)
+=======
+
+
+android/key.properties
+cleenzo-release-key.jks
+
+>>>>>>> 265433a5cdc1d7dec966c40d706282028823e3fe

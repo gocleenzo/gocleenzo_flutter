@@ -1080,7 +1080,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                     const Text('Pay Online',
                         style: TextStyle(color: Colors.white,
                             fontWeight: FontWeight.w900, fontSize: 15)),
-                    Text('UPI, Card, Netbanking · ₹\$_finalAmount',
+                    Text('UPI, Card, Netbanking · ₹$_finalAmount',
                         style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.8),
                             fontSize: 12)),
@@ -1100,20 +1100,20 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   color: const Color(0xFFF8FAFC),
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: const Color(0xFFE2E8F0))),
-                child: const Row(children: [
-                  Icon(Icons.money_rounded,
+                child: Row(children: [
+                  const Icon(Icons.money_rounded,
                       color: Color(0xFF059669), size: 24),
-                  SizedBox(width: 12),
+                  const SizedBox(width: 12),
                   Expanded(child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('Cash on Delivery',
+                    const Text('Cash on Delivery',
                         style: TextStyle(color: Color(0xFF0F172A),
                             fontWeight: FontWeight.w900, fontSize: 15)),
-                    Text('Pay ₹\$_finalAmount cash to professional',
-                        style: TextStyle(
+                    Text('Pay ₹$_finalAmount cash to professional',
+                        style: const TextStyle(
                             color: Color(0xFF64748B), fontSize: 12)),
                   ])),
-                  Icon(Icons.arrow_forward_ios_rounded,
+                  const Icon(Icons.arrow_forward_ios_rounded,
                       color: Color(0xFF94A3B8), size: 14),
                 ]),
               ),
