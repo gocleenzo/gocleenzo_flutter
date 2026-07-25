@@ -1,7 +1,9 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:http/http.dart' as http;
 import '../../services/supabase_service.dart';
 import 'booking_detail_screen.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
@@ -12,6 +14,13 @@ class BookingFlowScreen extends StatefulWidget {
   final List<Map<String, dynamic>>? cartItems;
   final int?    overridePrice;
   final int?    overrideDuration;
+  // The customer's ACTUAL selected duration (e.g. 30 min tier), before the
+  // +10min buffer and hour-rounding applied for worker slot-blocking.
+  // overrideDuration is already buffered/rounded — this is not. Used only
+  // for the customer-facing "Duration" display; slot-blocking logic still
+  // uses overrideDuration/_serviceDurationMins as before.
+  // Pass this from service_detail_screen.dart alongside overrideDuration.
+  final int?    rawDurationMins;
   final String? selectedBhk;
   final int?    quantity;
   final bool    isFirstBooking;
@@ -23,6 +32,7 @@ class BookingFlowScreen extends StatefulWidget {
     this.cartItems,
     this.overridePrice,
     this.overrideDuration,
+    this.rawDurationMins,
     this.selectedBhk,
     this.quantity,
     this.isFirstBooking = false,
@@ -53,6 +63,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   static const _instantStartHour = 7;
   static const _instantEndHour   = 19;
 
+  // Minimum lead time from "now" before ANY slot is bookable.
+  static const _minNoticeMins = 30;
+
+  // Travel buffer a worker needs after finishing one job before they can
+  // start the next one. Applied on top of each existing booking's
+  // actual/expected end time (which itself accounts for extra time used).
+  static const _travelBufferMins = 30;
+
   int  _step    = 1;
   bool _loading = false;
   bool _checkingInstant = false;
@@ -61,7 +79,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   late Razorpay _razorpay;
   // Test key — replace with live key when going live
   static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
-  String? _pendingPaymentBookingId; // set after booking created, before payment
+  // (booking is now created AFTER payment succeeds — see _onPaymentSuccess —
+  // so there's no "pending" booking id to track between opening Razorpay
+  // and the callback firing; all data needed to create the booking is
+  // already held in this State's fields/widget properties.)
 
   DateTime _selectedDate = DateTime.now();
   String   _selectedTime = '';
@@ -123,13 +144,47 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       List.generate(7, (i) => DateTime.now().add(Duration(days: i)));
 
   int get _baseAmount {
-    if (widget.isFirstBooking) return 25;
-    if (widget.overridePrice != null) return widget.overridePrice!;
-    if (widget.cartItems != null) {
+    if (widget.isFirstBooking) {
+      // Only the FIRST service in the cart gets the ₹25 offer — any
+      // additional services added in the same order stay full price.
+      if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+        final restTotal = widget.cartItems!.skip(1).fold(0,
+            (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
+        return 25 + restTotal;
+      }
+      return 25;
+    }
+    // Cart takes priority — it's the more specific source. overridePrice is
+    // only a fallback for single-service flows (service_detail_screen etc).
+    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       return widget.cartItems!.fold(0,
           (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
     }
+    if (widget.overridePrice != null) return widget.overridePrice!;
     return (_service?['base_price'] as num?)?.toInt() ?? 0;
+  }
+
+  /// Full (undiscounted) price of the first cart item — i.e. what it would
+  /// have cost without the first-booking offer. Used for the strike-through
+  /// price and to compute the discount amount shown in the summary.
+  int get _firstItemFullPrice {
+    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+      final first = widget.cartItems!.first;
+      final price = (first['price'] as num).toInt();
+      final qty   = (first['quantity'] as num?)?.toInt() ?? 1;
+      return price * qty;
+    }
+    return widget.overridePrice ?? ((_service?['base_price'] as num?)?.toInt() ?? 25);
+  }
+
+  /// Full (undiscounted) total of the whole order — sum of every item at
+  /// its normal price, ignoring any first-booking discount.
+  int get _originalTotalAmount {
+    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+      return widget.cartItems!.fold(0,
+          (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
+    }
+    return widget.overridePrice ?? ((_service?['base_price'] as num?)?.toInt() ?? 25);
   }
 
   int get _feesTotal =>
@@ -156,10 +211,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   static const _durationBuffer = 10; // mins
 
   int get _serviceDurationMins {
-    // 1. Explicit override (already has buffer + rounding from service detail)
-    if (widget.overrideDuration != null) return widget.overrideDuration!;
-
-    // 2. Cart: sum all items, add buffer, round up to next hour
+    // 1. Cart takes priority — sum all items, add buffer, round up to next
+    //    hour. Checked BEFORE overrideDuration: cart is the more specific
+    //    source, and a stray overrideDuration value (e.g. left over from a
+    //    single-service flow) must never shadow a multi-item cart.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
@@ -170,12 +225,42 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return _roundUpToHour((total > 0 ? total : 60) + _durationBuffer);
     }
 
+    // 2. Explicit override (already has buffer + rounding from service detail)
+    if (widget.overrideDuration != null) return widget.overrideDuration!;
+
     // 3. DB fallback: exact + buffer + round up
     final raw = (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
     return _roundUpToHour(raw + _durationBuffer);
   }
 
   int get _slotsBlocked => (_serviceDurationMins / 60).ceil();
+
+  /// The customer's ACTUAL selected duration — no +10min buffer, no
+  /// hour-rounding. This is what should be shown to the customer/admin as
+  /// "Duration", separate from `_serviceDurationMins` (which is purely an
+  /// internal value for reserving worker time slots).
+  int get _rawServiceDurationMins {
+    // 1. Cart: sum each item's real duration × quantity — no buffer/rounding.
+    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+      int total = 0;
+      for (final item in widget.cartItems!) {
+        final itemDur = (item['duration_minutes'] as num?)?.toInt() ?? 60;
+        final itemQty = (item['quantity'] as num?)?.toInt() ?? 1;
+        total += itemDur * itemQty;
+      }
+      return total > 0 ? total : 60;
+    }
+
+    // 2. Single-service flow: use the raw value passed in explicitly.
+    if (widget.rawDurationMins != null) return widget.rawDurationMins!;
+
+    // 3. Fallback — no raw value was passed (e.g. caller hasn't been
+    // updated yet to pass rawDurationMins). Falls back to the DB's base
+    // duration_minutes if available, else the buffered value as a last
+    // resort (better than nothing, but will overstate actual duration).
+    final dbRaw = (_service?['duration_minutes'] as num?)?.toInt();
+    return dbRaw ?? _serviceDurationMins;
+  }
 
   String? _userId;
 
@@ -305,7 +390,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       final activeBookingsData = await _supabase
           .from('bookings')
-          .select('worker_id, scheduled_at, work_started_at, services(duration_minutes)')
+          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, services(duration_minutes)')
           .inFilter('status', ['accepted', 'in_progress'])
           .inFilter('payment_status', ['cod', 'paid']);
       final activeBookings = (activeBookingsData as List).cast<Map<String, dynamic>>();
@@ -322,7 +407,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           continue;
         }
 
-        // Check worker is not currently on a job
+        // Check worker is not currently on a job (incl. travel buffer)
         if (!_isWorkerFreeAtSlot(workerId, now, durationMins,
             activeBookings)) {
           continue;
@@ -598,17 +683,21 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final dayEndUtc =
           DateTime(date.year, date.month, date.day, 23, 59, 59).toUtc();
 
+      // Pull bookings that could still overlap this day. We widen the query
+      // slightly on the lower bound so an in-progress job that started the
+      // previous day (overnight edge case) is still accounted for.
       final bookingsData = await _supabase
           .from('bookings')
-          .select('worker_id, scheduled_at, services(duration_minutes)')
+          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, services(duration_minutes)')
           .inFilter('status', ['accepted', 'in_progress', 'pending'])
           .inFilter('payment_status', ['cod', 'paid'])
-          .gte('scheduled_at', dayStartUtc.toIso8601String())
+          .gte('scheduled_at', dayStartUtc.subtract(const Duration(hours: 6)).toIso8601String())
           .lte('scheduled_at', dayEndUtc.toIso8601String());
       final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
 
       final now      = DateTime.now();
-      final cutoff   = now.add(const Duration(hours: 2));
+      // Minimum lead time from right now — NOT a flat 2 hours.
+      final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
       final dayName  = _dayName(date.weekday);
       final durationMins = _serviceDurationMins;
 
@@ -709,19 +798,44 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     return int.parse(parts[0]) * 60 + int.parse(parts[1]);
   }
 
+  /// Returns true only if the worker has no existing booking that overlaps
+  /// [slotDt, slotDt + durationMins] once a 30-min travel buffer is added
+  /// after each existing booking's actual/expected end time.
+  ///
+  /// "Actual/expected end" of an existing booking =
+  ///   (work_started_at ?? scheduled_at) + planned duration + extra_time_mins
+  /// i.e. if the worker used the +20min extra-time feature mid-job, that
+  /// extra time pushes the buffer window later too — the worker isn't
+  /// "free" until 30 min after they actually finish, not the originally
+  /// scheduled finish time.
   bool _isWorkerFreeAtSlot(String workerId, DateTime slotDt,
       int durationMins, List<Map<String, dynamic>> bookings) {
     final slotEnd = slotDt.add(Duration(minutes: durationMins));
+
     for (final booking in bookings) {
       if (booking['worker_id'] != workerId) continue;
-      final bDt = DateTime.tryParse(booking['scheduled_at'].toString())?.toLocal()
-          ?? DateTime.tryParse(booking['work_started_at']?.toString() ?? '')?.toLocal();
-      if (bDt == null) continue;
+
+      final workStartedAt = DateTime.tryParse(
+          booking['work_started_at']?.toString() ?? '')?.toLocal();
+      final scheduledAt = DateTime.tryParse(
+          booking['scheduled_at']?.toString() ?? '')?.toLocal();
+      final bStart = workStartedAt ?? scheduledAt;
+      if (bStart == null) continue;
+
       final bDur = (booking['services']?['duration_minutes'] as num?)?.toInt()
           ?? durationMins;
       final bDurRounded = (bDur / 60).ceil() * 60;
-      final bEnd = bDt.add(Duration(minutes: bDurRounded));
-      if (slotDt.isBefore(bEnd) && slotEnd.isAfter(bDt)) return false;
+      final extraMins = (booking['extra_time_mins'] as num?)?.toInt() ?? 0;
+
+      // Actual/expected end, including any extra time already added.
+      final bEnd = bStart.add(Duration(minutes: bDurRounded + extraMins));
+      // Worker isn't free again until 30 min after that.
+      final bEndWithBuffer =
+          bEnd.add(const Duration(minutes: _travelBufferMins));
+
+      if (slotDt.isBefore(bEndWithBuffer) && slotEnd.isAfter(bStart)) {
+        return false;
+      }
     }
     return true;
   }
@@ -1023,6 +1137,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
 
   // ── Razorpay: open payment for online bookings ────────────────
+  // ── Payment-first flow ──────────────────────────────────────────
+  // Razorpay opens FIRST, before any booking exists. Only once payment
+  // succeeds do we attempt try_claim_slot. If the slot is gone by then
+  // (someone else took it in the meantime), the payment is automatically
+  // refunded via the backend refund API — the customer is never left
+  // having paid for a slot they didn't get.
   Future<void> _confirmBookingWithPayment(String paymentMethod) async {
     if (_selectedAddressId.isEmpty) {
       _showSnack('Please select an address', isError: true); return;
@@ -1034,7 +1154,171 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (userId == null) { if (mounted) context.go('/login'); return; }
     _userId = userId;
 
-    // First create the booking in pending state
+    // No booking exists yet — nothing to attach as 'booking_id'. A short
+    // reference tag is enough to identify this attempt in the Razorpay
+    // dashboard if support needs to look it up later.
+    final attemptRef = 'attempt_${DateTime.now().millisecondsSinceEpoch}';
+
+    // Create the Razorpay order server-side FIRST. This binds the checkout
+    // to a specific, server-verified amount — without this, a tampered
+    // client could open checkout for any amount and there'd be nothing
+    // tying the "success" callback to a real charge for the right total.
+    String orderId;
+    try {
+      final orderResp = await http.post(
+        Uri.parse('$_apiBaseUrl/api/payments/order'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'amount':   _finalAmount * 100, // paise — order route expects paise directly
+          'currency': 'INR',
+          'receipt':  attemptRef,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (orderResp.statusCode != 200) {
+        throw 'Order creation failed (${orderResp.statusCode})';
+      }
+      final orderData = jsonDecode(orderResp.body) as Map<String, dynamic>;
+      final id = orderData['order_id'] as String?;
+      if (id == null) throw 'Order response missing order_id';
+      orderId = id;
+    } catch (e) {
+      debugPrint('Create order error: $e');
+      if (mounted) {
+        setState(() => _loading = false);
+        _showSnack('Could not start payment. Please try again.', isError: true);
+      }
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _loading = false);
+
+    final options = {
+      'key':          _razorpayKey,
+      'order_id':     orderId,
+      'amount':       _finalAmount * 100, // Razorpay expects paise
+      'name':         'Cleenzo',
+      'description':  (_service?['name'] as String? ?? 'Home Cleaning Service'),
+      'prefill': {
+        'contact': '',
+        'email':   '',
+      },
+      'notes': {
+        'attempt_ref': attemptRef,
+        'customer_id': userId,
+      },
+      'theme': {
+        'color': '#06B6D4',
+      },
+      'method': {
+        'upi':          true,
+        'netbanking':   true,
+        'card':         false,
+        'wallet':       false,
+        'emi':          false,
+        'cardless_emi': false,
+        'paylater':     false,
+      },
+      'upi': {
+        'flow': 'intent',
+      },
+    };
+
+    try {
+      _razorpay.open(options);
+    } catch (e) {
+      setState(() => _loading = false);
+      _showSnack('Could not open payment. Please try again.', isError: true);
+    }
+  }
+
+  // ── Razorpay callbacks ────────────────────────────────────────
+
+  /// Payment succeeded — verify the signature server-side FIRST (proves the
+  /// callback is genuine and matches the order we created, not spoofed),
+  /// then attempt to claim the slot and create the booking. If claiming
+  /// fails (slot taken in the meantime), refund immediately since the
+  /// customer already paid.
+  Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
+    if (!mounted) return;
+    setState(() => _loading = true);
+
+    final paymentId = response.paymentId;
+    if (paymentId == null) {
+      // Should never happen on a genuine success callback, but guard
+      // anyway — can't refund without a payment id, can't verify either.
+      if (mounted) {
+        setState(() => _loading = false);
+        _showSnack(
+            'Payment confirmation was incomplete. If you were charged, '
+            'please contact support.',
+            isError: true);
+      }
+      return;
+    }
+
+    // Verify the signature server-side before trusting this callback at
+    // all. A missing/invalid signature means either an integration bug
+    // (order_id wasn't passed) or a tampered client — either way, do NOT
+    // create a booking from it. Still attempt a refund defensively, since
+    // Razorpay's own SDK did report success on the device.
+    try {
+      final verifyResp = await http.post(
+        Uri.parse('$_apiBaseUrl/api/payments/verify'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'razorpay_order_id':   response.orderId,
+          'razorpay_payment_id': response.paymentId,
+          'razorpay_signature':  response.signature,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      final verifyData = jsonDecode(verifyResp.body) as Map<String, dynamic>;
+      final verified = verifyData['verified'] as bool? ?? false;
+
+      if (!verified) {
+        debugPrint('Payment signature verification failed: ${verifyData['error']}');
+        await _refundPayment(paymentId, reason: 'signature_verification_failed');
+        if (mounted) {
+          setState(() => _loading = false);
+          _showSnack(
+              'We could not verify this payment. It has been refunded — '
+              'please try again.',
+              isError: true);
+        }
+        return;
+      }
+    } catch (e) {
+      debugPrint('Verify request error: $e');
+      // Verification call itself failed (network/server) — don't silently
+      // proceed to create a booking on an unverified payment. Refund and
+      // let the customer retry.
+      await _refundPayment(paymentId, reason: 'verification_request_failed');
+      if (mounted) {
+        setState(() => _loading = false);
+        _showSnack(
+            'We could not confirm this payment. It has been refunded — '
+            'please try again.',
+            isError: true);
+      }
+      return;
+    }
+
+    final userId = _userId;
+    if (userId == null) {
+      // Shouldn't happen (userId was set before payment opened), but if
+      // it does we can't create the booking — refund to be safe.
+      await _refundPayment(paymentId, reason: 'missing_user');
+      if (mounted) {
+        setState(() => _loading = false);
+        _showSnack(
+            'Something went wrong. Your payment has been refunded.',
+            isError: true);
+      }
+      return;
+    }
+
     final scheduledAt = _isInstant
         ? DateTime.now().toUtc()
         : _buildScheduledAt();
@@ -1051,7 +1335,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         'p_final_amount':         _finalAmount,
         'p_otp':                  otp,
         'p_booking_type':         _isInstant ? 'instant' : 'schedule',
-        'p_payment_status':       'pending',
+        'p_payment_status':       'paid',
         'p_payment_method':       'online',
         'p_service_id':           widget.serviceId,
         'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
@@ -1069,115 +1353,119 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final success = res['success'] as bool? ?? false;
 
       if (!success) {
-        setState(() => _loading = false);
+        // Payment succeeded but the slot is gone — refund immediately.
         final reason = res['reason'] as String? ?? 'error';
-        if (reason == 'slot_full') {
+        await _refundPayment(paymentId, reason: reason);
+        if (!mounted) return;
+        setState(() => _loading = false);
+        _showSnack('Payment refunded ✅ — the slot was just taken',
+            isError: false);
+        if (reason == 'slot_full' || reason == 'no_workers') {
           _isInstant ? _showNoWorkersDialog() : _showSlotFullDialog();
-        } else if (reason == 'no_workers') {
-          _showNoWorkersDialog();
         } else {
-          _showSnack('Booking failed: ${res['message'] ?? reason}', isError: true);
+          _showSnack('Booking failed: ${res['message'] ?? reason}',
+              isError: true);
         }
         return;
       }
 
       final bookingId = res['booking_id'] as String;
-      _pendingPaymentBookingId = bookingId;
 
-      // Save cart items
+      // Follow-up writes — non-critical, same pattern as elsewhere.
+      try {
+        await _supabase.from('bookings').update({
+          'payment_id':               paymentId,
+          'service_duration_minutes': _rawServiceDurationMins,
+        }).eq('id', bookingId);
+      } catch (e) { debugPrint('post-booking update skipped: $e'); }
+
       if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
         try {
           await _supabase.from('booking_items').insert(
             widget.cartItems!.map((c) => {
-              'booking_id':  bookingId,
-              'service_id':  c['service_id'] as String,
-              'quantity':    (c['quantity'] as num).toInt(),
-              'unit_price':  (c['price'] as num).toInt(),
-              'total_price': (c['price'] as num).toInt() *
+              'booking_id':   bookingId,
+              'service_id':   c['service_id'] as String,
+              'service_name': (c['name'] as String?) ?? 'Service',
+              'quantity':     (c['quantity'] as num).toInt(),
+              'unit_price':   (c['price'] as num).toInt(),
+              'total_price':  (c['price'] as num).toInt() *
                   (c['quantity'] as num).toInt(),
             }).toList(),
           );
         } catch (e) { debugPrint('booking_items skipped: $e'); }
       }
 
+      if (!mounted) return;
       setState(() => _loading = false);
-
-      // Open Razorpay payment sheet
-      final options = {
-        'key':          _razorpayKey,
-        'amount':       _finalAmount * 100, // Razorpay expects paise
-        'name':         'Cleenzo',
-        'description':  (_service?['name'] as String? ?? 'Home Cleaning Service'),
-        'prefill': {
-          'contact': '',
-          'email':   '',
-        },
-        'notes': {
-          'booking_id': bookingId,
-        },
-        'theme': {
-          'color': '#06B6D4',
-        },
-        'method': {
-          'upi':          true,
-          'netbanking':   true,
-          'card':         false,
-          'wallet':       false,
-          'emi':          false,
-          'cardless_emi': false,
-          'paylater':     false,
-        },
-        'upi': {
-          'flow': 'intent',
-        },
-      };
-
-      _razorpay.open(options);
+      Navigator.pushReplacement(context, MaterialPageRoute(
+        builder: (_) => BookingDetailScreen(bookingId: bookingId, isNew: true),
+      ));
     } catch (e) {
+      // Booking creation itself errored (network/db) even though payment
+      // succeeded — refund, since the customer has nothing to show for it.
+      debugPrint('Post-payment booking creation error: $e');
+      await _refundPayment(paymentId, reason: 'booking_creation_error');
+      if (!mounted) return;
       setState(() => _loading = false);
-      _showSnack('Something went wrong. Please try again.', isError: true);
+      _showSnack(
+          'Something went wrong creating your booking. Your payment has '
+          'been refunded — please try again.',
+          isError: true);
     }
-  }
-
-  // ── Razorpay callbacks ────────────────────────────────────────
-  Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
-    final bookingId = _pendingPaymentBookingId;
-    if (bookingId == null) return;
-
-    // Update booking payment status to paid
-    try {
-      await _supabase.from('bookings').update({
-        'payment_status': 'paid',
-        'payment_id':     response.paymentId,
-      }).eq('id', bookingId);
-    } catch (e) {
-      debugPrint('Payment status update error: $e');
-    }
-
-    _pendingPaymentBookingId = null;
-
-    if (!mounted) return;
-    // Navigate to booking detail
-    Navigator.pushReplacement(context, MaterialPageRoute(
-      builder: (_) => BookingDetailScreen(bookingId: bookingId),
-    ));
   }
 
   void _onPaymentError(PaymentFailureResponse response) {
-    final bookingId = _pendingPaymentBookingId;
-    // Mark booking as payment_failed
-    if (bookingId != null) {
-      _supabase.from('bookings').update({
-        'payment_status': 'failed',
-      }).eq('id', bookingId).then((_) {}).catchError((_) {});
-    }
-    _pendingPaymentBookingId = null;
+    // No booking was ever created for a failed/cancelled payment attempt —
+    // nothing in the DB to clean up.
+    if (mounted) setState(() => _loading = false);
     _showSnack('Payment failed: ${response.message ?? "Please try again"}',
         isError: true);
   }
 
   void _onExternalWallet(ExternalWalletResponse response) {
     _showSnack('External wallet: ${response.walletName}');
+  }
+
+  // ── Refund — called whenever payment succeeded but no booking resulted ──
+  // Goes through the backend (Next.js API route), since the Razorpay
+  // secret key can never live in the Flutter app. See
+  // app/api/payments/refund/route.ts (to be added on the backend).
+  //
+  // TODO: replace with your actual deployed API base URL.
+  static const _apiBaseUrl = 'https://YOUR_DOMAIN_HERE';
+
+  Future<void> _refundPayment(String paymentId, {required String reason}) async {
+    try {
+      final resp = await http.post(
+        Uri.parse('$_apiBaseUrl/api/payments/refund'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'payment_id': paymentId,
+          'reason':     reason,
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (resp.statusCode != 200) {
+        debugPrint('Refund API error (${resp.statusCode}): ${resp.body}');
+        // Don't hide this from the customer — if the automated refund
+        // call itself failed, they need a way to reach support with the
+        // payment ID so it can be refunded manually.
+        if (mounted) {
+          _showSnack(
+              'Could not auto-refund. Please contact support with '
+              'payment ID: $paymentId',
+              isError: true);
+        }
+      }
+    } catch (e) {
+      debugPrint('Refund request failed: $e');
+      if (mounted) {
+        _showSnack(
+            'Could not auto-refund. Please contact support with '
+            'payment ID: $paymentId',
+            isError: true);
+      }
+    }
   }
 
   // ── COD Confirm Booking — atomic via Postgres RPC ────────────
@@ -1254,16 +1542,28 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       final bookingId = res['booking_id'] as String;
 
+      // Save the customer-facing actual duration (unbuffered, unrounded) —
+      // separate from booking_duration_minutes which is the internal
+      // worker-slot-blocking value.
+      try {
+        await _supabase.from('bookings').update({
+          'service_duration_minutes': _rawServiceDurationMins,
+        }).eq('id', bookingId);
+      } catch (e) { debugPrint('service_duration_minutes skipped: $e'); }
+
       // ── Save cart items if any (outside the RPC — non-critical) ──
+      // Snapshot service_name so history stays intact even if the service
+      // is later renamed/removed from the catalog.
       if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
         try {
           await _supabase.from('booking_items').insert(
             widget.cartItems!.map((c) => {
-              'booking_id':  bookingId,
-              'service_id':  c['service_id'] as String,
-              'quantity':    (c['quantity'] as num).toInt(),
-              'unit_price':  (c['price'] as num).toInt(),
-              'total_price': (c['price'] as num).toInt() *
+              'booking_id':   bookingId,
+              'service_id':   c['service_id'] as String,
+              'service_name': (c['name'] as String?) ?? 'Service',
+              'quantity':     (c['quantity'] as num).toInt(),
+              'unit_price':   (c['price'] as num).toInt(),
+              'total_price':  (c['price'] as num).toInt() *
                   (c['quantity'] as num).toInt(),
             }).toList(),
           );
@@ -1650,7 +1950,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         title: 'Choose Time',
         sub: _slotsLoading
             ? 'Checking availability…'
-            : '$availableCount slots available · 2hr advance · '
+            : '$availableCount slots available · ${_minNoticeMins}min advance · '
               '${_slotsBlocked}hr${_slotsBlocked > 1 ? 's' : ''} blocked',
         child: _slotsLoading
             ? const Center(child: Padding(
@@ -1988,10 +2288,34 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   Widget _buildConfirmStep() {
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
+    final hasCart = widget.cartItems != null && widget.cartItems!.isNotEmpty;
+
     final rows = <Map<String, dynamic>>[
-      {'icon': Icons.cleaning_services_rounded, 'label': 'Service',  'value': _serviceLabel},
+      // Multi-service cart: one row per service so the price breakdown is
+      // visible, instead of a single combined "3 services" row. When it's
+      // a first booking, only the first item is discounted to ₹25.
+      if (hasCart)
+        for (int i = 0; i < widget.cartItems!.length; i++)
+          () {
+            final item = widget.cartItems![i];
+            final qty  = (item['quantity'] as num?)?.toInt() ?? 1;
+            final full = (item['price'] as num).toInt() * qty;
+            final isDiscounted = widget.isFirstBooking && i == 0;
+            return {
+              'icon': Icons.cleaning_services_rounded,
+              'label': (item['name'] as String?) ?? 'Service',
+              'value': isDiscounted
+                  ? '×$qty  ·  ₹25 (was ₹$full)'
+                  : '×$qty  ·  ₹$full',
+            };
+          }()
+      else
+        {'icon': Icons.cleaning_services_rounded, 'label': 'Service',  'value': _serviceLabel},
       if (widget.isFirstBooking)
-        {'icon': Icons.celebration_rounded, 'label': 'Offer',   'value': 'First booking at ₹25!'},
+        {'icon': Icons.celebration_rounded, 'label': 'Offer',
+          'value': hasCart
+              ? 'First service at ₹25!'
+              : 'First booking at ₹25!'},
       if (_isInstant) ...[
         {'icon': Icons.bolt_rounded, 'label': 'Type', 'value': 'Instant Booking'},
         {'icon': Icons.schedule_rounded, 'label': 'Est. Arrival',
@@ -2192,12 +2516,40 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           border: Border.all(color: _border)),
         child: Column(children: [
           if (widget.isFirstBooking) ...[
-            _priceRow('Original price',
-                '₹${widget.overridePrice ?? _baseAmount}',
+            if (hasCart) ...[
+              // Only the first service is discounted to ₹25 — show it
+              // struck-through + discount line, then any other cart
+              // services at their normal full price.
+              _priceRow(
+                (widget.cartItems![0]['name'] as String?) ?? 'First service',
+                '₹$_firstItemFullPrice',
                 _muted, _faint, strike: true),
-            _priceRow('First booking discount',
-                '-₹${(widget.overridePrice ?? _baseAmount) - 25}',
-                _muted, _greenDk),
+              _priceRow('First booking discount',
+                  '-₹${_firstItemFullPrice - 25}', _muted, _greenDk),
+              for (int i = 1; i < widget.cartItems!.length; i++)
+                _priceRow(
+                  '${(widget.cartItems![i]['name'] as String?) ?? 'Service'}'
+                  '${((widget.cartItems![i]['quantity'] as num?)?.toInt() ?? 1) > 1 ? ' ×${(widget.cartItems![i]['quantity'] as num).toInt()}' : ''}',
+                  '₹${((widget.cartItems![i]['price'] as num).toInt() * ((widget.cartItems![i]['quantity'] as num?)?.toInt() ?? 1))}',
+                  _muted, _ink),
+            ] else ...[
+              _priceRow('Original price',
+                  '₹$_originalTotalAmount',
+                  _muted, _faint, strike: true),
+              _priceRow('First booking discount',
+                  '-₹${_originalTotalAmount - _baseAmount}',
+                  _muted, _greenDk),
+            ],
+          ] else if (hasCart) ...[
+            for (final item in widget.cartItems!)
+              _priceRow(
+                '${(item['name'] as String?) ?? 'Service'}'
+                '${((item['quantity'] as num?)?.toInt() ?? 1) > 1 ? ' ×${(item['quantity'] as num).toInt()}' : ''}',
+                '₹${((item['price'] as num).toInt() * ((item['quantity'] as num?)?.toInt() ?? 1))}',
+                _muted, _ink),
+            if (_discount > 0)
+              _priceRow('Promo ($_appliedPromoCode)', '− ₹$_discount',
+                  _muted, _greenDk),
           ] else ...[
             _priceRow('Service total', '₹$_baseAmount', _muted, _ink),
             if (_discount > 0)

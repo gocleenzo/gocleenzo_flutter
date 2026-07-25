@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'review_popup.dart';
 
 class BookingDetailScreen extends StatefulWidget {
@@ -56,8 +57,15 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   // Mark-work-done state
   bool _markingDone = false;
 
-  // Extra time state
+  // Extra time state — the ₹59 extra-time charge is now its own separate
+  // Razorpay payment (not folded into the main booking's cash amount).
   bool _addingExtraTime = false;
+  late Razorpay _extraTimeRazorpay;
+  // Test key — same as booking_flow_screen.dart. Replace with live key
+  // together when going live.
+  static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
+  static const _kExtraTimeMinsAdded  = 20;
+  static const _kExtraTimePriceRupees = 59;
 
   // Review popup state
   bool _reviewPromptShown = false;
@@ -67,6 +75,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   RealtimeChannel? _channel;
   Timer? _tickTimer;
+  // Ticks every second to drive the live "Time Remaining" countdown while
+  // status is in_progress. Cheap no-op setState the rest of the time.
+  Timer? _countdownTimer;
 
   @override
   void initState() {
@@ -76,6 +87,14 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     _successScale = CurvedAnimation(
         parent: _successCtrl, curve: Curves.elasticOut);
 
+    _extraTimeRazorpay = Razorpay();
+    _extraTimeRazorpay.on(
+        Razorpay.EVENT_PAYMENT_SUCCESS, _onExtraTimePaymentSuccess);
+    _extraTimeRazorpay.on(
+        Razorpay.EVENT_PAYMENT_ERROR, _onExtraTimePaymentError);
+    _extraTimeRazorpay.on(
+        Razorpay.EVENT_EXTERNAL_WALLET, _onExtraTimeExternalWallet);
+
     _loadBooking();
     _subscribeRealtime();
 
@@ -83,6 +102,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     // unlocks on its own without needing a realtime event.
     _tickTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
+    });
+
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _status == 'in_progress') setState(() {});
     });
 
     if (widget.isNew) {
@@ -95,7 +118,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   @override
   void dispose() {
     _successCtrl.dispose();
+    _extraTimeRazorpay.clear();
     _channel?.unsubscribe();
+    _countdownTimer?.cancel();
     _tickTimer?.cancel();
     _otpInputCtrl.dispose();
     super.dispose();
@@ -109,7 +134,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
             *,
             services(name, duration_minutes, category),
             addresses(label, flat_no, building, area, city, pincode),
-            worker:users!worker_id(full_name, phone)
+            worker:users!worker_id(full_name, phone),
+            booking_items(quantity, unit_price, total_price, service_name, services(name, duration_minutes, category))
           ''')
           .eq('id', widget.bookingId)
           .single();
@@ -123,6 +149,35 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       if (mounted) setState(() => _loading = false);
     }
   }
+
+  /// Every service booked in this order, as (name, qty, unitPrice) tuples.
+  /// Prefers the snapshotted `booking_items.service_name` (stable even if
+  /// the service is later renamed/removed), falls back to the live
+  /// `booking_items.services.name` join, and finally falls back to the
+  /// single `bookings.services.name` join for older non-cart bookings.
+  List<Map<String, dynamic>> get _bookedServices {
+    final items = (_booking?['booking_items'] as List?) ?? const [];
+    if (items.isNotEmpty) {
+      return items.map((raw) {
+        final item = raw as Map<String, dynamic>;
+        final name = (item['service_name'] as String?) ??
+            (item['services']?['name'] as String?) ?? 'Service';
+        final qty = (item['quantity'] as num?)?.toInt() ?? 1;
+        final unit = (item['unit_price'] as num?)?.toInt() ?? 0;
+        return {'name': name, 'qty': qty, 'unit_price': unit};
+      }).toList();
+    }
+    final svc = _booking?['services'] as Map<String, dynamic>?;
+    final fallback = svc?['name'] as String? ?? 'Service';
+    return [{'name': fallback, 'qty': 1, 'unit_price': (_booking?['base_price'] as num?)?.toInt() ?? 0}];
+  }
+
+  /// Comma-joined display string of every booked service.
+  String get _bookedServicesLabel =>
+      _bookedServices.map((s) {
+        final qty = s['qty'] as int;
+        return qty > 1 ? '${s['name']} ×$qty' : s['name'] as String;
+      }).join(', ');
 
   // Worker's permanent OTP lives in a separate `workers` table,
   // keyed by user_id (matching bookings.worker_id), in the
@@ -166,6 +221,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   // ── Status helpers ───────────────────────────────────────────
   String get _status => _booking?['status'] as String? ?? 'pending';
   int    get _extraTimeMins => (_booking?['extra_time_mins'] as num?)?.toInt() ?? 0;
+  String? get _extraTimePaymentStatus =>
+      _booking?['extra_time_payment_status'] as String?;
   String get _paymentStatus => _booking?['payment_status'] as String? ?? 'cod';
   bool get _isInstant => (_booking?['booking_type'] as String?) == 'instant';
   bool get _hasWorker => _booking?['worker_id'] != null;
@@ -193,6 +250,32 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final opensAt = sched.subtract(const Duration(minutes: 15));
     final diff = opensAt.difference(DateTime.now());
     return diff.isNegative ? null : diff;
+  }
+
+  DateTime? get _workStartedAtLocal {
+    final raw = _booking?['work_started_at'] as String?;
+    if (raw == null) return null;
+    return DateTime.tryParse(raw)?.toLocal();
+  }
+
+  /// Total service duration the countdown should run for: the customer's
+  /// actual selected duration (service_duration_minutes) PLUS any extra
+  /// time already added. Automatically extends the countdown the moment
+  /// extra time is paid for, since _extraTimeMins reflects the live value.
+  int get _totalServiceDurationMins {
+    final raw = (_booking?['service_duration_minutes'] as num?)?.toInt();
+    final base = raw ?? (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 60;
+    return base + _extraTimeMins;
+  }
+
+  /// Time left until the service is expected to finish, counting down from
+  /// work_started_at. Null if work hasn't started. Negative once overtime
+  /// (caller should treat negative as "running over", not hide it).
+  Duration? get _remainingServiceTime {
+    final started = _workStartedAtLocal;
+    if (started == null) return null;
+    final endsAt = started.add(Duration(minutes: _totalServiceDurationMins));
+    return endsAt.difference(DateTime.now());
   }
 
   Color _statusColor(String s) {
@@ -452,13 +535,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     }
 
     if (!mounted) return;
-    final svc = _booking?['services'] as Map<String, dynamic>?;
     await showReviewPopup(
       context,
       bookingId: widget.bookingId,
       workerId: _booking?['worker_id'] as String?,
       serviceId: _booking?['service_id'] as String?,
-      serviceName: svc?['name'] as String?,
+      serviceName: _bookedServicesLabel,
     );
   }
 
@@ -500,6 +582,8 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               const SizedBox(height: 14),
               if (_status == 'accepted') _buildVerifyProfessionalCard(),
               if (_status == 'accepted') const SizedBox(height: 14),
+              if (_status == 'in_progress') _buildCountdownCard(),
+              if (_status == 'in_progress') const SizedBox(height: 14),
               if (_status == 'in_progress') _buildMarkDoneCard(),
               if (_status == 'in_progress') const SizedBox(height: 14),
               if (_status == 'in_progress') _buildExtraTimeCard(),
@@ -886,6 +970,86 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
+  // ── Countdown card (shown while in_progress) ───────────────────
+  // Counts down from work_started_at through the total service duration
+  // (actual selected duration + any extra time already paid for). Once
+  // extra time is added mid-job, _totalServiceDurationMins picks it up
+  // automatically and the countdown extends live — no separate wiring
+  // needed since this rebuilds from _booking state every second.
+  Widget _buildCountdownCard() {
+    final remaining = _remainingServiceTime;
+    if (remaining == null) {
+      // Work hasn't technically started yet (edge case — status is
+      // in_progress but work_started_at hasn't landed via realtime yet).
+      return const SizedBox.shrink();
+    }
+
+    final isOvertime = remaining.isNegative;
+    final display     = isOvertime ? -remaining : remaining;
+    final mins        = display.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final secs        = display.inSeconds.remainder(60).toString().padLeft(2, '0');
+    final hours       = display.inHours;
+    final timeStr     = hours > 0
+        ? '${hours.toString().padLeft(2, '0')}:$mins:$secs'
+        : '$mins:$secs';
+
+    final color   = isOvertime ? const Color(0xFFDC2626) : _cyan;
+    final bgColor = isOvertime ? const Color(0xFFFEF2F2) : _cyanBg;
+    final borderColor = isOvertime ? const Color(0xFFFECACA) : _cyanBg2;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: borderColor)),
+      child: Column(children: [
+        Row(children: [
+          Icon(isOvertime ? Icons.timer_off_rounded : Icons.timer_rounded,
+              color: color, size: 20),
+          const SizedBox(width: 8),
+          Text(
+            isOvertime ? 'Running Over Time' : 'Time Remaining',
+            style: TextStyle(color: color,
+                fontSize: 13, fontWeight: FontWeight.w800)),
+        ]),
+        const SizedBox(height: 10),
+        Text(timeStr,
+            style: TextStyle(color: color,
+                fontSize: 40, fontWeight: FontWeight.w900,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                letterSpacing: 1)),
+        const SizedBox(height: 6),
+        Text(
+          isOvertime
+              ? 'The service is taking longer than the ${_totalServiceDurationMins} min booked'
+              : 'of $_totalServiceDurationMins min booked'
+                '${_extraTimeMins > 0 ? ' (incl. +$_extraTimeMins min extra)' : ''}',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: color.withValues(alpha: 0.75),
+              fontSize: 11.5)),
+        if (isOvertime) ...[
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.6),
+              borderRadius: BorderRadius.circular(10)),
+            child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+              Icon(Icons.info_outline_rounded,
+                  color: Color(0xFFDC2626), size: 14),
+              SizedBox(width: 6),
+              Text('Need more time? Add extra time below',
+                  style: TextStyle(color: Color(0xFFDC2626),
+                      fontSize: 11.5, fontWeight: FontWeight.w700)),
+            ])),
+        ],
+      ]),
+    );
+  }
+
   // ── Mark Work Done card (shown while in_progress) ──────────────
   Widget _buildMarkDoneCard() {
     return _card(
@@ -927,12 +1091,19 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   // ── Booking info card ────────────────────────────────────────
   Widget _buildBookingInfoCard() {
-    final svc         = _booking?['services'] as Map<String, dynamic>?;
-    final serviceName = svc?['name'] as String? ?? 'Service';
     final scheduledAt = _booking?['scheduled_at'] as String?;
     final bookingType = _booking?['booking_type'] as String? ?? 'schedule';
-    final duration    = _booking?['booking_duration_minutes'] as int?
-        ?? svc?['duration_minutes'] as int?;
+    final svc         = _booking?['services'] as Map<String, dynamic>?;
+    // Customer-facing duration = actual selected duration + extra time
+    // added, NOT the internal buffered/hour-rounded value used for worker
+    // slot-blocking (booking_duration_minutes). Falls back to the old
+    // buffered field only for bookings made before this column existed.
+    final rawDuration = (_booking?['service_duration_minutes'] as num?)?.toInt();
+    final duration    = rawDuration != null
+        ? rawDuration + _extraTimeMins
+        : (_booking?['booking_duration_minutes'] as int?
+            ?? svc?['duration_minutes'] as int?);
+    final services    = _bookedServices;
 
     String formattedDate = '—';
     String formattedTime = '—';
@@ -949,9 +1120,19 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       }
     }
 
+    // One row per booked service (instead of a single combined row) so
+    // every service in a multi-service order is visible here.
+    final serviceRows = <Map<String, dynamic>>[
+      for (final s in services)
+        {
+          'icon': Icons.cleaning_services_rounded,
+          'label': (s['qty'] as int) > 1 ? '${s['name']} ×${s['qty']}' : s['name'],
+          'value': '₹${(s['unit_price'] as int) * (s['qty'] as int)}',
+        },
+    ];
+
     final rows = <Map<String, dynamic>>[
-      {'icon': Icons.cleaning_services_rounded,
-        'label': 'Service', 'value': serviceName},
+      ...serviceRows,
       {'icon': bookingType == 'instant'
           ? Icons.bolt_rounded : Icons.calendar_month_rounded,
         'label': 'Type',
@@ -973,7 +1154,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     return _card(
       icon: Icons.receipt_long_rounded,
       title: 'Booking Info',
-      subtitle: 'Your service details',
+      subtitle: services.length > 1
+          ? '${services.length} services in this order'
+          : 'Your service details',
       child: Column(children: [
         for (int i = 0; i < rows.length; i++) ...[
           Row(children: [
@@ -1012,25 +1195,31 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final discount = (_booking?['discount_amount'] as num?)?.toInt() ?? 0;
     final final_   = (_booking?['final_amount'] as num?)?.toInt() ?? 0;
     final promo    = _booking?['promo_code'] as String?;
+    final services = _bookedServices;
+    final hasMultiple = services.length > 1;
+    final extraTimePrice = (_booking?['extra_time_price'] as num?)?.toInt() ?? 0;
+    final extraTimePaid  = _extraTimePaymentStatus == 'paid';
 
     return _card(
       icon: Icons.account_balance_wallet_rounded,
       title: 'Price Breakdown',
       subtitle: 'Payment summary',
       child: Column(children: [
-        _priceRow('Service Total', '₹$base', _muted, _ink),
-        if (((_booking?['extra_time_price'] as num?)?.toInt() ?? 0) > 0)
-          _priceRow(
-            '+20 min Extra Time',
-            '₹${(_booking!['extra_time_price'] as num).toInt()}',
-            _muted, const Color(0xFF7C3AED)),
+        if (hasMultiple)
+          for (final s in services)
+            _priceRow(
+              (s['qty'] as int) > 1 ? '${s['name']} ×${s['qty']}' : s['name'] as String,
+              '₹${(s['unit_price'] as int) * (s['qty'] as int)}',
+              _muted, _ink)
+        else
+          _priceRow('Service Total', '₹$base', _muted, _ink),
         if (discount > 0)
           _priceRow(
               promo != null ? 'Promo ($promo)' : 'Discount',
               '− ₹$discount', _muted, _greenDk),
         const Divider(color: _line, height: 20),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text('Total Amount',
+          const Text('Cash Due to Worker',
               style: TextStyle(fontSize: 15,
                   fontWeight: FontWeight.w900, color: _ink)),
           Text('₹$final_',
@@ -1056,6 +1245,41 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                 fontSize: 12, fontWeight: FontWeight.w600))),
           ]),
         ),
+        // Extra time is a SEPARATE payment, paid online at the time it was
+        // added — shown here for the record, but deliberately excluded from
+        // "Cash Due to Worker" above since it's already settled.
+        if (extraTimePrice > 0) ...[
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FF),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFDDD6FE))),
+            child: Row(children: [
+              const Icon(Icons.more_time_rounded,
+                  color: Color(0xFF7C3AED), size: 18),
+              const SizedBox(width: 10),
+              Expanded(child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('+20 min Extra Time',
+                    style: TextStyle(color: Color(0xFF7C3AED),
+                        fontSize: 12, fontWeight: FontWeight.w700)),
+                Text(
+                  extraTimePaid
+                      ? 'Paid separately online ✓'
+                      : 'Payment pending',
+                  style: TextStyle(
+                      color: extraTimePaid
+                          ? const Color(0xFF059669) : _muted,
+                      fontSize: 10.5)),
+              ])),
+              Text('₹$extraTimePrice',
+                  style: const TextStyle(color: Color(0xFF7C3AED),
+                      fontSize: 14, fontWeight: FontWeight.w900)),
+            ]),
+          ),
+        ],
       ]),
     );
   }
@@ -1261,24 +1485,27 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                 color: const Color(0xFFECFDF5),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: const Color(0xFF6EE7B7))),
-              child: const Row(children: [
-                Icon(Icons.check_circle_rounded,
+              child: Row(children: [
+                const Icon(Icons.check_circle_rounded,
                     color: Color(0xFF059669), size: 18),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Expanded(child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text('+20 min added · ₹59 extra',
+                  const Text('+20 min added · ₹59 extra',
                       style: TextStyle(color: Color(0xFF059669),
                           fontWeight: FontWeight.w900, fontSize: 13)),
-                  SizedBox(height: 2),
-                  Text('Pay ₹59 extra to the worker in cash',
-                      style: TextStyle(color: Color(0xFF6EE7B7),
-                          fontSize: 11)),
+                  const SizedBox(height: 2),
+                  Text(
+                    _extraTimePaymentStatus == 'paid'
+                        ? 'Paid online ✓ — no extra cash needed for this'
+                        : 'Payment pending — try adding extra time again',
+                    style: const TextStyle(color: Color(0xFF6EE7B7),
+                        fontSize: 11)),
                 ])),
               ]))
           // ── Not yet added: show Add button ───────────────────
           : GestureDetector(
-              onTap: _addingExtraTime ? null : _addExtraTime,
+              onTap: _addingExtraTime ? null : _startExtraTimePayment,
               child: Container(
                 height: 52,
                 width: double.infinity,
@@ -1304,7 +1531,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                               style: TextStyle(color: Colors.white,
                                   fontWeight: FontWeight.w900, fontSize: 15)),
                           SizedBox(width: 8),
-                          Text('Add Extra Time',
+                          Text('Pay & Add Extra Time',
                               style: TextStyle(color: Colors.white70,
                                   fontSize: 13)),
                         ]),
@@ -1312,48 +1539,97 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Add extra time logic ────────────────────────────────────────
-  Future<void> _addExtraTime() async {
+  // ── Add extra time — SEPARATE Razorpay payment ────────────────────
+  //
+  // The ₹59 extra-time charge is its own payment, distinct from the
+  // original booking's payment. The customer pays it online right when
+  // they tap "Add Extra Time" — it is NOT folded into `final_amount`
+  // (which stays the cash-to-worker amount for the original service).
+  // The 20 minutes / ₹59 are only written to the booking AFTER Razorpay
+  // confirms success.
+  void _startExtraTimePayment() {
     if (_addingExtraTime) return;
     setState(() => _addingExtraTime = true);
 
-    try {
-      final bookingId   = widget.bookingId;
-      final currentDur  = (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 0;
-      final currentFinal = (_booking?['final_amount'] as num?)?.toInt() ?? 0;
+    final options = {
+      'key':         _razorpayKey,
+      'amount':      _kExtraTimePriceRupees * 100, // paise
+      'name':        'Cleenzo',
+      'description': '+20 min Extra Time',
+      'prefill':     {'contact': '', 'email': ''},
+      'notes':       {'booking_id': widget.bookingId, 'type': 'extra_time'},
+      'theme':       {'color': '#7C3AED'},
+      'method': {
+        'upi': true, 'netbanking': true,
+        'card': false, 'wallet': false,
+        'emi': false, 'cardless_emi': false, 'paylater': false,
+      },
+      'upi': {'flow': 'intent'},
+    };
 
-      // Update booking: +20 mins duration, +₹59 final amount,
-      // set extra_time_mins = 20, extra_time_price = 59
+    try {
+      _extraTimeRazorpay.open(options);
+    } catch (e) {
+      debugPrint('Extra time Razorpay open error: $e');
+      if (mounted) setState(() => _addingExtraTime = false);
+      _showExtraTimeSnack('Could not open payment. Please try again.',
+          isError: true);
+    }
+  }
+
+  Future<void> _onExtraTimePaymentSuccess(
+      PaymentSuccessResponse response) async {
+    try {
+      final bookingId  = widget.bookingId;
+      final currentDur = (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 0;
+
+      // Write the extra time AND its own payment record. Deliberately does
+      // NOT touch final_amount — that stays the cash-to-worker figure for
+      // the original service only.
       await _supabase.from('bookings').update({
-        'extra_time_mins':         20,
-        'extra_time_price':        59,
-        'booking_duration_minutes': currentDur + 20,
-        'final_amount':             currentFinal + 59,
+        'extra_time_mins':           _kExtraTimeMinsAdded,
+        'extra_time_price':          _kExtraTimePriceRupees,
+        'booking_duration_minutes':  currentDur + _kExtraTimeMinsAdded,
+        'extra_time_payment_id':     response.paymentId,
+        'extra_time_payment_status': 'paid',
       }).eq('id', bookingId);
 
-      // Reload booking to reflect changes in UI
       await _loadBooking();
 
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('✅ +20 min added! Pay ₹59 extra to the worker.'),
-          backgroundColor: Color(0xFF059669),
-          duration: Duration(seconds: 3),
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
+      _showExtraTimeSnack(
+          '✅ +20 min added! ₹59 paid — no extra cash needed for this.');
     } catch (e) {
-      debugPrint('Extra time error: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('Failed to add extra time. Please try again.'),
-          backgroundColor: Color(0xFFDC2626),
-          behavior: SnackBarBehavior.floating,
-        ));
-      }
+      debugPrint('Extra time DB update error: $e');
+      _showExtraTimeSnack(
+          'Payment succeeded but saving failed. Contact support with '
+          'payment ID ${response.paymentId}.',
+          isError: true);
     } finally {
       if (mounted) setState(() => _addingExtraTime = false);
     }
+  }
+
+  void _onExtraTimePaymentError(PaymentFailureResponse response) {
+    if (mounted) setState(() => _addingExtraTime = false);
+    _showExtraTimeSnack(
+        'Payment failed: ${response.message ?? "Please try again"}',
+        isError: true);
+  }
+
+  void _onExtraTimeExternalWallet(ExternalWalletResponse response) {
+    if (mounted) setState(() => _addingExtraTime = false);
+    _showExtraTimeSnack('External wallet: ${response.walletName}');
+  }
+
+  void _showExtraTimeSnack(String msg, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: isError ? const Color(0xFFDC2626) : const Color(0xFF059669),
+      duration: const Duration(seconds: 3),
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+    ));
   }
 
   Widget _card({

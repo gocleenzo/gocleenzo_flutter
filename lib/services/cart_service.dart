@@ -63,8 +63,13 @@ class CartItem {
     }
   }
 
+  // Includes 'name' so downstream screens (BookingFlowScreen summary,
+  // booking_items insert, My Bookings, Booking Detail) can show and store
+  // the actual service name — previously missing, which is why every
+  // multi-service booking fell back to the generic "Service" label.
   Map<String, dynamic> toBookingItem() => {
     'service_id':       serviceId,
+    'name':             serviceName,
     'price':            totalPrice,
     'quantity':         quantity,
     'duration_minutes': totalDuration,

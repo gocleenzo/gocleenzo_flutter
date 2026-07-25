@@ -47,6 +47,26 @@ class _BookingsScreenState extends State<BookingsScreen>
     'cancelled': '❌',
   };
 
+  /// Every service name booked in this order.
+  /// Prefers the snapshotted `booking_items.service_name` (stable even if
+  /// the service is later renamed/removed), falls back to the live
+  /// `booking_items.services.name` join, and finally falls back to the
+  /// single `bookings.services.name` join for older non-cart bookings.
+  static List<String> _serviceNamesFor(Map<String, dynamic> booking) {
+    final items = (booking['booking_items'] as List?) ?? const [];
+    if (items.isNotEmpty) {
+      return items.map((raw) {
+        final item = raw as Map<String, dynamic>;
+        final name = (item['service_name'] as String?) ??
+            (item['services']?['name'] as String?) ?? 'Service';
+        final qty = (item['quantity'] as num?)?.toInt() ?? 1;
+        return qty > 1 ? '$name ×$qty' : name;
+      }).toList();
+    }
+    final fallback = (booking['services'] as Map<String, dynamic>?)?['name'] as String?;
+    return [fallback ?? 'Cleaning Service'];
+  }
+
   @override
   void initState() {
     super.initState();
@@ -99,7 +119,9 @@ class _BookingsScreenState extends State<BookingsScreen>
     try {
       final data = await _supabase
           .from('bookings')
-          .select('*, services(name, base_price)')
+          .select(
+              '*, services(name, base_price), '
+              'booking_items(quantity, unit_price, total_price, service_name, services(name))')
           .eq('customer_id', userId)
           .order('scheduled_at', ascending: false);
 
@@ -539,8 +561,8 @@ class _BookingsScreenState extends State<BookingsScreen>
   // ─── Booking Card ─────────────────────────────────────────────────────────
 
   Widget _bookingCard(Map<String, dynamic> booking) {
-    final service = booking['services'] as Map<String, dynamic>?;
-    final name = service?['name'] as String? ?? 'Cleaning Service';
+    final serviceNames = _serviceNamesFor(booking);
+    final name = serviceNames.join(', ');
     final status = booking['status'] as String? ?? 'pending';
     final scheduledRaw = booking['scheduled_at'] as String?;
     final scheduled =
@@ -656,14 +678,33 @@ class _BookingsScreenState extends State<BookingsScreen>
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
-                              child: Text(
-                                name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  fontSize: 15,
-                                  color: Color(0xFF0E4F5C),
-                                  letterSpacing: -0.2,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    name,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 15,
+                                      color: Color(0xFF0E4F5C),
+                                      letterSpacing: -0.2,
+                                    ),
+                                  ),
+                                  if (serviceNames.length > 1)
+                                    Padding(
+                                      padding: const EdgeInsets.only(top: 2),
+                                      child: Text(
+                                        '${serviceNames.length} services',
+                                        style: const TextStyle(
+                                          color: Color(0xFF0891B2),
+                                          fontSize: 10.5,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                ],
                               ),
                             ),
                             const SizedBox(width: 8),
