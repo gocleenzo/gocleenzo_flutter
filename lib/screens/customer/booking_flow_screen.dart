@@ -5,8 +5,18 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../../services/supabase_service.dart';
+import '../../services/cart_service.dart';
 import 'booking_detail_screen.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
+
+/// Small plain wrapper (avoids relying on Dart 3 record-type syntax, for
+/// broader SDK compatibility) holding date-specific worker schedule data
+/// fetched in one query. See _fetchWorkerScheduleDates.
+class _WorkerScheduleLookup {
+  final Map<String, Map<String, Map<String, dynamic>>> byWorkerDate;
+  final Set<String> hasAny;
+  _WorkerScheduleLookup(this.byWorkerDate, this.hasAny);
+}
 
 class BookingFlowScreen extends StatefulWidget {
   final String  mode;
@@ -143,48 +153,29 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   List<DateTime> get _dates =>
       List.generate(7, (i) => DateTime.now().add(Duration(days: i)));
 
+  // Every cart item's 'price' field is ALREADY the total for that whole
+  // line (all its units) — CartService.buildTiers() bakes the correct
+  // first-booking ₹25-for-the-first-unit discount into each ELIGIBLE
+  // service independently when the cart item is built. So this just sums
+  // each item's price as-is.
+  //
+  // This used to do two things wrong: (1) multiply price by quantity a
+  // SECOND time (price was already the line total, not a per-unit rate —
+  // so a qty-2 item was charged at price×2 instead of just price, roughly
+  // doubling real charges for any multi-unit cart item), and (2) when
+  // isFirstBooking was true, blindly override item[0]'s price to a flat
+  // ₹25 regardless of its actual quantity or whether it was even an
+  // eligible service, while leaving every other item at full undiscounted
+  // price even if THEY were eligible services too. Both are gone now —
+  // the already-correct per-item price from the cart is trusted directly,
+  // which is also exactly what the cart screen itself displays, so the
+  // payment amount and the cart total can no longer disagree.
   int get _baseAmount {
-    if (widget.isFirstBooking) {
-      // Only the FIRST service in the cart gets the ₹25 offer — any
-      // additional services added in the same order stay full price.
-      if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
-        final restTotal = widget.cartItems!.skip(1).fold(0,
-            (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
-        return 25 + restTotal;
-      }
-      return 25;
-    }
-    // Cart takes priority — it's the more specific source. overridePrice is
-    // only a fallback for single-service flows (service_detail_screen etc).
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
-      return widget.cartItems!.fold(0,
-          (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
+      return widget.cartItems!.fold(0, (s, c) => s + (c['price'] as num).toInt());
     }
     if (widget.overridePrice != null) return widget.overridePrice!;
     return (_service?['base_price'] as num?)?.toInt() ?? 0;
-  }
-
-  /// Full (undiscounted) price of the first cart item — i.e. what it would
-  /// have cost without the first-booking offer. Used for the strike-through
-  /// price and to compute the discount amount shown in the summary.
-  int get _firstItemFullPrice {
-    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
-      final first = widget.cartItems!.first;
-      final price = (first['price'] as num).toInt();
-      final qty   = (first['quantity'] as num?)?.toInt() ?? 1;
-      return price * qty;
-    }
-    return widget.overridePrice ?? ((_service?['base_price'] as num?)?.toInt() ?? 25);
-  }
-
-  /// Full (undiscounted) total of the whole order — sum of every item at
-  /// its normal price, ignoring any first-booking discount.
-  int get _originalTotalAmount {
-    if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
-      return widget.cartItems!.fold(0,
-          (s, c) => s + (c['price'] as num).toInt() * (c['quantity'] as num).toInt());
-    }
-    return widget.overridePrice ?? ((_service?['base_price'] as num?)?.toInt() ?? 25);
   }
 
   int get _feesTotal =>
@@ -215,12 +206,18 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     //    hour. Checked BEFORE overrideDuration: cart is the more specific
     //    source, and a stray overrideDuration value (e.g. left over from a
     //    single-service flow) must never shadow a multi-item cart.
+    //
+    //    Each item's 'duration_minutes' is ALREADY the total for that
+    //    whole line (CartItem.totalDuration reads straight from the tier
+    //    matching the selected quantity — e.g. 3× a 30-min service reads
+    //    the 90-min tier directly, it's not "30min × 3" arithmetic done
+    //    here). So this just sums each item's duration as-is — no
+    //    re-multiplying by quantity, which used to inflate a correct
+    //    90-minute total for 3 units up to 270.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
-        final itemDur = (item['duration_minutes'] as num?)?.toInt() ?? 60;
-        final itemQty = (item['quantity'] as num?)?.toInt() ?? 1;
-        total += itemDur * itemQty;
+        total += (item['duration_minutes'] as num?)?.toInt() ?? 60;
       }
       return _roundUpToHour((total > 0 ? total : 60) + _durationBuffer);
     }
@@ -240,13 +237,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   /// "Duration", separate from `_serviceDurationMins` (which is purely an
   /// internal value for reserving worker time slots).
   int get _rawServiceDurationMins {
-    // 1. Cart: sum each item's real duration × quantity — no buffer/rounding.
+    // 1. Cart: sum each item's real duration — already the total per line,
+    //    see note above. No buffer/rounding here either.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
-        final itemDur = (item['duration_minutes'] as num?)?.toInt() ?? 60;
-        final itemQty = (item['quantity'] as num?)?.toInt() ?? 1;
-        total += itemDur * itemQty;
+        total += (item['duration_minutes'] as num?)?.toInt() ?? 60;
       }
       return total > 0 ? total : 60;
     }
@@ -361,6 +357,70 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   /// Returns null if all checks pass (can proceed).
   /// Returns an error reason string if booking should be blocked.
+  /// Holds date-specific schedule data for a set of workers, fetched in a
+  /// single query. [byWorkerDate] is workerId -> 'yyyy-MM-dd' -> that day's
+  /// {enabled, start, end, breaks}. [hasAny] is the set of worker IDs who
+  /// have EVER had at least one worker_schedule_dates row — used to decide
+  /// the fallback for a date with no explicit entry: if the worker has
+  /// never used date-specific scheduling at all, default to available
+  /// 7AM-7PM with no break (same as the old system's default); if they
+  /// have some dates set but not this one, treat as unavailable that date.
+  Future<_WorkerScheduleLookup> _fetchWorkerScheduleDates(
+      List<String> workerIds) async {
+    if (workerIds.isEmpty) return _WorkerScheduleLookup({}, {});
+    final rows = await _supabase
+        .from('worker_schedule_dates')
+        .select('worker_id, date, enabled, start_time, end_time, breaks')
+        .inFilter('worker_id', workerIds);
+    final byWorkerDate = <String, Map<String, Map<String, dynamic>>>{};
+    final hasAny = <String>{};
+    for (final row in (rows as List).cast<Map<String, dynamic>>()) {
+      final wId = row['worker_id'] as String;
+      hasAny.add(wId);
+      byWorkerDate.putIfAbsent(wId, () => {});
+      byWorkerDate[wId]![row['date'].toString()] = {
+        'enabled': row['enabled'] == true,
+        'start': row['start_time']?.toString() ?? '09:00',
+        'end': row['end_time']?.toString() ?? '17:00',
+        'breaks': List<Map<String, dynamic>>.from((row['breaks'] as List?) ?? const []),
+      };
+    }
+    return _WorkerScheduleLookup(byWorkerDate, hasAny);
+  }
+
+  /// Is this worker scheduled to work at [slotDt] for [durationMins], per
+  /// their DATE-SPECIFIC schedule (worker_schedule_dates) — replaces the
+  /// old day-of-week _isWorkerInShift. Excludes their break window, if any.
+  bool _isWorkerScheduledForDate(
+    String workerId, DateTime slotDt, int durationMins,
+    _WorkerScheduleLookup lookup,
+  ) {
+    final dateStr = '${slotDt.year.toString().padLeft(4, '0')}-'
+        '${slotDt.month.toString().padLeft(2, '0')}-'
+        '${slotDt.day.toString().padLeft(2, '0')}';
+    final slotMins    = slotDt.hour * 60 + slotDt.minute;
+    final slotEndMins = slotMins + durationMins;
+
+    final entry = lookup.byWorkerDate[workerId]?[dateStr];
+    if (entry == null) {
+      if (lookup.hasAny.contains(workerId)) return false;
+      // Never used date-specific scheduling at all — fallback default.
+      return slotMins >= 420 && slotEndMins <= 1140;
+    }
+    if (entry['enabled'] != true) return false;
+    final startMins = _timeToMins(entry['start'] as String);
+    final endMins   = _timeToMins(entry['end'] as String);
+    if (slotMins < startMins || slotEndMins > endMins) return false;
+    // Exclude the worker's break — the actual feature being fixed here.
+    for (final b in (entry['breaks'] as List)) {
+      final bStart = _timeToMins(b['from'] as String);
+      final bEnd   = _timeToMins(b['to'] as String);
+      if (bStart < slotEndMins && bEnd > slotMins) return false;
+    }
+    return true;
+  }
+
+
   Future<String?> _checkInstantAvailabilityReason() async {
     final now          = DateTime.now();
     final hour         = now.hour;
@@ -382,7 +442,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     try {
       final workersData = await _supabase
           .from('workers')
-          .select('user_id, schedule, is_available')
+          .select('user_id, is_available')
           .eq('is_available', true);
       final workers = (workersData as List).cast<Map<String, dynamic>>();
 
@@ -395,15 +455,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .inFilter('payment_status', ['cod', 'paid']);
       final activeBookings = (activeBookingsData as List).cast<Map<String, dynamic>>();
 
-      final dayName = _dayName(now.weekday);
+      final workerIds = workers.map((w) => w['user_id'] as String).toList();
+      final scheduleLookup = await _fetchWorkerScheduleDates(workerIds);
 
       for (final worker in workers) {
         final workerId = worker['user_id'] as String;
-        final schedule = worker['schedule'] as Map<String, dynamic>?;
 
-        // Check worker shift AND that duration fits before shift end
-        if (!_isWorkerInShift(schedule, dayName, now,
-            durationMins: durationMins)) {
+        // Check worker is scheduled today (date-specific, excludes break)
+        // AND that duration fits before shift end
+        if (!_isWorkerScheduledForDate(workerId, now, durationMins, scheduleLookup)) {
           continue;
         }
 
@@ -664,7 +724,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     try {
       final workersData = await _supabase
           .from('workers')
-          .select('user_id, schedule, is_available')
+          .select('user_id, is_available')
           .eq('is_available', true);
       final workers = (workersData as List).cast<Map<String, dynamic>>();
 
@@ -698,8 +758,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final now      = DateTime.now();
       // Minimum lead time from right now — NOT a flat 2 hours.
       final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
-      final dayName  = _dayName(date.weekday);
       final durationMins = _serviceDurationMins;
+
+      // ONE query for all workers' date-specific schedules (incl. breaks),
+      // instead of a per-worker day-of-week lookup — efficient regardless
+      // of how many workers are being checked.
+      final workerIds = workers.map((w) => w['user_id'] as String).toList();
+      final scheduleLookup = await _fetchWorkerScheduleDates(workerIds);
 
       final Map<String, bool> availability = {};
 
@@ -711,9 +776,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         for (final worker in workers) {
           final workerId = worker['user_id'] as String;
           if (holidayWorkerIds.contains(workerId)) continue;
-          final schedule = worker['schedule'] as Map<String, dynamic>?;
-          if (!_isWorkerInShift(schedule, dayName, slotDt,
-              durationMins: durationMins)) {
+          if (!_isWorkerScheduledForDate(workerId, slotDt, durationMins, scheduleLookup)) {
             continue;
           }
           if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings)) continue;
@@ -753,44 +816,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (pm && hh != 12) hh += 12;
     if (!pm && hh == 12) hh = 0;
     return DateTime(date.year, date.month, date.day, hh, mm);
-  }
-
-  String _dayName(int weekday) {
-    const names = ['', 'monday', 'tuesday', 'wednesday',
-        'thursday', 'friday', 'saturday', 'sunday'];
-    return names[weekday];
-  }
-
-  /// Returns true only if:
-  /// 1. Slot START is within the worker's shift
-  /// 2. Slot END (start + durationMins) does NOT overflow past shift end
-  /// 3. No break overlaps the slot start
-  bool _isWorkerInShift(
-      Map<String, dynamic>? schedule, String dayName, DateTime slotDt,
-      {int durationMins = 0}) {
-    final slotMins    = slotDt.hour * 60 + slotDt.minute;
-    final slotEndMins = slotMins + durationMins;
-
-    if (schedule == null) {
-      // Default shift 7AM-7PM (420-1140 mins)
-      return slotMins >= 420 && slotEndMins <= 1140;
-    }
-    final day = schedule[dayName] as Map<String, dynamic>?;
-    if (day == null || day['enabled'] != true) return false;
-    final startMins = _timeToMins(day['start'] as String? ?? '07:00');
-    final endMins   = _timeToMins(day['end']   as String? ?? '19:00');
-    // Slot must START at or after shift start AND END at or before shift end
-    if (slotMins < startMins || slotEndMins > endMins) return false;
-    // No break can overlap ANY part of the service window [slotMins, slotEndMins]
-    // e.g. 11AM slot + 180min = ends 2PM; break 12PM-1PM overlaps -> blocked
-    final breaks = day['breaks'] as List? ?? [];
-    for (final b in breaks) {
-      final bStart = _timeToMins(b['from'] as String? ?? '00:00');
-      final bEnd   = _timeToMins(b['to']   as String? ?? '00:00');
-      // Break overlaps service window if: bStart < slotEnd AND bEnd > slotStart
-      if (bStart < slotEndMins && bEnd > slotMins) return false;
-    }
-    return true;
   }
 
   int _timeToMins(String t) {
@@ -940,8 +965,104 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
+  // ── Service area check ──────────────────────────────────────────
+  // Address saving is never gated (see address_confirm_screen.dart) — this
+  // is the ONE place a customer actually gets blocked from booking if
+  // their selected address falls outside an admin-enabled service_areas
+  // entry. Matching is a loose substring match on area/city, same
+  // approach as the admin-side area picker (simple text tags, not
+  // geofencing).
+  Future<bool> _isSelectedAddressServiceable() async {
+    final addr = _addresses.firstWhere(
+        (a) => a['id'] == _selectedAddressId, orElse: () => {});
+    final area = (addr['area'] as String?)?.trim().toLowerCase() ?? '';
+    final city = (addr['city'] as String?)?.trim().toLowerCase() ?? '';
+    if (area.isEmpty && city.isEmpty) return true; // no data to check against
+
+    try {
+      final rows = await _supabase
+          .from('service_areas')
+          .select('area, city')
+          .eq('is_active', true);
+      for (final r in (rows as List).cast<Map<String, dynamic>>()) {
+        final rArea = (r['area'] as String?)?.trim().toLowerCase() ?? '';
+        final rCity = (r['city'] as String?)?.trim().toLowerCase() ?? '';
+        if (rCity.isNotEmpty && city.isNotEmpty &&
+            !city.contains(rCity) && !rCity.contains(city)) {
+          continue;
+        }
+        if (rArea.isNotEmpty &&
+            (area.contains(rArea) || rArea.contains(area))) {
+          return true;
+        }
+      }
+      return false;
+    } catch (e) {
+      debugPrint('Service area check error: $e');
+      return true; // fail open — don't block a booking over a network hiccup
+    }
+  }
+
+  void _showAreaNotServiceableDialog() {
+    HapticFeedback.heavyImpact();
+    showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Container(
+              width: 72, height: 72,
+              decoration: const BoxDecoration(
+                  color: Color(0xFFFEF2F2), shape: BoxShape.circle),
+              child: const Center(
+                  child: Text('😔', style: TextStyle(fontSize: 36))),
+            ),
+            const SizedBox(height: 20),
+            const Text('Not Available in This Area Yet',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900,
+                    color: _ink)),
+            const SizedBox(height: 10),
+            const Text(
+              'We don\'t serve this address yet. You can still browse '
+              'services, but booking isn\'t available for this location. '
+              'We\'re expanding soon!',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _muted, fontSize: 13, height: 1.5),
+            ),
+            const SizedBox(height: 20),
+            GestureDetector(
+              onTap: () => Navigator.pop(ctx),
+              child: Container(
+                width: double.infinity, height: 48,
+                decoration: BoxDecoration(
+                    color: _bg, borderRadius: BorderRadius.circular(14)),
+                child: const Center(
+                  child: Text('Got it',
+                      style: TextStyle(fontWeight: FontWeight.w800,
+                          color: _muted, fontSize: 14)),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
   // ── Confirmation dialog ───────────────────────────────────────
   Future<void> _askConfirm() async {
+    if (!await _isSelectedAddressServiceable()) {
+      _showAreaNotServiceableDialog();
+      return;
+    }
     HapticFeedback.selectionClick();
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1712,11 +1833,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: false,
+      // Only let the system pop the whole route when we're on step 1 —
+      // otherwise the hardware/gesture back button now does exactly what
+      // the on-screen ‹ arrow does (step back one wizard step), instead
+      // of silently discarding the customer's in-progress booking.
+      canPop: _step <= 1,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        // If a dialog is open, close it; otherwise go back normally
-        if (Navigator.of(context).canPop()) {
+        if (_step > 1) {
+          setState(() => _step--);
+        } else if (Navigator.of(context).canPop()) {
           Navigator.of(context).pop();
         }
       },
@@ -2292,21 +2418,26 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
     final rows = <Map<String, dynamic>>[
       // Multi-service cart: one row per service so the price breakdown is
-      // visible, instead of a single combined "3 services" row. When it's
-      // a first booking, only the first item is discounted to ₹25.
+      // visible, instead of a single combined "3 services" row. Each
+      // item's price is already correct (first-booking discount, if any,
+      // is baked in per-service by CartService) — no re-multiplying by
+      // quantity, and eligibility is checked per-item rather than
+      // assuming only the first item in the list could be discounted.
       if (hasCart)
         for (int i = 0; i < widget.cartItems!.length; i++)
           () {
             final item = widget.cartItems![i];
             final qty  = (item['quantity'] as num?)?.toInt() ?? 1;
-            final full = (item['price'] as num).toInt() * qty;
-            final isDiscounted = widget.isFirstBooking && i == 0;
+            final price = (item['price'] as num).toInt();
+            final name  = (item['name'] as String?) ?? 'Service';
+            final eligible = widget.isFirstBooking &&
+                CartService.firstBookingEligibleServices.contains(name);
             return {
               'icon': Icons.cleaning_services_rounded,
-              'label': (item['name'] as String?) ?? 'Service',
-              'value': isDiscounted
-                  ? '×$qty  ·  ₹25 (was ₹$full)'
-                  : '×$qty  ·  ₹$full',
+              'label': name,
+              'value': eligible
+                  ? '×$qty  ·  ₹$price 🎉'
+                  : '×$qty  ·  ₹$price',
             };
           }()
       else
@@ -2314,7 +2445,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       if (widget.isFirstBooking)
         {'icon': Icons.celebration_rounded, 'label': 'Offer',
           'value': hasCart
-              ? 'First service at ₹25!'
+              ? 'First unit of each eligible service at ₹25!'
               : 'First booking at ₹25!'},
       if (_isInstant) ...[
         {'icon': Icons.bolt_rounded, 'label': 'Type', 'value': 'Instant Booking'},
@@ -2328,9 +2459,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           'value': '${_selectedDate.day}/'
               '${_selectedDate.month}/${_selectedDate.year}'},
         {'icon': Icons.access_time_rounded, 'label': 'Time', 'value': _selectedTime},
+        // Shows the customer's actual selected duration (e.g. 3×30min
+        // service = 90 min, summed automatically from the cart) — NOT
+        // _serviceDurationMins, which is a separate internal value with a
+        // +10min buffer and hour-rounding applied on top, used only for
+        // reserving worker time slots. Showing that buffered figure here
+        // was the bug: a customer selecting 90 actual minutes would see
+        // "120 min" in their own booking summary, which looked wrong even
+        // though the underlying per-item math was already correct.
         {'icon': Icons.timelapse_rounded, 'label': 'Duration',
-          'value': '~$_serviceDurationMins min · '
-              '$_slotsBlocked slot${_slotsBlocked > 1 ? 's' : ''} blocked'},
+          'value': '~$_rawServiceDurationMins min'},
       ],
       {'icon': Icons.location_on_rounded, 'label': 'Address',
         'value': addr.isNotEmpty
@@ -2515,38 +2653,25 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: _border)),
         child: Column(children: [
-          if (widget.isFirstBooking) ...[
-            if (hasCart) ...[
-              // Only the first service is discounted to ₹25 — show it
-              // struck-through + discount line, then any other cart
-              // services at their normal full price.
-              _priceRow(
-                (widget.cartItems![0]['name'] as String?) ?? 'First service',
-                '₹$_firstItemFullPrice',
-                _muted, _faint, strike: true),
-              _priceRow('First booking discount',
-                  '-₹${_firstItemFullPrice - 25}', _muted, _greenDk),
-              for (int i = 1; i < widget.cartItems!.length; i++)
-                _priceRow(
-                  '${(widget.cartItems![i]['name'] as String?) ?? 'Service'}'
-                  '${((widget.cartItems![i]['quantity'] as num?)?.toInt() ?? 1) > 1 ? ' ×${(widget.cartItems![i]['quantity'] as num).toInt()}' : ''}',
-                  '₹${((widget.cartItems![i]['price'] as num).toInt() * ((widget.cartItems![i]['quantity'] as num?)?.toInt() ?? 1))}',
-                  _muted, _ink),
-            ] else ...[
-              _priceRow('Original price',
-                  '₹$_originalTotalAmount',
-                  _muted, _faint, strike: true),
-              _priceRow('First booking discount',
-                  '-₹${_originalTotalAmount - _baseAmount}',
-                  _muted, _greenDk),
-            ],
-          ] else if (hasCart) ...[
+          // Every cart item's price is already correct (first-booking
+          // discount, if eligible, baked in per-service) — just display it
+          // directly with a 🎉 badge on whichever items actually qualify,
+          // instead of the old logic that assumed only cart position 0
+          // could ever be discounted and separately double-multiplied by
+          // quantity when computing the displayed total.
+          if (hasCart) ...[
             for (final item in widget.cartItems!)
-              _priceRow(
-                '${(item['name'] as String?) ?? 'Service'}'
-                '${((item['quantity'] as num?)?.toInt() ?? 1) > 1 ? ' ×${(item['quantity'] as num).toInt()}' : ''}',
-                '₹${((item['price'] as num).toInt() * ((item['quantity'] as num?)?.toInt() ?? 1))}',
-                _muted, _ink),
+              () {
+                final qty   = (item['quantity'] as num?)?.toInt() ?? 1;
+                final name  = (item['name'] as String?) ?? 'Service';
+                final price = (item['price'] as num).toInt();
+                final eligible = widget.isFirstBooking &&
+                    CartService.firstBookingEligibleServices.contains(name);
+                return _priceRow(
+                  '$name${qty > 1 ? ' ×$qty' : ''}${eligible ? ' 🎉' : ''}',
+                  '₹$price',
+                  _muted, eligible ? _greenDk : _ink);
+              }(),
             if (_discount > 0)
               _priceRow('Promo ($_appliedPromoCode)', '− ₹$_discount',
                   _muted, _greenDk),

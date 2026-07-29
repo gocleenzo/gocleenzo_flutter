@@ -46,28 +46,20 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   Map<String, dynamic>? _booking;
   bool _loading = true;
 
-  // Worker's permanent OTP (from `workers` table), fetched separately.
   String? _workerOtp;
 
-  // OTP input state
   final _otpInputCtrl = TextEditingController();
   String? _otpError;
   bool _verifying = false;
 
-  // Mark-work-done state
   bool _markingDone = false;
 
-  // Extra time state — the ₹59 extra-time charge is now its own separate
-  // Razorpay payment (not folded into the main booking's cash amount).
   bool _addingExtraTime = false;
   late Razorpay _extraTimeRazorpay;
-  // Test key — same as booking_flow_screen.dart. Replace with live key
-  // together when going live.
   static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
   static const _kExtraTimeMinsAdded  = 20;
   static const _kExtraTimePriceRupees = 59;
 
-  // Review popup state
   bool _reviewPromptShown = false;
 
   late AnimationController _successCtrl;
@@ -75,8 +67,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   RealtimeChannel? _channel;
   Timer? _tickTimer;
-  // Ticks every second to drive the live "Time Remaining" countdown while
-  // status is in_progress. Cheap no-op setState the rest of the time.
   Timer? _countdownTimer;
 
   @override
@@ -98,8 +88,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     _loadBooking();
     _subscribeRealtime();
 
-    // Re-check the 15-minute OTP window periodically so the card
-    // unlocks on its own without needing a realtime event.
     _tickTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
@@ -150,11 +138,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     }
   }
 
-  /// Every service booked in this order, as (name, qty, unitPrice) tuples.
-  /// Prefers the snapshotted `booking_items.service_name` (stable even if
-  /// the service is later renamed/removed), falls back to the live
-  /// `booking_items.services.name` join, and finally falls back to the
-  /// single `bookings.services.name` join for older non-cart bookings.
   List<Map<String, dynamic>> get _bookedServices {
     final items = (_booking?['booking_items'] as List?) ?? const [];
     if (items.isNotEmpty) {
@@ -172,16 +155,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     return [{'name': fallback, 'qty': 1, 'unit_price': (_booking?['base_price'] as num?)?.toInt() ?? 0}];
   }
 
-  /// Comma-joined display string of every booked service.
   String get _bookedServicesLabel =>
       _bookedServices.map((s) {
         final qty = s['qty'] as int;
         return qty > 1 ? '${s['name']} ×$qty' : s['name'] as String;
       }).join(', ');
 
-  // Worker's permanent OTP lives in a separate `workers` table,
-  // keyed by user_id (matching bookings.worker_id), in the
-  // `worker_otp` column.
   Future<void> _loadWorkerOtp() async {
     final workerId = _booking?['worker_id'] as String?;
     if (workerId == null) {
@@ -218,7 +197,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         .subscribe();
   }
 
-  // ── Status helpers ───────────────────────────────────────────
   String get _status => _booking?['status'] as String? ?? 'pending';
   int    get _extraTimeMins => (_booking?['extra_time_mins'] as num?)?.toInt() ?? 0;
   String? get _extraTimePaymentStatus =>
@@ -233,8 +211,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     return DateTime.tryParse(raw)?.toLocal();
   }
 
-  // Instant bookings: verification opens immediately once a worker
-  // is accepted. Scheduled bookings: opens 15 minutes before slot.
   bool get _otpWindowOpen {
     if (_isInstant) return true;
     final sched = _scheduledAt;
@@ -258,19 +234,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     return DateTime.tryParse(raw)?.toLocal();
   }
 
-  /// Total service duration the countdown should run for: the customer's
-  /// actual selected duration (service_duration_minutes) PLUS any extra
-  /// time already added. Automatically extends the countdown the moment
-  /// extra time is paid for, since _extraTimeMins reflects the live value.
   int get _totalServiceDurationMins {
     final raw = (_booking?['service_duration_minutes'] as num?)?.toInt();
     final base = raw ?? (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 60;
     return base + _extraTimeMins;
   }
 
-  /// Time left until the service is expected to finish, counting down from
-  /// work_started_at. Null if work hasn't started. Negative once overtime
-  /// (caller should treat negative as "running over", not hide it).
   Duration? get _remainingServiceTime {
     final started = _workStartedAtLocal;
     if (started == null) return null;
@@ -347,7 +316,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     }
   }
 
-  // ── OTP verification ─────────────────────────────────────────
   Future<void> _verifyOtp() async {
     final entered = _otpInputCtrl.text.trim();
 
@@ -382,7 +350,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     }
   }
 
-  // ── Mark work done (customer confirms → completes booking, frees worker) ─
   Future<void> _markWorkDone() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -478,7 +445,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         'work_duration_seconds': durationSeconds,
       }).eq('id', widget.bookingId);
 
-      // Free up the worker so they can be assigned new jobs.
       final workerId = _booking?['worker_id'] as String?;
       if (workerId != null) {
         try {
@@ -517,7 +483,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     }
   }
 
-  // ── Review prompt (mandatory once booking is completed) ───────
   Future<void> _maybePromptReview() async {
     if (_status != 'completed' || _reviewPromptShown) return;
     _reviewPromptShown = true;
@@ -528,10 +493,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           .select('id')
           .eq('booking_id', widget.bookingId)
           .maybeSingle();
-      if (existing != null) return; // already reviewed
+      if (existing != null) return;
     } catch (e) {
       debugPrint('review check error: $e');
-      return; // fail safe — don't force a popup if the check itself errors
+      return;
     }
 
     if (!mounted) return;
@@ -545,8 +510,24 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   }
 
   // ── Build ────────────────────────────────────────────────────
+  // Wrapped in PopScope so the SYSTEM back button (hardware/gesture)
+  // behaves exactly like the on-screen back arrow's fallback — previously
+  // system back had no fallback at all, meaning a booking detail screen
+  // opened directly (e.g. from a push notification, with nothing else on
+  // the stack) could exit the app instead of returning to /bookings.
   @override
   Widget build(BuildContext context) {
+    return PopScope(
+      canPop: Navigator.canPop(context),
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        context.go('/bookings');
+      },
+      child: _buildContent(context),
+    );
+  }
+
+  Widget _buildContent(BuildContext context) {
     if (_loading) {
       return const Scaffold(
         backgroundColor: _bg,
@@ -610,7 +591,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Header ───────────────────────────────────────────────────
   Widget _buildHeader() {
     return Container(
       decoration: const BoxDecoration(
@@ -632,7 +612,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                   style: const TextStyle(color: _faint,
                       fontSize: 11, fontFamily: 'monospace')),
             ])),
-            // Live indicator for active bookings
             if (['pending','accepted','in_progress'].contains(_status))
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -674,7 +653,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           color: _cyanDk, size: 16)),
   );
 
-  // ── Success banner ───────────────────────────────────────────
   Widget _buildSuccessBanner() {
     return ScaleTransition(
       scale: _successScale,
@@ -711,7 +689,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Status card ──────────────────────────────────────────────
   Widget _buildStatusCard() {
     final color = _statusColor(_status);
     final bg    = _statusBg(_status);
@@ -739,15 +716,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                     fontSize: 12, height: 1.4)),
           ])),
         ]),
-        // Progress bar
         const SizedBox(height: 16),
         _buildProgressBar(),
-        // Worker info if assigned
         if (_hasWorker && _status != 'cancelled') ...[
           const SizedBox(height: 14),
           _buildWorkerRow(),
         ],
-        // Instant arrival estimate
         if (_isInstant && _status == 'accepted') ...[
           const SizedBox(height: 10),
           Container(
@@ -841,7 +815,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           GestureDetector(
             onTap: () {
               HapticFeedback.selectionClick();
-              // Could launch URL tel:phone
             },
             child: Container(
               width: 38, height: 38,
@@ -855,9 +828,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Verify Professional card (replaces old "Your OTP" display) ─
   Widget _buildVerifyProfessionalCard() {
-    // Window not open yet — show locked/countdown state.
     if (!_otpWindowOpen) {
       final remaining = _timeUntilOtpWindow;
       String remainingText = '';
@@ -895,7 +866,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       );
     }
 
-    // Window open — show OTP input.
     return _card(
       icon: Icons.verified_user_rounded,
       iconColor: _purple,
@@ -970,17 +940,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Countdown card (shown while in_progress) ───────────────────
-  // Counts down from work_started_at through the total service duration
-  // (actual selected duration + any extra time already paid for). Once
-  // extra time is added mid-job, _totalServiceDurationMins picks it up
-  // automatically and the countdown extends live — no separate wiring
-  // needed since this rebuilds from _booking state every second.
   Widget _buildCountdownCard() {
     final remaining = _remainingServiceTime;
     if (remaining == null) {
-      // Work hasn't technically started yet (edge case — status is
-      // in_progress but work_started_at hasn't landed via realtime yet).
       return const SizedBox.shrink();
     }
 
@@ -1050,7 +1012,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Mark Work Done card (shown while in_progress) ──────────────
   Widget _buildMarkDoneCard() {
     return _card(
       icon: Icons.task_alt_rounded,
@@ -1089,15 +1050,10 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Booking info card ────────────────────────────────────────
   Widget _buildBookingInfoCard() {
     final scheduledAt = _booking?['scheduled_at'] as String?;
     final bookingType = _booking?['booking_type'] as String? ?? 'schedule';
     final svc         = _booking?['services'] as Map<String, dynamic>?;
-    // Customer-facing duration = actual selected duration + extra time
-    // added, NOT the internal buffered/hour-rounded value used for worker
-    // slot-blocking (booking_duration_minutes). Falls back to the old
-    // buffered field only for bookings made before this column existed.
     final rawDuration = (_booking?['service_duration_minutes'] as num?)?.toInt();
     final duration    = rawDuration != null
         ? rawDuration + _extraTimeMins
@@ -1120,8 +1076,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       }
     }
 
-    // One row per booked service (instead of a single combined row) so
-    // every service in a multi-service order is visible here.
     final serviceRows = <Map<String, dynamic>>[
       for (final s in services)
         {
@@ -1189,7 +1143,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Price card ───────────────────────────────────────────────
   Widget _buildPriceCard() {
     final base     = (_booking?['base_price'] as num?)?.toInt() ?? 0;
     final discount = (_booking?['discount_amount'] as num?)?.toInt() ?? 0;
@@ -1245,9 +1198,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                 fontSize: 12, fontWeight: FontWeight.w600))),
           ]),
         ),
-        // Extra time is a SEPARATE payment, paid online at the time it was
-        // added — shown here for the record, but deliberately excluded from
-        // "Cash Due to Worker" above since it's already settled.
         if (extraTimePrice > 0) ...[
           const SizedBox(height: 10),
           Container(
@@ -1293,7 +1243,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           color: vc, fontSize: 13, fontWeight: FontWeight.bold)),
     ]));
 
-  // ── Address card ─────────────────────────────────────────────
   Widget _buildAddressCard() {
     final addr = _booking?['addresses'] as Map<String, dynamic>?;
     if (addr == null) return const SizedBox.shrink();
@@ -1337,7 +1286,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Notes card ───────────────────────────────────────────────
   Widget _buildNotesCard() {
     final notes = _booking?['special_instructions'] as String? ?? '';
     return _card(
@@ -1357,7 +1305,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Completed card ───────────────────────────────────────────
   Widget _buildCompletedCard() {
     final startedAt = _booking?['work_started_at'] as String?;
     final endedAt   = _booking?['work_ended_at'] as String?;
@@ -1424,7 +1371,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Help card ────────────────────────────────────────────────
   Widget _buildHelpCard() {
     return Container(
       padding: const EdgeInsets.all(16),
@@ -1465,9 +1411,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Card helper ──────────────────────────────────────────────
-
-  // ── Extra Time Card (shown while in_progress) ─────────────────
   Widget _buildExtraTimeCard() {
     final alreadyAdded = _extraTimeMins > 0;
 
@@ -1478,7 +1421,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       title: 'Need More Time?',
       subtitle: 'Add 20 extra minutes if the service is still in progress',
       child: alreadyAdded
-          // ── Already added: show confirmation chip ────────────
           ? Container(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               decoration: BoxDecoration(
@@ -1503,7 +1445,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
                         fontSize: 11)),
                 ])),
               ]))
-          // ── Not yet added: show Add button ───────────────────
           : GestureDetector(
               onTap: _addingExtraTime ? null : _startExtraTimePayment,
               child: Container(
@@ -1539,21 +1480,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  // ── Add extra time — SEPARATE Razorpay payment ────────────────────
-  //
-  // The ₹59 extra-time charge is its own payment, distinct from the
-  // original booking's payment. The customer pays it online right when
-  // they tap "Add Extra Time" — it is NOT folded into `final_amount`
-  // (which stays the cash-to-worker amount for the original service).
-  // The 20 minutes / ₹59 are only written to the booking AFTER Razorpay
-  // confirms success.
   void _startExtraTimePayment() {
     if (_addingExtraTime) return;
     setState(() => _addingExtraTime = true);
 
     final options = {
       'key':         _razorpayKey,
-      'amount':      _kExtraTimePriceRupees * 100, // paise
+      'amount':      _kExtraTimePriceRupees * 100,
       'name':        'Cleenzo',
       'description': '+20 min Extra Time',
       'prefill':     {'contact': '', 'email': ''},
@@ -1583,9 +1516,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       final bookingId  = widget.bookingId;
       final currentDur = (_booking?['booking_duration_minutes'] as num?)?.toInt() ?? 0;
 
-      // Write the extra time AND its own payment record. Deliberately does
-      // NOT touch final_amount — that stays the cash-to-worker figure for
-      // the original service only.
       await _supabase.from('bookings').update({
         'extra_time_mins':           _kExtraTimeMinsAdded,
         'extra_time_price':          _kExtraTimePriceRupees,

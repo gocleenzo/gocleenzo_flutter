@@ -266,17 +266,16 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
 
   bool get _hasDiscount => _displayOriginalPrice > _computedPrice;
 
-  static const _firstBookingEligible = {
-    'Bathroom Cleaning',
-    'Balcony Cleaning',
-    'Fan Cleaning',
-    'Utensil Cleaning',
-    'Kitchen Cleaning',
-  };
-
+  // Eligibility now reads from CartService's single shared list — this
+  // screen used to keep its own separate copy of this set, which had
+  // silently drifted out of sync with the one CartService actually used
+  // to compute tier prices (e.g. "Kitchen Cleaning" was eligible here but
+  // not there). Referencing the same constant means the "first booking"
+  // banner and the actual price charged can never disagree again.
   bool get _isFirstBookingEligible =>
       _isFirstBooking &&
-      _firstBookingEligible.contains(_service?['name'] as String? ?? '');
+      CartService.firstBookingEligibleServices
+          .contains(_service?['name'] as String? ?? '');
 
   int get _computedPrice {
     if (!_isFirstBookingEligible) return _originalPrice;

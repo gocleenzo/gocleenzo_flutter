@@ -1,7 +1,11 @@
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:go_router/go_router.dart';
+import '../../utils/theme.dart';
 import '../../services/supabase_service.dart';
+
+enum _ListKind { upcoming, current, past }
 
 class BookingsScreen extends StatefulWidget {
   const BookingsScreen({super.key});
@@ -21,56 +25,40 @@ class _BookingsScreenState extends State<BookingsScreen>
   late Animation<double> _shimmerAnim;
 
   List<Map<String, dynamic>> _upcoming = [];
+  List<Map<String, dynamic>> _current = [];
   List<Map<String, dynamic>> _past = [];
   bool _loading = true;
 
   // Status config
   static const _statusColor = {
     'pending': Color(0xFFF59E0B),
-    'confirmed': Color(0xFF06B6D4),
+    'accepted': Color(0xFF06B6D4),
+    'otp_verified': Color(0xFF8B5CF6),
     'in_progress': Color(0xFF3B82F6),
     'completed': Color(0xFF10B981),
     'cancelled': Color(0xFFEF4444),
   };
   static const _statusLabel = {
     'pending': 'Pending',
-    'confirmed': 'Confirmed',
+    'accepted': 'Worker Assigned',
+    'otp_verified': 'Worker Arrived',
     'in_progress': 'In Progress',
     'completed': 'Completed',
     'cancelled': 'Cancelled',
   };
   static const _statusEmoji = {
     'pending': '⏳',
-    'confirmed': '✅',
+    'accepted': '👷',
+    'otp_verified': '📍',
     'in_progress': '🧹',
     'completed': '🎉',
     'cancelled': '❌',
   };
 
-  /// Every service name booked in this order.
-  /// Prefers the snapshotted `booking_items.service_name` (stable even if
-  /// the service is later renamed/removed), falls back to the live
-  /// `booking_items.services.name` join, and finally falls back to the
-  /// single `bookings.services.name` join for older non-cart bookings.
-  static List<String> _serviceNamesFor(Map<String, dynamic> booking) {
-    final items = (booking['booking_items'] as List?) ?? const [];
-    if (items.isNotEmpty) {
-      return items.map((raw) {
-        final item = raw as Map<String, dynamic>;
-        final name = (item['service_name'] as String?) ??
-            (item['services']?['name'] as String?) ?? 'Service';
-        final qty = (item['quantity'] as num?)?.toInt() ?? 1;
-        return qty > 1 ? '$name ×$qty' : name;
-      }).toList();
-    }
-    final fallback = (booking['services'] as Map<String, dynamic>?)?['name'] as String?;
-    return [fallback ?? 'Cleaning Service'];
-  }
-
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
 
     _headerAnimController = AnimationController(
       vsync: this,
@@ -119,31 +107,39 @@ class _BookingsScreenState extends State<BookingsScreen>
     try {
       final data = await _supabase
           .from('bookings')
-          .select(
-              '*, services(name, base_price), '
-              'booking_items(quantity, unit_price, total_price, service_name, services(name))')
+          .select('*, services(name, base_price)')
           .eq('customer_id', userId)
           .order('scheduled_at', ascending: false);
 
-      final now = DateTime.now();
       final upcoming = <Map<String, dynamic>>[];
+      final current = <Map<String, dynamic>>[];
       final past = <Map<String, dynamic>>[];
 
+      // Categorize by STATUS, not by comparing scheduled_at to now — a
+      // booking's scheduled_at is always in the past once a worker has
+      // accepted/started it, so a time-based check would wrongly dump
+      // active jobs into "Past". Status is the source of truth instead.
       for (final b in data) {
-        final scheduled = DateTime.tryParse(b['scheduled_at'] ?? '');
         final status = b['status'] as String? ?? '';
-        if (status == 'completed' ||
-            status == 'cancelled' ||
-            (scheduled != null && scheduled.isBefore(now))) {
-          past.add(b);
-        } else {
-          upcoming.add(b);
+        switch (status) {
+          case 'completed':
+          case 'cancelled':
+            past.add(b);
+            break;
+          case 'accepted':
+          case 'otp_verified':
+          case 'in_progress':
+            current.add(b);
+            break;
+          default: // 'pending' and anything unrecognized
+            upcoming.add(b);
         }
       }
 
       if (mounted) {
         setState(() {
           _upcoming = upcoming;
+          _current = current;
           _past = past;
           _loading = false;
         });
@@ -167,8 +163,9 @@ class _BookingsScreenState extends State<BookingsScreen>
                 : TabBarView(
                     controller: _tabController,
                     children: [
-                      _buildList(_upcoming, isUpcoming: true),
-                      _buildList(_past, isUpcoming: false),
+                      _buildList(_upcoming, kind: _ListKind.upcoming),
+                      _buildList(_current, kind: _ListKind.current),
+                      _buildList(_past, kind: _ListKind.past),
                     ],
                   ),
           ),
@@ -205,10 +202,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                         width: 46,
                         height: 46,
                         decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.18),
+                          color: Colors.white.withOpacity(0.18),
                           borderRadius: BorderRadius.circular(16),
                           border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.3), width: 1),
+                              color: Colors.white.withOpacity(0.3), width: 1),
                         ),
                         child: const Center(
                           child:
@@ -232,7 +229,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                             Text(
                               'Track & manage your services',
                               style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.75),
+                                color: Colors.white.withOpacity(0.75),
                                 fontSize: 12.5,
                                 fontWeight: FontWeight.w500,
                               ),
@@ -247,10 +244,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.18),
+                            color: Colors.white.withOpacity(0.18),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.25),
+                                color: Colors.white.withOpacity(0.25),
                                 width: 1),
                           ),
                           child: const Icon(Icons.refresh_rounded,
@@ -268,9 +265,12 @@ class _BookingsScreenState extends State<BookingsScreen>
                     children: [
                       _statPill('${_upcoming.length}', 'Upcoming',
                           Icons.upcoming_outlined),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
+                      _statPill('${_current.length}', 'Ongoing',
+                          Icons.bolt_rounded),
+                      const SizedBox(width: 8),
                       _statPill(
-                          '${_past.length}', 'Completed', Icons.check_circle_outline),
+                          '${_past.length}', 'History', Icons.check_circle_outline),
                     ],
                   ),
                 ),
@@ -281,10 +281,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                   child: Container(
                     height: 46,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.15),
+                      color: Colors.white.withOpacity(0.15),
                       borderRadius: BorderRadius.circular(18),
                       border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.2), width: 1),
+                          color: Colors.white.withOpacity(0.2), width: 1),
                     ),
                     child: TabBar(
                       controller: _tabController,
@@ -293,7 +293,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                         borderRadius: BorderRadius.circular(15),
                         boxShadow: [
                           BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.08),
+                            color: Colors.black.withOpacity(0.08),
                             blurRadius: 8,
                             offset: const Offset(0, 2),
                           ),
@@ -302,39 +302,14 @@ class _BookingsScreenState extends State<BookingsScreen>
                       indicatorSize: TabBarIndicatorSize.tab,
                       indicatorPadding: const EdgeInsets.all(4),
                       labelColor: const Color(0xFF0891B2),
-                      unselectedLabelColor: Colors.white.withValues(alpha: 0.85),
+                      unselectedLabelColor: Colors.white.withOpacity(0.85),
                       dividerColor: Colors.transparent,
                       labelStyle: const TextStyle(
                           fontWeight: FontWeight.w800, fontSize: 13),
                       tabs: [
-                        Tab(
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Text('Upcoming'),
-                              if (_upcoming.isNotEmpty) ...[
-                                const SizedBox(width: 6),
-                                AnimatedContainer(
-                                  duration: const Duration(milliseconds: 300),
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 7, vertical: 2),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF06B6D4),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Text(
-                                    '${_upcoming.length}',
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold),
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                        const Tab(text: 'Past'),
+                        _tabWithBadge('Upcoming', _upcoming.length),
+                        _tabWithBadge('Current', _current.length),
+                        _tabWithBadge('Past', _past.length),
                       ],
                     ),
                   ),
@@ -359,31 +334,37 @@ class _BookingsScreenState extends State<BookingsScreen>
   Widget _statPill(String count, String label, IconData icon) {
     return Expanded(
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
         decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.15),
+          color: Colors.white.withOpacity(0.15),
           borderRadius: BorderRadius.circular(14),
           border:
-              Border.all(color: Colors.white.withValues(alpha: 0.22), width: 1),
+              Border.all(color: Colors.white.withOpacity(0.22), width: 1),
         ),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: Colors.white, size: 16),
-            const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(count,
-                    style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900)),
-                Text(label,
-                    style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.75),
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500)),
-              ],
+            Icon(icon, color: Colors.white, size: 14),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(count,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w900)),
+                  Text(label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          color: Colors.white.withOpacity(0.75),
+                          fontSize: 10,
+                          fontWeight: FontWeight.w500)),
+                ],
+              ),
             ),
           ],
         ),
@@ -391,11 +372,41 @@ class _BookingsScreenState extends State<BookingsScreen>
     );
   }
 
+  Widget _tabWithBadge(String label, int count) {
+    return Tab(
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Text(label),
+          if (count > 0) ...[
+            const SizedBox(width: 6),
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: const Color(0xFF06B6D4),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$count',
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
   // ─── List ──────────────────────────────────────────────────────────────────
 
   Widget _buildList(List<Map<String, dynamic>> bookings,
-      {required bool isUpcoming}) {
-    if (bookings.isEmpty) return _buildEmptyState(isUpcoming);
+      {required _ListKind kind}) {
+    if (bookings.isEmpty) return _buildEmptyState(kind);
 
     return RefreshIndicator(
       onRefresh: _load,
@@ -413,7 +424,21 @@ class _BookingsScreenState extends State<BookingsScreen>
 
   // ─── Empty State ──────────────────────────────────────────────────────────
 
-  Widget _buildEmptyState(bool isUpcoming) {
+  Widget _buildEmptyState(_ListKind kind) {
+    String emoji, title, body;
+    if (kind == _ListKind.upcoming) {
+      emoji = '📅';
+      title = 'Nothing scheduled yet';
+      body = 'Book a cleaning and it will show up here.';
+    } else if (kind == _ListKind.current) {
+      emoji = '🧹';
+      title = 'No active jobs right now';
+      body = 'Once a worker is assigned or starts your job, it\'ll appear here.';
+    } else {
+      emoji = '🧾';
+      title = 'No history yet';
+      body = 'Your completed and cancelled bookings will appear here.';
+    }
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -446,7 +471,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                     ),
                   ),
                   Text(
-                    isUpcoming ? '📅' : '🧾',
+                    emoji,
                     style: const TextStyle(fontSize: 42),
                   ),
                 ],
@@ -454,7 +479,7 @@ class _BookingsScreenState extends State<BookingsScreen>
             ),
             const SizedBox(height: 24),
             Text(
-              isUpcoming ? 'Nothing scheduled yet' : 'No history yet',
+              title,
               style: const TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.w900,
@@ -464,9 +489,7 @@ class _BookingsScreenState extends State<BookingsScreen>
             ),
             const SizedBox(height: 8),
             Text(
-              isUpcoming
-                  ? 'Book a cleaning and it will show up here.'
-                  : 'Your completed and cancelled bookings will appear here.',
+              body,
               textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Color(0xFF64748B),
@@ -474,13 +497,13 @@ class _BookingsScreenState extends State<BookingsScreen>
                 height: 1.5,
               ),
             ),
-            if (isUpcoming) ...[
+            if (kind == _ListKind.upcoming) ...[
               const SizedBox(height: 28),
               _PulseButton(
                 onTap: () => context.go('/services'),
-                child: const Row(
+                child: Row(
                   mainAxisSize: MainAxisSize.min,
-                  children: [
+                  children: const [
                     Icon(Icons.add_rounded, color: Colors.white, size: 20),
                     SizedBox(width: 8),
                     Text(
@@ -525,7 +548,7 @@ class _BookingsScreenState extends State<BookingsScreen>
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF06B6D4).withValues(alpha: 0.06),
+            color: const Color(0xFF06B6D4).withOpacity(0.06),
             blurRadius: 16,
             offset: const Offset(0, 4),
           ),
@@ -561,8 +584,8 @@ class _BookingsScreenState extends State<BookingsScreen>
   // ─── Booking Card ─────────────────────────────────────────────────────────
 
   Widget _bookingCard(Map<String, dynamic> booking) {
-    final serviceNames = _serviceNamesFor(booking);
-    final name = serviceNames.join(', ');
+    final service = booking['services'] as Map<String, dynamic>?;
+    final name = service?['name'] as String? ?? 'Cleaning Service';
     final status = booking['status'] as String? ?? 'pending';
     final scheduledRaw = booking['scheduled_at'] as String?;
     final scheduled =
@@ -603,12 +626,12 @@ class _BookingsScreenState extends State<BookingsScreen>
           ),
           boxShadow: [
             BoxShadow(
-              color: const Color(0xFF06B6D4).withValues(alpha: 0.07),
+              color: const Color(0xFF06B6D4).withOpacity(0.07),
               blurRadius: 18,
               offset: const Offset(0, 5),
             ),
             BoxShadow(
-              color: Colors.white.withValues(alpha: 0.8),
+              color: Colors.white.withOpacity(0.8),
               blurRadius: 4,
               offset: const Offset(0, -1),
             ),
@@ -629,7 +652,7 @@ class _BookingsScreenState extends State<BookingsScreen>
                     end: Alignment.bottomCenter,
                     colors: [
                       statusColor,
-                      statusColor.withValues(alpha: 0.4),
+                      statusColor.withOpacity(0.4),
                     ],
                   ),
                   borderRadius: const BorderRadius.only(
@@ -654,8 +677,8 @@ class _BookingsScreenState extends State<BookingsScreen>
                         begin: Alignment.topLeft,
                         end: Alignment.bottomRight,
                         colors: [
-                          const Color(0xFF06B6D4).withValues(alpha: 0.15),
-                          const Color(0xFF22D3EE).withValues(alpha: 0.08),
+                          const Color(0xFF06B6D4).withOpacity(0.15),
+                          const Color(0xFF22D3EE).withOpacity(0.08),
                         ],
                       ),
                       borderRadius: BorderRadius.circular(16),
@@ -678,33 +701,14 @@ class _BookingsScreenState extends State<BookingsScreen>
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    name,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w800,
-                                      fontSize: 15,
-                                      color: Color(0xFF0E4F5C),
-                                      letterSpacing: -0.2,
-                                    ),
-                                  ),
-                                  if (serviceNames.length > 1)
-                                    Padding(
-                                      padding: const EdgeInsets.only(top: 2),
-                                      child: Text(
-                                        '${serviceNames.length} services',
-                                        style: const TextStyle(
-                                          color: Color(0xFF0891B2),
-                                          fontSize: 10.5,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ),
-                                ],
+                              child: Text(
+                                name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 15,
+                                  color: Color(0xFF0E4F5C),
+                                  letterSpacing: -0.2,
+                                ),
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -713,10 +717,10 @@ class _BookingsScreenState extends State<BookingsScreen>
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 9, vertical: 5),
                               decoration: BoxDecoration(
-                                color: statusColor.withValues(alpha: 0.1),
+                                color: statusColor.withOpacity(0.1),
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                    color: statusColor.withValues(alpha: 0.25),
+                                    color: statusColor.withOpacity(0.25),
                                     width: 1),
                               ),
                               child: Text(
@@ -910,7 +914,7 @@ class _PulseButtonState extends State<_PulseButton>
             borderRadius: BorderRadius.circular(20),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF06B6D4).withValues(alpha: 0.4),
+                color: const Color(0xFF06B6D4).withOpacity(0.4),
                 blurRadius: 18,
                 offset: const Offset(0, 6),
               ),

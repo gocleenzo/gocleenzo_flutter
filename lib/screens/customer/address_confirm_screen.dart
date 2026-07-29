@@ -3,6 +3,13 @@ import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
 
+/// Saving an address here does NOT check serviceability anymore — a
+/// customer can save an address anywhere. Whether that address can
+/// actually be used to BOOK a service is checked later, at booking
+/// confirmation time (see booking_flow_screen.dart), against the
+/// admin-managed `service_areas` table. This matches the product
+/// decision: browsing/saving addresses is always allowed; booking is
+/// what's gated by service area.
 class AddressConfirmScreen extends StatefulWidget {
   final double lat;
   final double lng;
@@ -37,19 +44,6 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
   bool    _saving = false;
   String? _error;
 
-  // ── Allowed service areas ─────────────────────────────────────
-  static const _allowedAreas = [
-    'vile parle', 'vileparle', 'vile-parle',
-    'andheri', 'andheri west', 'andheri east',
-    'juhu', 'santacruz', 'santa cruz',
-    'jogeshwari', 'khar', 'bandra',
-  ];
-
-  bool _isServiceable() {
-    final combined = '${widget.area.toLowerCase()} ${widget.city.toLowerCase()}';
-    return _allowedAreas.any((a) => combined.contains(a));
-  }
-
   @override
   void dispose() {
     _flatCtrl.dispose();
@@ -58,78 +52,7 @@ class _AddressConfirmScreenState extends State<AddressConfirmScreen> {
     super.dispose();
   }
 
-  void _showNotServiceable() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (_) => Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 72, height: 72,
-              decoration: const BoxDecoration(
-                  color: Color(0xFFFEF2F2), shape: BoxShape.circle),
-              child: const Center(
-                  child: Text('😔', style: TextStyle(fontSize: 36))),
-            ),
-            const SizedBox(height: 20),
-            const Text('Not Available Yet',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900,
-                    color: Color(0xFF0F172A))),
-            const SizedBox(height: 10),
-            const Text(
-              'We currently serve only Vile Parle & Andheri '
-              'areas in Mumbai.\n\nWe\'re expanding soon — stay tuned!',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: Color(0xFF64748B), fontSize: 13, height: 1.5),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00B1FC),
-                borderRadius: BorderRadius.circular(12)),
-              child: const Text(
-                '📍 Vile Parle · Andheri · Juhu\nSantacruz · Jogeshwari · Khar',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Color(0xFF00B1FC), fontSize: 12,
-                    fontWeight: FontWeight.w700, height: 1.6),
-              ),
-            ),
-            const SizedBox(height: 20),
-            GestureDetector(
-              onTap: () {
-                Navigator.pop(context); // close dialog
-                Navigator.pop(context); // back to map
-              },
-              child: Container(
-                width: double.infinity, height: 48,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF1F5F9),
-                  borderRadius: BorderRadius.circular(14)),
-                child: const Center(
-                  child: Text('Change Location',
-                      style: TextStyle(fontWeight: FontWeight.w700,
-                          color: Color(0xFF64748B), fontSize: 14)),
-                ),
-              ),
-            ),
-          ]),
-        ),
-      ),
-    );
-  }
-
   Future<void> _save() async {
-    // Check serviceability first
-    if (!_isServiceable()) {
-      _showNotServiceable();
-      return;
-    }
-
     setState(() { _saving = true; _error = null; });
 
     final userId = await SupabaseService.loadCachedUserId() ??

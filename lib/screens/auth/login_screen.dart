@@ -157,6 +157,25 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  /// Actively waits for `fb.FirebaseAuth.instance.currentUser` to become
+  /// non-null, instead of hoping a fixed delay was long enough. The
+  /// router's redirect logic gates every route on this value, so
+  /// navigating before it's actually set sends the user straight back to
+  /// /login — which is exactly the "OTP verified but bounced to login"
+  /// symptom this replaces a fragile `Future.delayed(300ms)` guess with.
+  /// Polls quickly (50ms) and gives up after 5s so a genuine failure
+  /// still surfaces instead of hanging forever.
+  Future<bool> _waitForFirebaseAuthState({
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (fb.FirebaseAuth.instance.currentUser != null) return true;
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    return fb.FirebaseAuth.instance.currentUser != null;
+  }
+
   // ── Sign in with Firebase → call Edge Function ────────────────
   Future<void> _signInWithCredential(
       fb.PhoneAuthCredential credential) async {
@@ -195,8 +214,6 @@ class _LoginScreenState extends State<LoginScreen> {
       }
       return;
     } on FunctionException catch (e) {
-      // Thrown by supabase_flutter when the edge function returns
-      // a non-2xx status or can't be reached.
       debugPrint('Edge function error: ${e.status} - ${e.details}');
       if (mounted) {
         setState(() {
@@ -224,10 +241,6 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // ── Phase 2: non-critical post-login steps. Firebase + the
-    // edge function already succeeded, so the user IS signed in —
-    // a failure here must never surface as "Sign in failed", and
-    // must never block navigation to /services.
     debugPrint('Existing user — navigating to services');
     _userId = data['user_id'] as String?;
 
@@ -248,8 +261,25 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!mounted) return;
     setState(() => _loading = false);
 
-    // Small delay lets Firebase auth state propagate to the router
-    await Future.delayed(const Duration(milliseconds: 300));
+    // Actively confirm Firebase's local auth state has actually
+    // propagated (router.dart's redirect gates on
+    // fb.FirebaseAuth.instance.currentUser) instead of guessing with a
+    // fixed delay. This is the fix for OTP-verifies-then-bounces-to-login.
+    debugPrint('Waiting for Firebase auth state to propagate...');
+    final authReady = await _waitForFirebaseAuthState();
+    debugPrint('Firebase auth state ready: $authReady '
+        '(currentUser=${fb.FirebaseAuth.instance.currentUser?.uid})');
+
+    if (!authReady) {
+      debugPrint('Firebase auth state never propagated — aborting navigation');
+      if (mounted) {
+        setState(() => _error =
+            'Signed in, but the app took too long to confirm it. '
+            'Please try again.');
+      }
+      return;
+    }
+
     debugPrint('About to call context.go(/services). mounted=$mounted');
     if (mounted) {
       try {
@@ -290,6 +320,10 @@ class _LoginScreenState extends State<LoginScreen> {
       } catch (e) {
         debugPrint('saveTokenAfterLogin failed (non-fatal): $e');
       }
+
+      // Same fix as the existing-user path — confirm auth state before
+      // navigating, instead of hoping.
+      await _waitForFirebaseAuthState();
 
       if (!mounted) return;
       context.go('/location-gate');
@@ -335,23 +369,17 @@ class _LoginScreenState extends State<LoginScreen> {
     final kbOpen   = mq.viewInsets.bottom > 0;
     final h        = mq.size.height;
 
-    // Hero takes ~half the screen, clamped so it works on any device.
-    // When the keyboard opens it shrinks a little (not away) so the
-    // images stay visible while the form lifts above the keyboard.
     final baseHeroH = (h * 0.48).clamp(300.0, 480.0);
     final heroH     = kbOpen ? baseHeroH * 0.62 : baseHeroH;
-    final rowsArea  = heroH - topPad - 24 - 14 - 12; // top gap, row gap, base
+    final rowsArea  = heroH - topPad - 24 - 14 - 12;
     final cardH     = (rowsArea / 2).clamp(96.0, 220.0);
     final cardW     = cardH * 0.86;
 
-    // Proven skeleton: Column → hero → Expanded form sheet.
     return Scaffold(
       backgroundColor: _kBg,
-      // Let the layout resize so the focused field lifts above the keyboard.
       resizeToAvoidBottomInset: true,
       body: Column(children: [
 
-        // ── Hero: two photo marquees; shrinks gently while typing ──
         AnimatedContainer(
           duration: const Duration(milliseconds: 240),
           curve: Curves.easeInOut,
@@ -379,7 +407,6 @@ class _LoginScreenState extends State<LoginScreen> {
           ]),
         ),
 
-        // ── Form sheet fills the rest (Expanded → can't collapse) ──
         Expanded(
           child: Container(
             decoration: BoxDecoration(
@@ -422,13 +449,11 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // ── Step router (profile is handled as a full page in build) ──
   Widget _buildStep() {
     if (_step == 'otp') return _otpStep();
     return _phoneStep();
   }
 
-  // ── Phone step ────────────────────────────────────────────────
   Widget _phoneStep() {
     return Column(children: [
       const Align(
@@ -454,7 +479,6 @@ class _LoginScreenState extends State<LoginScreen> {
     ]);
   }
 
-  // ── Custom phone field with a bold, attractive number font ────
   Widget _phoneField() {
     return Container(
       decoration: BoxDecoration(
@@ -503,7 +527,6 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // ── OTP step ──────────────────────────────────────────────────
   Widget _otpStep() {
     return Column(children: [
       Align(
@@ -554,7 +577,6 @@ class _LoginScreenState extends State<LoginScreen> {
     ]);
   }
 
-  // ── Profile page (new users) — full, dedicated blank screen ───
   Widget _profilePage() {
     return Scaffold(
       backgroundColor: Colors.white,
@@ -565,7 +587,6 @@ class _LoginScreenState extends State<LoginScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Back to OTP
               GestureDetector(
                 onTap: () => setState(() { _step = 'otp'; _error = ''; }),
                 child: Container(
@@ -578,11 +599,9 @@ class _LoginScreenState extends State<LoginScreen> {
               ),
               const SizedBox(height: 20),
 
-              // Brand
               const BrandLogo(size: 54),
               const SizedBox(height: 32),
 
-              // Big heading
               Text('Welcome to Cleenzo!',
                   style: GoogleFonts.nunito(fontSize: 32,
                       fontWeight: FontWeight.w900, height: 1.15,
@@ -593,7 +612,6 @@ class _LoginScreenState extends State<LoginScreen> {
                       color: _kFaint, fontWeight: FontWeight.w500)),
               const SizedBox(height: 36),
 
-              // Name
               const Text('YOUR NAME',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
                       color: AppColors.gray400, letterSpacing: 1.5)),
@@ -601,7 +619,6 @@ class _LoginScreenState extends State<LoginScreen> {
               _bigNameField(),
               const SizedBox(height: 32),
 
-              // Gender
               const Text('GENDER (OPTIONAL)',
                   style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900,
                       color: AppColors.gray400, letterSpacing: 1.5)),
@@ -651,7 +668,6 @@ class _LoginScreenState extends State<LoginScreen> {
               ErrorBox(message: _error),
               const SizedBox(height: 8),
 
-              // Tall continue button
               SizedBox(
                 width: double.infinity,
                 child: ValueListenableBuilder(
@@ -671,7 +687,6 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  // ── Larger name field for the profile page ────────────────────
   Widget _bigNameField() => Container(
     decoration: BoxDecoration(
       color: AppColors.cyanBg,
@@ -782,7 +797,6 @@ class _MarqueeRowState extends State<_MarqueeRow>
     if (!_scroll.hasClients) return;
     final maxScroll = _scroll.position.maxScrollExtent;
     if (maxScroll <= 0) return;
-    // List is doubled, so half the extent is one seamless loop.
     final t = widget.reverse ? (1 - _ctrl.value) : _ctrl.value;
     _scroll.jumpTo(t * maxScroll / 2);
   }
@@ -825,7 +839,6 @@ class _MarqueeRowState extends State<_MarqueeRow>
         child: Stack(fit: StackFit.expand, children: [
           Image.asset(c['img'] as String, fit: BoxFit.cover,
               errorBuilder: (_, __, ___) => Container(color: _kCyanB2)),
-          // Bottom scrim for label legibility
           Container(decoration: BoxDecoration(gradient: LinearGradient(
             begin: Alignment.topCenter, end: Alignment.bottomCenter,
             colors: [Colors.transparent, Colors.black.withValues(alpha: 0.55)],

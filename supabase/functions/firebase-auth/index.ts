@@ -87,105 +87,68 @@ Deno.serve(async (req: Request) => {
       )
     }
 
+    // userId is THE canonical id for this app — every foreign key
+    // (bookings.customer_id, addresses.user_id, etc.) points at this
+    // exact value. It must never be changed and must always be what
+    // we return to the client.
     const userId = existingUser.id
     console.log('Existing user found:', userId)
 
-    // ── Step 2: Check if auth user exists with this userId ───────
-    const { data: authData } = await supabaseAdmin.auth.admin.getUserById(userId)
-    let supabaseUserId = userId
+    // ── Step 2: Best-effort auth.users bookkeeping (non-authoritative) ──
+    // This exists only to keep a matching auth.users row around for
+    // admin/dashboard purposes. It must NEVER influence what gets
+    // returned to the client — userId (the public.users row) is
+    // always the source of truth returned below.
+    //
+    // IMPORTANT: we deliberately do NOT rewrite public.users.id to
+    // match an auth.users id anymore. That update was the root cause
+    // of a real bug: users.id is referenced by foreign keys elsewhere
+    // (addresses, bookings, etc.), so Postgres silently rejected the
+    // primary-key change — but the old code never checked the update's
+    // error, so it still returned the new (non-existent-in-users)
+    // id to the client. The client would then fail to find that user
+    // and log itself out, bouncing back to /login right after a
+    // successful login.
+    try {
+      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(userId)
 
-    if (!authData?.user) {
-      // ── Auth user missing under this ID — search ALL pages by
-      // phone first, to avoid creating a duplicate ──────────────
-      const existingAuthByPhone = await findAuthUserByPhone(supabaseAdmin, phone)
+      if (!authData?.user) {
+        const existingAuthByPhone = await findAuthUserByPhone(supabaseAdmin, phone)
 
-      if (existingAuthByPhone) {
-        // Auth user exists but with a different ID — sync it
-        supabaseUserId = existingAuthByPhone.id
-        console.log('Auth user found by phone:', supabaseUserId)
-
-        if (supabaseUserId !== userId) {
-          await supabaseAdmin
-            .from('users')
-            .update({ id: supabaseUserId })
-            .eq('phone', phone)
+        if (!existingAuthByPhone) {
+          // No auth user anywhere for this phone — create one under
+          // the same id as the profile so they stay in sync going
+          // forward. If this fails, it's harmless — it doesn't
+          // affect the response.
+          const { error: authError } = await supabaseAdmin.auth.admin.createUser({
+            id:            userId,
+            phone:         phone,
+            phone_confirm: true,
+            user_metadata: { firebase_uid },
+          })
+          if (authError) {
+            console.warn('createUser (non-fatal, cosmetic only):', authError.message)
+          } else {
+            console.log('Created auth user for bookkeeping:', userId)
+          }
+        } else {
+          console.log(
+            'Auth user exists under a different id — leaving as-is ' +
+            '(not rewriting users.id):', existingAuthByPhone.id
+          )
         }
       } else {
-        // Truly no auth user — create one
-        try {
-          const { data: newAuthUser, error: authError } =
-            await supabaseAdmin.auth.admin.createUser({
-              phone:         phone,        // keep the + prefix
-              phone_confirm: true,
-              user_metadata: { firebase_uid },
-            })
-
-          if (authError) throw authError
-
-          supabaseUserId = newAuthUser.user.id
-          console.log('Created new auth user:', supabaseUserId)
-
-          await supabaseAdmin
-            .from('users')
-            .update({ id: supabaseUserId })
-            .eq('phone', phone)
-        } catch (createErr) {
-          // Race condition fallback: an auth user was created for
-          // this phone between our search and this create call.
-          const msg = createErr instanceof Error ? createErr.message : String(createErr)
-          console.warn('createUser failed, re-checking by phone:', msg)
-
-          const retryMatch = await findAuthUserByPhone(supabaseAdmin, phone)
-          if (!retryMatch) {
-            // Genuinely unrecoverable — surface the original error
-            throw createErr
-          }
-
-          supabaseUserId = retryMatch.id
-          console.log('Recovered existing auth user after race:', supabaseUserId)
-
-          if (supabaseUserId !== userId) {
-            await supabaseAdmin
-              .from('users')
-              .update({ id: supabaseUserId })
-              .eq('phone', phone)
-          }
-        }
+        console.log('Auth user already exists:', authData.user.id)
       }
-    } else {
-      console.log('Auth user already exists:', authData.user.id)
-      supabaseUserId = authData.user.id
+    } catch (bookkeepingErr) {
+      console.warn('Auth bookkeeping error (non-fatal):', bookkeepingErr)
     }
 
-    // ── Step 3: Clean up orphan auth rows for this phone ─────────
-    // Delete any auth.users rows that have email = *@cleenzo.app
-    // and phone = null (the duplicate magic-link rows)
-    try {
-      const { data: allUsers } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 })
-      const orphans = allUsers?.users?.filter(
-        (u: User) =>
-          u.id !== supabaseUserId &&
-          u.email?.endsWith('@cleenzo.app') &&
-          !u.phone
-      ) ?? []
-
-      for (const orphan of orphans) {
-        // Only delete if it was created for THIS user
-        if (orphan.email === `${supabaseUserId}@cleenzo.app` ||
-            orphan.email === `${userId}@cleenzo.app`) {
-          console.log('Deleting orphan auth row:', orphan.id)
-          await supabaseAdmin.auth.admin.deleteUser(orphan.id)
-        }
-      }
-    } catch (cleanupErr) {
-      console.warn('Cleanup error (non-fatal):', cleanupErr)
-    }
-
-    // ── Step 4: Return user info ──────────────────────────────────
+    // ── Step 3: Return the real profile info — always ────────────
     return new Response(
       JSON.stringify({
         is_new_user: false,
-        user_id:     supabaseUserId,
+        user_id:     userId,
         full_name:   existingUser.full_name,
         role:        existingUser.role ?? 'customer',
       }),

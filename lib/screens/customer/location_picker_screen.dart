@@ -46,10 +46,19 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   bool   _geocoding   = false;
   bool   _pinMoving   = false;
 
-  // Serviceability
+  // Serviceability — NOTE: this no longer blocks saving the address. It's
+  // now purely informational (shows a "not bookable yet" banner + still
+  // lets the customer save the address and continue browsing). The actual
+  // booking gate lives in booking_flow_screen.dart.
   bool   _isServiceable    = true;
   bool   _notifyLoading    = false;
   bool   _notifyDone       = false;
+
+  // Active service areas, fetched ONCE (not per pin-drag) from the
+  // admin-managed `service_areas` table. Matching is done locally against
+  // this cached list every time the pin settles.
+  List<Map<String, String>> _activeAreas = [];
+  bool _areasLoaded = false;
 
   // Pin bounce animation
   late AnimationController _bounceCtrl;
@@ -67,27 +76,44 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   static const _amber  = Color(0xFFD97706);
   static const _amberLt= Color(0xFFFFFBEB);
 
-  // ── Allowed pincodes ───────────────────────────────────────
-  static const _allowedPincodes = {
-    '400056', '400057', // Vile Parle
-    '400049',           // Juhu
-    '400053', '400058', '400059', '400069', // Andheri
-  };
-
-  // Fallback area name check (when pincode not available)
-  static const _allowedAreaKeywords = [
-    'vile parle', 'vileparle',
-    'juhu',
-    'andheri',
-  ];
-
-  bool _checkServiceable(String pincode, String area) {
-    if (pincode.isNotEmpty) {
-      return _allowedPincodes.contains(pincode.trim());
+  /// Loose substring match on area/city — same approach used by the admin
+  /// area picker and the booking-time gate, so all three stay consistent.
+  bool _checkServiceable(String area, String city) {
+    if (_activeAreas.isEmpty) return true; // fail open if not loaded / none configured
+    final a = area.toLowerCase();
+    final c = city.toLowerCase();
+    for (final row in _activeAreas) {
+      final rArea = row['area'] ?? '';
+      final rCity = row['city'] ?? '';
+      if (rCity.isNotEmpty && c.isNotEmpty &&
+          !c.contains(rCity) && !rCity.contains(c)) {
+        continue;
+      }
+      if (rArea.isNotEmpty && (a.contains(rArea) || rArea.contains(a))) {
+        return true;
+      }
     }
-    // Fallback: area name check
-    final lower = area.toLowerCase();
-    return _allowedAreaKeywords.any((k) => lower.contains(k));
+    return false;
+  }
+
+  Future<void> _loadActiveAreas() async {
+    try {
+      final rows = await _supabase
+          .from('service_areas')
+          .select('area, city')
+          .eq('is_active', true);
+      _activeAreas = (rows as List)
+          .map((r) => {
+                'area': ((r['area'] as String?) ?? '').toLowerCase(),
+                'city': ((r['city'] as String?) ?? '').toLowerCase(),
+              })
+          .toList();
+    } catch (e) {
+      debugPrint('Load active areas error: $e');
+      _activeAreas = [];
+    } finally {
+      _areasLoaded = true;
+    }
   }
 
   @override
@@ -100,6 +126,13 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
         .animate(CurvedAnimation(
             parent: _bounceCtrl, curve: Curves.easeOut));
 
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _loadActiveAreas();
+    if (!mounted) return;
+
     if (widget.initialLat != null && widget.initialLng != null) {
       _pin         = LatLng(widget.initialLat!, widget.initialLng!);
       _area        = widget.initialArea        ?? '';
@@ -109,7 +142,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
       if (_area.isEmpty) {
         _reverseGeocode(_pin);
       } else {
-        _isServiceable = _checkServiceable(_pincode, _area);
+        setState(() => _isServiceable = _checkServiceable(_area, _city));
       }
     } else {
       _detectAndMove();
@@ -156,7 +189,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           _city        = city;
           _pincode     = pincode;
           _fullAddress = full;
-          _isServiceable = _checkServiceable(pincode, area);
+          _isServiceable = _checkServiceable(area, city);
           _pinMoving   = false;
           _geocoding   = false;
         });
@@ -377,11 +410,11 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
               Padding(
                 padding: EdgeInsets.fromLTRB(
                     20, 14, 20, 14 + botPad),
-                child: _geocoding || _pinMoving
+                child: (_geocoding || _pinMoving || !_areasLoaded)
                     ? _buildLoadingCard()
                     : _isServiceable
                         ? _buildServiceableCard(hasAddr)
-                        : _buildNotServiceableCard(),
+                        : _buildNotServiceableCard(hasAddr),
               ),
             ]),
           ),
@@ -522,12 +555,15 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
     ]);
   }
 
-  // ── Not serviceable card ──────────────────────────────────
-  Widget _buildNotServiceableCard() {
+  // ── Not (yet) serviceable card ─────────────────────────────
+  // Informational only — the customer can still save this address and
+  // browse the app. Only actually BOOKING is blocked, and that check
+  // happens later in booking_flow_screen.dart.
+  Widget _buildNotServiceableCard(bool hasAddr) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start,
         children: [
 
-      // Area + not serviceable badge
+      // Area + not-yet-bookable badge
       Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Container(
           width: 44, height: 44,
@@ -557,7 +593,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
                 decoration: const BoxDecoration(
                     color: _red, shape: BoxShape.circle)),
               const SizedBox(width: 5),
-              const Text('Not available yet',
+              const Text('Not bookable yet',
                   style: TextStyle(color: _red,
                       fontSize: 10,
                       fontWeight: FontWeight.w700)),
@@ -579,7 +615,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
 
       const SizedBox(height: 12),
 
-      // Coming soon info
+      // Coming soon info — no hardcoded area names anymore
       Container(
         padding: const EdgeInsets.all(12),
         decoration: BoxDecoration(
@@ -598,8 +634,9 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
                     fontSize: 12, fontWeight: FontWeight.w800)),
             const SizedBox(height: 2),
             Text(
-              'We currently serve Vile Parle, Juhu & Andheri. '
-              'Get notified when we launch in ${_area.isNotEmpty ? _area : 'your area'}!',
+              'You can still save this address — you just won\'t be able to '
+              'book a service here until we launch in '
+              '${_area.isNotEmpty ? _area : 'your area'}.',
               style: const TextStyle(
                   color: _muted, fontSize: 11, height: 1.4)),
           ])),
@@ -608,16 +645,14 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
 
       const SizedBox(height: 12),
 
-      // Two buttons: Notify me + Change location
+      // Notify me + Change (secondary actions)
       Row(children: [
-        // Notify me
         Expanded(
-          flex: 3,
           child: GestureDetector(
             onTap: _notifyDone ? null : _notifyMe,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              height: 52,
+              height: 48,
               decoration: BoxDecoration(
                 gradient: _notifyDone
                     ? null
@@ -629,47 +664,33 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
                 borderRadius: BorderRadius.circular(14),
                 border: _notifyDone
                     ? Border.all(
-                        color: const Color(0xFF6EE7B7)) : null,
-                boxShadow: _notifyDone
-                    ? []
-                    : [BoxShadow(
-                        color: const Color(0xFF10B981)
-                            .withValues(alpha: 0.30),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4))]),
+                        color: const Color(0xFF6EE7B7)) : null),
               child: Center(
                 child: _notifyLoading
-                    ? const SizedBox(width: 20, height: 20,
+                    ? const SizedBox(width: 18, height: 18,
                         child: CircularProgressIndicator(
                             color: Colors.white,
                             strokeWidth: 2.5))
-                    : Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.center,
-                        children: [
-                        Text(
-                          _notifyDone
-                              ? '✓ You\'re on the list!'
-                              : '🔔 Notify Me',
-                          style: TextStyle(
+                    : Text(
+                        _notifyDone
+                            ? '✓ On the list!'
+                            : '🔔 Notify Me',
+                        style: TextStyle(
                             color: _notifyDone
                                 ? const Color(0xFF059669)
                                 : Colors.white,
-                            fontSize: 13,
+                            fontSize: 12.5,
                             fontWeight: FontWeight.w800)),
-                      ]),
               ),
             ),
           ),
         ),
         const SizedBox(width: 10),
-        // Change location
         Expanded(
-          flex: 2,
           child: GestureDetector(
             onTap: () => Navigator.pop(context),
             child: Container(
-              height: 52,
+              height: 48,
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(14),
@@ -677,14 +698,40 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
               child: const Center(
                 child: Text('Change',
                     style: TextStyle(color: _ink,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w800))),
             ),
           ),
         ),
       ]),
+
+      const SizedBox(height: 10),
+
+      // Save address anyway — the actual path forward. Booking itself
+      // stays gated later; this just lets them save the address and keep
+      // browsing the app.
+      GestureDetector(
+        onTap: hasAddr ? _onConfirm : null,
+        child: Container(
+          width: double.infinity, height: 48,
+          decoration: BoxDecoration(
+            color: hasAddr ? _cyanBgSoft : const Color(0xFFF1F5F9),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+                color: hasAddr ? _cyan.withValues(alpha: 0.4) : _border)),
+          child: Center(
+            child: Text('Save Address Anyway',
+                style: TextStyle(
+                    color: hasAddr ? _cyanDk : _faint,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800)),
+          ),
+        ),
+      ),
     ]);
   }
+
+  static const _cyanBgSoft = Color(0xFFECFEFF);
 
   Widget _fab(IconData icon, VoidCallback onTap) =>
       GestureDetector(

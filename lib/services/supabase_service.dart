@@ -20,11 +20,55 @@ class SupabaseService {
     await prefs.setString('app_user_id', userId);
   }
 
-  static Future<String?> loadCachedUserId() async {
-    if (_cachedUserId != null) return _cachedUserId;
+  /// Clears the cached user id, both in memory and on disk. Used when a
+  /// cached id turns out to be stale (points at a `users` row that no
+  /// longer exists — see [loadCachedUserId]).
+  static Future<void> _clearCachedUserId() async {
+    _cachedUserId = null;
     final prefs = await SharedPreferences.getInstance();
-    _cachedUserId = prefs.getString('app_user_id');
-    return _cachedUserId;
+    await prefs.remove('app_user_id');
+  }
+
+  /// Loads the cached user id AND validates it still points at a real
+  /// row in `users`. If the row is missing (e.g. stale local cache from
+  /// before a database reset, an account that got deleted, or a login
+  /// that never fully completed server-side), the stale id is cleared
+  /// and this returns null instead of an id that will fail every
+  /// foreign-key-constrained write with a confusing error.
+  ///
+  /// Screens that call this already handle a null result by sending the
+  /// person back to /login, so this fix is transparent to callers — no
+  /// call sites need to change.
+  static Future<String?> loadCachedUserId() async {
+    String? id = _cachedUserId;
+    if (id == null) {
+      final prefs = await SharedPreferences.getInstance();
+      id = prefs.getString('app_user_id');
+      _cachedUserId = id;
+    }
+    if (id == null) return null;
+
+    try {
+      final exists = await _client
+          .from('users')
+          .select('id')
+          .eq('id', id)
+          .maybeSingle();
+      if (exists == null) {
+        debugPrint(
+            'loadCachedUserId: cached id $id has no matching users row — clearing stale cache');
+        await _clearCachedUserId();
+        return null;
+      }
+    } catch (e) {
+      // Network hiccup or similar — don't punish the user for a
+      // connectivity blip by logging them out. Trust the cached id for
+      // now; the real write will surface its own error if it's actually
+      // invalid.
+      debugPrint('loadCachedUserId: validation check failed, proceeding with cached id: $e');
+    }
+
+    return id;
   }
 
   /// Unified current user id — works whether the session came from

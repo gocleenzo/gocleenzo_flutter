@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../../services/notification_service.dart';
 
-class CustomerShell extends StatelessWidget {
+class CustomerShell extends StatefulWidget {
   final Widget child;
   const CustomerShell({super.key, required this.child});
 
+  @override
+  State<CustomerShell> createState() => _CustomerShellState();
+}
+
+class _CustomerShellState extends State<CustomerShell> {
   static const _tabs = [
     (path: '/services', icon: Icons.cleaning_services_outlined,
       active: Icons.cleaning_services, label: 'Services'),
@@ -15,6 +21,11 @@ class CustomerShell extends StatelessWidget {
       active: Icons.local_offer,       label: 'Offers'),
   ];
 
+  /// Timestamp of the last back-press while already on the Services tab —
+  /// used for the "press back again to exit" pattern below, so a single
+  /// accidental back press can never instantly kill the app.
+  DateTime? _lastBackPress;
+
   int _idx(BuildContext ctx) {
     final loc = GoRouterState.of(ctx).matchedLocation;
     final i   = _tabs.indexWhere((t) => t.path == loc);
@@ -23,9 +34,46 @@ class CustomerShell extends StatelessWidget {
 
   bool _isOnServices(BuildContext ctx) {
     final loc = GoRouterState.of(ctx).matchedLocation;
-    // ignore: avoid_print
-    debugPrint('[BACKBTN] _isOnServices check — matchedLocation="$loc"');
     return loc == '/services';
+  }
+
+  void _handleBack(BuildContext context) {
+    // If there's a real screen underneath (e.g. Account was reached by
+    // pushing on top of the booking flow), respect that stack first —
+    // otherwise we'd silently blow away whatever was pushed below us.
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+
+    final onServices = _isOnServices(context);
+
+    if (!onServices) {
+      // No real history beneath us — fall back to standard bottom-nav
+      // convention: back always returns to the Services (home) tab first.
+      context.go('/services');
+      return;
+    }
+
+    // Already on the home tab with no history — require a second back
+    // press within 2s before actually exiting, so a stray tap can't
+    // instantly close the app.
+    final now = DateTime.now();
+    if (_lastBackPress == null ||
+        now.difference(_lastBackPress!) > const Duration(seconds: 2)) {
+      _lastBackPress = now;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Press back again to exit'),
+          duration: Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+          margin: EdgeInsets.fromLTRB(16, 0, 16, 80),
+        ),
+      );
+    } else {
+      SystemNavigator.pop();
+    }
   }
 
   @override
@@ -35,22 +83,17 @@ class CustomerShell extends StatelessWidget {
     NotificationService.setContext(context);
 
     final idx = _idx(context);
-    final onServices = _isOnServices(context);
-    // ignore: avoid_print
-    debugPrint('[BACKBTN] CustomerShell build — canPop will be set to $onServices');
 
     return PopScope(
-      canPop: onServices,
+      // Always intercept and decide manually in _handleBack — avoids any
+      // staleness issue with computing canPop once per build.
+      canPop: false,
       onPopInvokedWithResult: (didPop, result) {
-        // ignore: avoid_print
-        debugPrint('[BACKBTN] onPopInvokedWithResult fired — didPop=$didPop');
         if (didPop) return;
-        // ignore: avoid_print
-        debugPrint('[BACKBTN] Redirecting to /services now...');
-        context.go('/services');
+        _handleBack(context);
       },
       child: Scaffold(
-        body: child,
+        body: widget.child,
         bottomNavigationBar: Container(
           decoration: BoxDecoration(
             color: Colors.white,

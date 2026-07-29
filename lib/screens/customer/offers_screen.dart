@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class OffersScreen extends StatefulWidget {
@@ -241,9 +242,14 @@ class _OffersScreenState extends State<OffersScreen>
                   padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
                   child: Row(
                     children: [
-                      // Back button
+                      // Back button — /offers is a shell tab, always
+                      // reached via context.go() (not push), so there's
+                      // nothing on the stack for Navigator.pop() to
+                      // return to. Route explicitly to /services instead,
+                      // matching the same "back goes to home tab" pattern
+                      // used by the shell's own system-back handling.
                       GestureDetector(
-                        onTap: () => Navigator.pop(context),
+                        onTap: () => context.go('/services'),
                         child: Container(
                           width: 40, height: 40,
                           decoration: BoxDecoration(

@@ -93,13 +93,20 @@ class CartService extends ChangeNotifier {
     'Refrigerator Cleaning',
   };
 
-  static const _firstBookingEligible = {
+  /// Single source of truth for which services get the first-booking ₹25
+  /// discount. Public (was private + duplicated with a DIFFERENT, drifted
+  /// list in service_detail_screen.dart — that duplicate is now removed;
+  /// that screen reads this instead) so there's only ever one place this
+  /// can be edited, and the UI banner + actual price calculation can never
+  /// disagree about which services qualify again.
+  static const firstBookingEligibleServices = {
     'Bathroom Cleaning',
     'Utensil Cleaning',
     'Fan Cleaning',
     'Sweeping & Mopping',
     'Dusting & Wiping',
     'Balcony Cleaning',
+    'Kitchen Cleaning',
   };
 
   static const _hourlyServices  = {'Hourly Cleaning'};
@@ -110,6 +117,18 @@ class CartService extends ChangeNotifier {
   // ── Pricing tiers — built from database values ────────────────
   // Called from services_screen when building a cart item.
   // base_price, price_30min, price_60min, price_90min all come from Supabase.
+  //
+  // First-booking discount model: only the FIRST unit of an eligible
+  // service is priced at firstBookingPrice (₹25). Every additional unit of
+  // that SAME service is charged at its flat REGULAR single-unit price
+  // (price_30min) — deliberately ignoring any bundle discount baked into
+  // the normal 60/90-min tier prices, so a first-time customer always
+  // gets a predictable "₹25 + (₹regular × extra units)" total. Each
+  // eligible service in a multi-service cart gets its OWN independent
+  // ₹25-for-the-first-unit treatment — that already falls out naturally
+  // from tiers being built per-service here and cart totals being summed
+  // across items, so a Bathroom Cleaning ×1 (₹25) + Utensil Cleaning ×2
+  // (₹25 + ₹regular) cart correctly totals both discounts added together.
   static List<ServiceTier> buildTiers(
     Map<String, dynamic> svc, {
     bool isFirstBooking = false,
@@ -121,11 +140,22 @@ class CartService extends ChangeNotifier {
     final p60      = (svc['price_60min'] as num?)?.toInt() ?? (base * 2);
     final p90      = (svc['price_90min'] as num?)?.toInt() ?? (base * 3);
 
-    if (isFirstBooking && _firstBookingEligible.contains(name)) {
+    if (isFirstBooking && firstBookingEligibleServices.contains(name)) {
+      // First unit is the special ₹25 offer price. Every additional unit
+      // is priced at the flat REGULAR single-unit rate (p30) — not
+      // whatever bundle/incremental rate the normal 60/90-min tiers
+      // happen to be. This was previously computed as
+      // firstBookingPrice + (p60 − p30), which quietly inherited any
+      // bundle discount baked into price_60min/price_90min (e.g. Bathroom
+      // Cleaning ×2 coming out to ₹95 instead of the expected ₹104,
+      // because its DB-configured 60-min tier price was itself already
+      // discounted below 2×p30). "Regular calculation" for extra units
+      // now means exactly p30 added per unit, with no bundle discount
+      // applied on top of the first-unit offer.
       return [
         ServiceTier(30, firstBookingPrice),
-        ServiceTier(60, p60),
-        ServiceTier(90, p90),
+        ServiceTier(60, firstBookingPrice + p30),
+        ServiceTier(90, firstBookingPrice + p30 + p30),
       ];
     }
     return [
