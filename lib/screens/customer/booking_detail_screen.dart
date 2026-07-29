@@ -1396,7 +1396,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               style: TextStyle(color: _faint, fontSize: 11)),
         ])),
         GestureDetector(
-          onTap: () => context.go('/help'),
+          onTap: () => context.push('/help'),
           child: Container(
             padding: const EdgeInsets.symmetric(
                 horizontal: 14, vertical: 8),
