@@ -57,7 +57,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   // Active service areas, fetched ONCE (not per pin-drag) from the
   // admin-managed `service_areas` table. Matching is done locally against
   // this cached list every time the pin settles.
-  List<Map<String, String>> _activeAreas = [];
+  Set<String> _activePincodes = {};
   bool _areasLoaded = false;
 
   // Pin bounce animation
@@ -76,41 +76,29 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   static const _amber  = Color(0xFFD97706);
   static const _amberLt= Color(0xFFFFFBEB);
 
-  /// Loose substring match on area/city — same approach used by the admin
-  /// area picker and the booking-time gate, so all three stay consistent.
-  bool _checkServiceable(String area, String city) {
-    if (_activeAreas.isEmpty) return true; // fail open if not loaded / none configured
-    final a = area.toLowerCase();
-    final c = city.toLowerCase();
-    for (final row in _activeAreas) {
-      final rArea = row['area'] ?? '';
-      final rCity = row['city'] ?? '';
-      if (rCity.isNotEmpty && c.isNotEmpty &&
-          !c.contains(rCity) && !rCity.contains(c)) {
-        continue;
-      }
-      if (rArea.isNotEmpty && (a.contains(rArea) || rArea.contains(a))) {
-        return true;
-      }
-    }
-    return false;
+  /// Exact pincode match — replaces the old loose area/city text matching.
+  /// Pincodes are unambiguous (unlike area names, which vary in spelling
+  /// and overlap between neighbourhoods), so this is now a straight set
+  /// lookup rather than fuzzy substring matching.
+  bool _checkServiceable(String pincode) {
+    if (_activePincodes.isEmpty) return true; // fail open if not loaded / none configured
+    if (pincode.isEmpty) return false; // no pincode resolved — can't confirm coverage
+    return _activePincodes.contains(pincode.trim());
   }
 
   Future<void> _loadActiveAreas() async {
     try {
       final rows = await _supabase
           .from('service_areas')
-          .select('area, city')
+          .select('pincode')
           .eq('is_active', true);
-      _activeAreas = (rows as List)
-          .map((r) => {
-                'area': ((r['area'] as String?) ?? '').toLowerCase(),
-                'city': ((r['city'] as String?) ?? '').toLowerCase(),
-              })
-          .toList();
+      _activePincodes = (rows as List)
+          .map((r) => (r['pincode'] as String?)?.trim() ?? '')
+          .where((p) => p.isNotEmpty)
+          .toSet();
     } catch (e) {
       debugPrint('Load active areas error: $e');
-      _activeAreas = [];
+      _activePincodes = {};
     } finally {
       _areasLoaded = true;
     }
@@ -139,10 +127,10 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
       _city        = widget.initialCity        ?? '';
       _pincode     = widget.initialPincode     ?? '';
       _fullAddress = widget.initialFullAddress ?? '';
-      if (_area.isEmpty) {
+      if (_pincode.isEmpty) {
         _reverseGeocode(_pin);
       } else {
-        setState(() => _isServiceable = _checkServiceable(_area, _city));
+        setState(() => _isServiceable = _checkServiceable(_pincode));
       }
     } else {
       _detectAndMove();
@@ -189,7 +177,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           _city        = city;
           _pincode     = pincode;
           _fullAddress = full;
-          _isServiceable = _checkServiceable(area, city);
+          _isServiceable = _checkServiceable(pincode);
           _pinMoving   = false;
           _geocoding   = false;
         });

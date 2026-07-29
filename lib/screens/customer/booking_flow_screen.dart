@@ -88,7 +88,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // ── Razorpay ──────────────────────────────────────────────────
   late Razorpay _razorpay;
   // Test key — replace with live key when going live
-  static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
+  static const _razorpayKey = 'rzp_live_TJIl6FAZg8I1ru';
   // (booking is now created AFTER payment succeeds — see _onPaymentSuccess —
   // so there's no "pending" booking id to track between opening Razorpay
   // and the callback firing; all data needed to create the booking is
@@ -259,6 +259,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   String? _userId;
+  // Customer's phone/email, fetched once in _loadData() and passed to
+  // Razorpay's checkout as prefill data — without this, Razorpay's own
+  // checkout screen makes the customer type their phone number in AGAIN
+  // before showing payment methods, even though they're already logged in.
+  String? _userPhone;
+  String? _userEmail;
 
   String get _serviceLabel {
     if (widget.cartItems != null) {
@@ -302,6 +308,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       _supabase.from('addresses').select('*')
           .eq('user_id', userId)
           .eq('is_deleted', false),
+      _supabase.from('users').select('phone, email')
+          .eq('id', userId).maybeSingle(),
     ];
     if (widget.serviceId != null) {
       futures.add(_supabase.from('services')
@@ -319,8 +327,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             (a) => a['is_default'] == true, orElse: () => _addresses.first);
         _selectedAddressId = def['id'];
       }
-      if (widget.serviceId != null && results.length > 1) {
-        _service = results[1] as Map<String, dynamic>;
+      final userRow = results[1] as Map<String, dynamic>?;
+      _userPhone = userRow?['phone'] as String?;
+      _userEmail = userRow?['email'] as String?;
+      if (widget.serviceId != null && results.length > 2) {
+        _service = results[2] as Map<String, dynamic>;
       }
     });
 
@@ -969,34 +980,22 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // Address saving is never gated (see address_confirm_screen.dart) — this
   // is the ONE place a customer actually gets blocked from booking if
   // their selected address falls outside an admin-enabled service_areas
-  // entry. Matching is a loose substring match on area/city, same
-  // approach as the admin-side area picker (simple text tags, not
-  // geofencing).
+  // entry. Matching is now an exact pincode match (previously loose
+  // area/city text matching) — pincodes are unambiguous, unlike area
+  // names which vary in spelling and can overlap between neighbourhoods.
   Future<bool> _isSelectedAddressServiceable() async {
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
-    final area = (addr['area'] as String?)?.trim().toLowerCase() ?? '';
-    final city = (addr['city'] as String?)?.trim().toLowerCase() ?? '';
-    if (area.isEmpty && city.isEmpty) return true; // no data to check against
+    final pincode = (addr['pincode'] as String?)?.trim() ?? '';
+    if (pincode.isEmpty) return true; // no pincode on file — nothing to check against
 
     try {
       final rows = await _supabase
           .from('service_areas')
-          .select('area, city')
-          .eq('is_active', true);
-      for (final r in (rows as List).cast<Map<String, dynamic>>()) {
-        final rArea = (r['area'] as String?)?.trim().toLowerCase() ?? '';
-        final rCity = (r['city'] as String?)?.trim().toLowerCase() ?? '';
-        if (rCity.isNotEmpty && city.isNotEmpty &&
-            !city.contains(rCity) && !rCity.contains(city)) {
-          continue;
-        }
-        if (rArea.isNotEmpty &&
-            (area.contains(rArea) || rArea.contains(area))) {
-          return true;
-        }
-      }
-      return false;
+          .select('pincode')
+          .eq('is_active', true)
+          .eq('pincode', pincode);
+      return (rows as List).isNotEmpty;
     } catch (e) {
       debugPrint('Service area check error: $e');
       return true; // fail open — don't block a booking over a network hiccup
@@ -1322,8 +1321,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       'name':         'Cleenzo',
       'description':  (_service?['name'] as String? ?? 'Home Cleaning Service'),
       'prefill': {
-        'contact': '',
-        'email':   '',
+        'contact': _userPhone ?? '',
+        'email':   _userEmail ?? '',
       },
       'notes': {
         'attempt_ref': attemptRef,

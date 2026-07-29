@@ -48,6 +48,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   String? _workerOtp;
 
+  // Customer's own phone/email, for Razorpay prefill on the extra-time
+  // payment — without this, Razorpay's checkout makes the customer type
+  // their phone number in again even though they're already logged in.
+  String? _customerPhone;
+  String? _customerEmail;
+
   final _otpInputCtrl = TextEditingController();
   String? _otpError;
   bool _verifying = false;
@@ -56,7 +62,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   bool _addingExtraTime = false;
   late Razorpay _extraTimeRazorpay;
-  static const _razorpayKey = 'rzp_test_Si33xml9Pvmuqb';
+  static const _razorpayKey = 'rzp_live_TJIl6FAZg8I1ru';
   static const _kExtraTimeMinsAdded  = 20;
   static const _kExtraTimePriceRupees = 59;
 
@@ -123,11 +129,20 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
             services(name, duration_minutes, category),
             addresses(label, flat_no, building, area, city, pincode),
             worker:users!worker_id(full_name, phone),
+            customer:users!customer_id(phone, email),
             booking_items(quantity, unit_price, total_price, service_name, services(name, duration_minutes, category))
           ''')
           .eq('id', widget.bookingId)
           .single();
-      if (mounted) setState(() { _booking = data; _loading = false; });
+      if (mounted) {
+        setState(() {
+          _booking = data;
+          _loading = false;
+          final customer = data['customer'] as Map<String, dynamic>?;
+          _customerPhone = customer?['phone'] as String?;
+          _customerEmail = customer?['email'] as String?;
+        });
+      }
       await _loadWorkerOtp();
       if (mounted) {
         WidgetsBinding.instance.addPostFrameCallback((_) => _maybePromptReview());
@@ -1489,7 +1504,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       'amount':      _kExtraTimePriceRupees * 100,
       'name':        'Cleenzo',
       'description': '+20 min Extra Time',
-      'prefill':     {'contact': '', 'email': ''},
+      'prefill':     {'contact': _customerPhone ?? '', 'email': _customerEmail ?? ''},
       'notes':       {'booking_id': widget.bookingId, 'type': 'extra_time'},
       'theme':       {'color': '#7C3AED'},
       'method': {
