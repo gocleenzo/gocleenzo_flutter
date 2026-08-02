@@ -49,7 +49,13 @@ CustomTransitionPage<void> _zoomPage(Widget child, GoRouterState state) {
   );
 }
 
+/// Exposed so main.dart can resolve GoRouter's current location and
+/// trigger navigation from the native back-button MethodChannel handler,
+/// bypassing Flutter's normal (broken-on-this-device) back dispatch.
+final rootNavigatorKey = GlobalKey<NavigatorState>();
+
 final router = GoRouter(
+  navigatorKey: rootNavigatorKey,
   initialLocation: '/',
   redirect: (context, state) {
     final supaUser  = Supabase.instance.client.auth.currentUser;
@@ -144,21 +150,33 @@ final router = GoRouter(
       },
     ),
 
-    // ── Customer shell ───────────────────────────────────────
-    ShellRoute(
-      builder: (context, state, child) =>
-          CustomerShell(child: child),
-      routes: [
-        GoRoute(
-          path: '/services',
-          pageBuilder: (context, state) =>
-              _zoomPage(const ServicesScreen(), state),
-        ),
-        GoRoute(path: '/bookings', builder: (_, __) => const BookingsScreen()),
-        GoRoute(path: '/offers',   builder: (_, __) => const OffersScreen()),
-        GoRoute(path: '/account',  builder: (_, __) => const AccountScreen()),
+    // ── Customer shell (bottom-nav tabs) ─────────────────────
+    // StatefulShellRoute keeps a separate navigation stack per branch
+    // and plays correctly with PopScope in CustomerShell, unlike a
+    // plain ShellRoute (which replaces routes and breaks back-button
+    // handling — see CustomerShell for the back-press logic).
+    StatefulShellRoute.indexedStack(
+      builder: (context, state, navigationShell) =>
+          CustomerShell(navigationShell: navigationShell),
+      branches: [
+        StatefulShellBranch(routes: [
+          GoRoute(
+            path: '/services',
+            pageBuilder: (context, state) =>
+                _zoomPage(const ServicesScreen(), state),
+          ),
+        ]),
+        StatefulShellBranch(routes: [
+          GoRoute(path: '/bookings', builder: (_, __) => const BookingsScreen()),
+        ]),
+        StatefulShellBranch(routes: [
+          GoRoute(path: '/offers', builder: (_, __) => const OffersScreen()),
+        ]),
       ],
     ),
+
+    // ── Account (reached outside the bottom-nav tabs) ────────
+    GoRoute(path: '/account', builder: (_, __) => const AccountScreen()),
 
     // ── Service detail ───────────────────────────────────────
     GoRoute(

@@ -88,14 +88,33 @@ class _AccountScreenState extends State<AccountScreen> {
     if (mounted) context.go('/login');
   }
 
+  /// Back-press on Account always returns to the Services (home) tab —
+  /// Account is opened via a standalone icon (not a bottom-nav tab), so
+  /// it sits outside CustomerShell's PopScope and needs its own here.
+  void _handleBack(BuildContext context) {
+    debugPrint('[ACCOUNT BACK] fired, canPop=${context.canPop()}');
+    if (context.canPop()) {
+      context.pop();
+      return;
+    }
+    context.go('/services');
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
-      return const Scaffold(
-        backgroundColor: Color(0xFFF1F5F9),
-        body: Center(
-            child: CircularProgressIndicator(
-                color: Color(0xFF00B1FC))),
+      return PopScope(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (didPop) return;
+          _handleBack(context);
+        },
+        child: const Scaffold(
+          backgroundColor: Color(0xFFF1F5F9),
+          body: Center(
+              child: CircularProgressIndicator(
+                  color: Color(0xFF00B1FC))),
+        ),
       );
     }
 
@@ -106,178 +125,185 @@ class _AccountScreenState extends State<AccountScreen> {
     final initial     = (name != null && name.isNotEmpty)
         ? name[0].toUpperCase() : '🙂';
 
-    return Scaffold(
-      backgroundColor: const Color(0xFFF1F5F9),
-      body: SingleChildScrollView(
-        child: Column(children: [
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBack(context);
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFFF1F5F9),
+        body: SingleChildScrollView(
+          child: Column(children: [
 
-          // ── Gradient header ────────────────────────────────
-          Container(
-            width: double.infinity,
-            padding: EdgeInsets.fromLTRB(
-                20, MediaQuery.of(context).padding.top + 16, 20, 24),
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [Color(0xFF00B1FC), Color(0xFF0E7490)],
-              ),
-            ),
-            child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-              const Text('My Profile',
-                  style: TextStyle(color: Colors.white,
-                      fontSize: 22, fontWeight: FontWeight.w800)),
-              const SizedBox(height: 20),
-              Row(children: [
-                Container(
-                  width: 64, height: 64,
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.20),
-                    borderRadius: BorderRadius.circular(18),
-                    border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.24),
-                        width: 1.5)),
-                  alignment: Alignment.center,
-                  child: Text(initial,
-                      style: const TextStyle(color: Colors.white,
-                          fontSize: 26, fontWeight: FontWeight.w800)),
+            // ── Gradient header ────────────────────────────────
+            Container(
+              width: double.infinity,
+              padding: EdgeInsets.fromLTRB(
+                  20, MediaQuery.of(context).padding.top + 16, 20, 24),
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF00B1FC), Color(0xFF0E7490)],
                 ),
-                const SizedBox(width: 14),
-                Expanded(child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                  Text(displayName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white,
-                          fontSize: 20, fontWeight: FontWeight.w800)),
-                  const SizedBox(height: 2),
-                  Text(phone,
-                      style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.85),
-                          fontSize: 13)),
-                  const SizedBox(height: 8),
+              ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                const Text('My Profile',
+                    style: TextStyle(color: Colors.white,
+                        fontSize: 22, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 20),
+                Row(children: [
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                    width: 64, height: 64,
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(20)),
-                    child: const Row(
-                        mainAxisSize: MainAxisSize.min, children: [
-                      Icon(Icons.circle, size: 8,
-                          color: Color(0xFF4ADE80)),
-                      SizedBox(width: 6),
-                      Text('Active member',
-                          style: TextStyle(color: Colors.white,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600)),
-                    ])),
-                ])),
-              ]),
-            ]),
-          ),
-
-          // ── Stats row ──────────────────────────────────────
-          Transform.translate(
-            offset: const Offset(0, -18),
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 16),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 16, offset: const Offset(0, 4))]),
-              child: Row(children: [
-                _stat('📋',
-                    _bookingCount == 0 ? '—' : '$_bookingCount',
-                    'Bookings'),
-                _divider(),
-                _stat('📍', '$_addressCount', 'Addresses'),
-                _divider(),
-                _stat('🎟', '0', 'Coupons'),
+                      color: Colors.white.withValues(alpha: 0.20),
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.24),
+                          width: 1.5)),
+                    alignment: Alignment.center,
+                    child: Text(initial,
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 26, fontWeight: FontWeight.w800)),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    Text(displayName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white,
+                            fontSize: 20, fontWeight: FontWeight.w800)),
+                    const SizedBox(height: 2),
+                    Text(phone,
+                        style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.85),
+                            fontSize: 13)),
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(20)),
+                      child: const Row(
+                          mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.circle, size: 8,
+                            color: Color(0xFF4ADE80)),
+                        SizedBox(width: 6),
+                        Text('Active member',
+                            style: TextStyle(color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600)),
+                      ])),
+                  ])),
+                ]),
               ]),
             ),
-          ),
 
-          // ── Menu tiles ─────────────────────────────────────
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(children: [
+            // ── Stats row ──────────────────────────────────────
+            Transform.translate(
+              offset: const Offset(0, -18),
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.05),
+                      blurRadius: 16, offset: const Offset(0, 4))]),
+                child: Row(children: [
+                  _stat('📋',
+                      _bookingCount == 0 ? '—' : '$_bookingCount',
+                      'Bookings'),
+                  _divider(),
+                  _stat('📍', '$_addressCount', 'Addresses'),
+                  _divider(),
+                  _stat('🎟', '0', 'Coupons'),
+                ]),
+              ),
+            ),
 
-              _tile(
-                Icons.location_on_outlined,
-                'Saved Addresses',
-                '$_addressCount address'
-                '${_addressCount == 1 ? '' : 'es'} saved',
-                () => context.push('/saved-addresses'),
-              ),
-              const SizedBox(height: 12),
-              _tile(
-                Icons.receipt_long_outlined,
-                'My Bookings',
-                'View all past & upcoming',
-                () => context.go('/bookings'),
-              ),
-              const SizedBox(height: 12),
-              _tile(
-                Icons.local_offer_outlined,
-                'Offers & Coupons',
-                'Save more on every order',
-                () => context.go('/offers'),
-              ),
-              const SizedBox(height: 12),
-              _tile(
-                Icons.help_outline,
-                'Help & Support',
-                'Get answers & contact us',
-                () => context.push('/help'),
-              ),
-              const SizedBox(height: 12),
-              _tile(
-                Icons.description_outlined,
-                'Terms & Privacy',
-                'Legal information',
-                () => context.push('/terms'),
-              ),
-              const SizedBox(height: 20),
+            // ── Menu tiles ─────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(children: [
 
-              // Sign out
-              GestureDetector(
-                onTap: _signOut,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFEF2F2),
-                    borderRadius: BorderRadius.circular(16),
-                    border: Border.all(
-                        color: const Color(0xFFFECACA))),
-                  child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                    Icon(Icons.logout,
-                        color: Color(0xFFEF4444), size: 20),
-                    SizedBox(width: 8),
-                    Text('Sign Out',
-                        style: TextStyle(color: Color(0xFFEF4444),
-                            fontWeight: FontWeight.w700,
-                            fontSize: 15)),
-                  ]),
+                _tile(
+                  Icons.location_on_outlined,
+                  'Saved Addresses',
+                  '$_addressCount address'
+                  '${_addressCount == 1 ? '' : 'es'} saved',
+                  () => context.push('/saved-addresses'),
                 ),
-              ),
-              const SizedBox(height: 16),
-              const Text('Cleenzo v1.0 · Made in Mumbai',
-                  style: TextStyle(
-                      color: Color(0xFF94A3B8), fontSize: 12)),
-              const SizedBox(height: 24),
-            ]),
-          ),
-        ]),
+                const SizedBox(height: 12),
+                _tile(
+                  Icons.receipt_long_outlined,
+                  'My Bookings',
+                  'View all past & upcoming',
+                  () => context.go('/bookings'),
+                ),
+                const SizedBox(height: 12),
+                _tile(
+                  Icons.local_offer_outlined,
+                  'Offers & Coupons',
+                  'Save more on every order',
+                  () => context.go('/offers'),
+                ),
+                const SizedBox(height: 12),
+                _tile(
+                  Icons.help_outline,
+                  'Help & Support',
+                  'Get answers & contact us',
+                  () => context.push('/help'),
+                ),
+                const SizedBox(height: 12),
+                _tile(
+                  Icons.description_outlined,
+                  'Terms & Privacy',
+                  'Legal information',
+                  () => context.push('/terms'),
+                ),
+                const SizedBox(height: 20),
+
+                // Sign out
+                GestureDetector(
+                  onTap: _signOut,
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEF2F2),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                          color: const Color(0xFFFECACA))),
+                    child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                      Icon(Icons.logout,
+                          color: Color(0xFFEF4444), size: 20),
+                      SizedBox(width: 8),
+                      Text('Sign Out',
+                          style: TextStyle(color: Color(0xFFEF4444),
+                              fontWeight: FontWeight.w700,
+                              fontSize: 15)),
+                    ]),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const Text('Cleenzo v1.0 · Made in Mumbai',
+                    style: TextStyle(
+                        color: Color(0xFF94A3B8), fontSize: 12)),
+                const SizedBox(height: 24),
+              ]),
+            ),
+          ]),
+        ),
       ),
     );
   }

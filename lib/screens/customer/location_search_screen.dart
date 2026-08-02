@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
+import 'dart:async';
 import 'dart:convert';
 
 class LocationSearchScreen extends StatefulWidget {
@@ -20,8 +21,9 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
   bool   _searching    = false;
   bool   _selecting    = false;
   String _sessionToken = '';
+  Timer? _debounce;
 
-  static const _apiKey  = 'AIzaSyCr_DDF-1Aro_QuNAlzZRMOnrjKhiR20Ic';
+  static const _apiKey  = 'AIzaSyC7FDljBV3QipulrsoWFxcmUZFBY3YvzBE';
   static const _cyan    = Color(0xFF00B1FC);
   static const _cyanDk  = Color(0xFF00B1FC);
   static const _ink     = Color(0xFF0F172A);
@@ -48,9 +50,22 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
 
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchCtrl.dispose();
     _focus.dispose();
     super.dispose();
+  }
+
+  // Waits 350ms after the user stops typing before actually calling the
+  // Places API — without this, every single keystroke fired its own
+  // network request. The session token already bundles billing correctly
+  // across a search session, but this still avoids flooding the network
+  // with requests for text that's about to be overwritten by the next
+  // keystroke anyway, and prevents results arriving out of order.
+  void _onSearchChanged(String query) {
+    setState(() {}); // update the clear (×) button visibility immediately
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 350), () => _search(query));
   }
 
   Future<void> _search(String query) async {
@@ -60,19 +75,20 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
     }
     setState(() => _searching = true);
     try {
+      // Search anywhere — no country/location bias, so results aren't
+      // limited to India or any specific city/radius.
       final url = Uri.parse(
         'https://maps.googleapis.com/maps/api/place/autocomplete/json'
         '?input=${Uri.encodeComponent(query)}'
         '&key=$_apiKey'
         '&sessiontoken=$_sessionToken'
-        '&components=country:in'
-        '&location=19.1136,72.8697'
-        '&radius=15000'
         '&types=geocode|establishment',
       );
       final res = await http.get(url);
+      debugPrint('[PLACES] status=${res.statusCode}');
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
+        debugPrint('[PLACES] apiStatus=${data['status']} error=${data['error_message']}');
         if (data['status'] == 'OK') {
           setState(() {
             _predictions =
@@ -91,7 +107,8 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
           setState(() => _predictions = []);
         }
       }
-    } catch (_) {
+    } catch (e) {
+      debugPrint('[PLACES] exception=$e');
       setState(() => _predictions = []);
     }
     setState(() => _searching = false);
@@ -225,7 +242,7 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                         child: TextField(
                           controller: _searchCtrl,
                           focusNode: _focus,
-                          onChanged: _search,
+                          onChanged: _onSearchChanged,
                           style: const TextStyle(
                               fontSize: 14, color: _ink),
                           decoration: const InputDecoration(
@@ -397,9 +414,9 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
                           ]),
                           SizedBox(height: 8),
                           Text(
-                            'We currently serve Vile Parle, Juhu '
-                            'and Andheri areas in Mumbai. '
-                            'More areas coming soon!',
+                            'You can save any address, but booking is only '
+                            'available in pincodes we currently serve. '
+                            'More areas launching soon!',
                             style: TextStyle(color: _muted,
                                 fontSize: 12, height: 1.5)),
                         ]),

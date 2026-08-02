@@ -4,8 +4,8 @@ import 'package:go_router/go_router.dart';
 import '../../services/notification_service.dart';
 
 class CustomerShell extends StatefulWidget {
-  final Widget child;
-  const CustomerShell({super.key, required this.child});
+  final StatefulNavigationShell navigationShell;
+  const CustomerShell({super.key, required this.navigationShell});
 
   @override
   State<CustomerShell> createState() => _CustomerShellState();
@@ -26,21 +26,15 @@ class _CustomerShellState extends State<CustomerShell> {
   /// accidental back press can never instantly kill the app.
   DateTime? _lastBackPress;
 
-  int _idx(BuildContext ctx) {
-    final loc = GoRouterState.of(ctx).matchedLocation;
-    final i   = _tabs.indexWhere((t) => t.path == loc);
-    return i < 0 ? 0 : i;
-  }
+  int _idx(BuildContext ctx) => widget.navigationShell.currentIndex;
 
-  bool _isOnServices(BuildContext ctx) {
-    final loc = GoRouterState.of(ctx).matchedLocation;
-    return loc == '/services';
-  }
+  bool _isOnServices(BuildContext ctx) =>
+      widget.navigationShell.currentIndex == 0;
 
   void _handleBack(BuildContext context) {
-    // If there's a real screen underneath (e.g. Account was reached by
-    // pushing on top of the booking flow), respect that stack first —
-    // otherwise we'd silently blow away whatever was pushed below us.
+    // If there's a real screen underneath (e.g. pushed on top of a tab's
+    // own branch stack), respect that stack first — otherwise we'd
+    // silently blow away whatever was pushed below us.
     if (context.canPop()) {
       context.pop();
       return;
@@ -51,7 +45,7 @@ class _CustomerShellState extends State<CustomerShell> {
     if (!onServices) {
       // No real history beneath us — fall back to standard bottom-nav
       // convention: back always returns to the Services (home) tab first.
-      context.go('/services');
+      widget.navigationShell.goBranch(0);
       return;
     }
 
@@ -93,7 +87,7 @@ class _CustomerShellState extends State<CustomerShell> {
         _handleBack(context);
       },
       child: Scaffold(
-        body: widget.child,
+        body: widget.navigationShell,
         bottomNavigationBar: Container(
           decoration: BoxDecoration(
             color: Colors.white,
@@ -110,7 +104,10 @@ class _CustomerShellState extends State<CustomerShell> {
                   final active = i == idx;
                   return Expanded(
                     child: GestureDetector(
-                      onTap: () => context.go(tab.path),
+                      onTap: () => widget.navigationShell.goBranch(
+                        i,
+                        initialLocation: i == widget.navigationShell.currentIndex,
+                      ),
                       behavior: HitTestBehavior.opaque,
                       child: Column(mainAxisSize: MainAxisSize.min, children: [
                         AnimatedContainer(
