@@ -50,6 +50,7 @@ class _ServicesScreenState extends State<ServicesScreen>
   ];
 
   static const List<String> _serviceOrder = [
+    'Hourly Cleaning',
     'Bathroom Cleaning',
     'Utensil Cleaning',
     'Kitchen Cleaning',

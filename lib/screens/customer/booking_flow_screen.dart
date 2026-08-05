@@ -363,6 +363,55 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   // ═══════════════════════════════════════════════════════════════
+  // ZONE-BASED WORKER RESTRICTION
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // Mirrors the SAME restriction try_claim_slot enforces server-side
+  // (address's coordinate -> zone via find_zone_for_point -> zone_workers
+  // assignments), so the slot picker never shows a slot as "available"
+  // that would then be rejected at confirm time. This is purely a
+  // client-side PREVIEW for UX accuracy — try_claim_slot remains the real,
+  // authoritative, atomic gate; this just keeps the two in sync so the
+  // customer isn't surprised.
+  //
+  // Returns null if there's no restriction for the currently selected
+  // address (no coordinates on file, address doesn't fall inside any
+  // active zone, or that zone has zero worker assignments) — meaning
+  // every available worker remains eligible, exactly as before this
+  // feature existed. Fails open (returns null) on any error, so a
+  // network hiccup here never blocks a booking that would otherwise be
+  // allowed.
+  Future<Set<String>?> _resolveZoneRestrictedWorkerIds() async {
+    try {
+      final addr = _addresses.firstWhere(
+          (a) => a['id'] == _selectedAddressId, orElse: () => {});
+      final lat = (addr['latitude'] as num?)?.toDouble();
+      final lng = (addr['longitude'] as num?)?.toDouble();
+      if (lat == null || lng == null) return null;
+
+      final zoneId = await _supabase.rpc('find_zone_for_point', params: {
+        'p_lat': lat,
+        'p_lng': lng,
+      });
+      if (zoneId == null) return null;
+
+      final assignments = await _supabase
+          .from('zone_workers')
+          .select('worker_id')
+          .eq('zone_id', zoneId);
+      final ids = (assignments as List)
+          .map((r) => r['worker_id'] as String)
+          .toSet();
+      // Empty assignment list = zone has no restriction configured yet —
+      // same "fail open" behaviour as try_claim_slot.
+      return ids.isEmpty ? null : ids;
+    } catch (e) {
+      debugPrint('Zone eligibility check failed (failing open): $e');
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════
   // INSTANT BOOKING AVAILABILITY CHECK
   // ═══════════════════════════════════════════════════════════════
 
@@ -455,7 +504,17 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .from('workers')
           .select('user_id, is_available')
           .eq('is_available', true);
-      final workers = (workersData as List).cast<Map<String, dynamic>>();
+      var workers = (workersData as List).cast<Map<String, dynamic>>();
+
+      // Zone restriction — same rule try_claim_slot applies server-side.
+      // See _resolveZoneRestrictedWorkerIds for the "null = unrestricted"
+      // contract.
+      final eligibleIds = await _resolveZoneRestrictedWorkerIds();
+      if (eligibleIds != null) {
+        workers = workers
+            .where((w) => eligibleIds.contains(w['user_id']))
+            .toList();
+      }
 
       if (workers.isEmpty) return 'no_workers';
 
@@ -737,7 +796,22 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .from('workers')
           .select('user_id, is_available')
           .eq('is_available', true);
-      final workers = (workersData as List).cast<Map<String, dynamic>>();
+      var workers = (workersData as List).cast<Map<String, dynamic>>();
+
+      // Zone restriction — same rule try_claim_slot applies server-side.
+      // Checked here BEFORE computing per-slot availability so the
+      // picker's green/grey slots always match what a real booking
+      // attempt against this address would actually accept. Without
+      // this, a customer could see a slot as available, pick it, and
+      // have it rejected at confirm time with a confusing "slot just
+      // filled up" message even though nothing was ever actually full —
+      // it was simply zone-restricted the whole time.
+      final eligibleIds = await _resolveZoneRestrictedWorkerIds();
+      if (eligibleIds != null) {
+        workers = workers
+            .where((w) => eligibleIds.contains(w['user_id']))
+            .toList();
+      }
 
       final dateStr = '${date.year}-'
           '${date.month.toString().padLeft(2, '0')}-'
@@ -2313,8 +2387,18 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                           ? Icons.business_rounded
                           : Icons.location_on_rounded;
                   return GestureDetector(
-                    onTap: () => setState(
-                        () => _selectedAddressId = addr['id']),
+                    onTap: () {
+                      setState(() => _selectedAddressId = addr['id']);
+                      // The address determines which worker set is
+                      // eligible (see _resolveZoneRestrictedWorkerIds) —
+                      // re-check slot availability against the NEWLY
+                      // selected address so the picker stays accurate if
+                      // the customer switches addresses after already
+                      // having picked a date/time against the old one.
+                      if (_isSchedule) {
+                        _loadSlotAvailability(_selectedDate);
+                      }
+                    },
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 180),
                       margin: const EdgeInsets.only(bottom: 10),

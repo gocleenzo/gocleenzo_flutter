@@ -5,6 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+const VALID_ROLES = ['customer', 'worker']
+
 // ── Normalize phone to E.164 format: +919XXXXXXXXX ──────────────
 function normalizePhone(raw: string): string {
   // Strip all non-digits
@@ -52,18 +54,31 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { firebase_uid, phone: rawPhone } = await req.json()
+    // ── role is REQUIRED now ──────────────────────────────────────
+    // This is what keeps the customer app and worker app from ever
+    // resolving to the same `users` row for the same phone number.
+    // Each app must explicitly say who it is on every login call —
+    // see login_screen.dart in both apps, which now send
+    // { firebase_uid, phone, role: 'customer' | 'worker' }.
+    const { firebase_uid, phone: rawPhone, role } = await req.json()
 
-    if (!firebase_uid || !rawPhone) {
+    if (!firebase_uid || !rawPhone || !role) {
       return new Response(
-        JSON.stringify({ error: 'firebase_uid and phone are required' }),
+        JSON.stringify({ error: 'firebase_uid, phone, and role are required' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    if (!VALID_ROLES.includes(role)) {
+      return new Response(
+        JSON.stringify({ error: `role must be one of: ${VALID_ROLES.join(', ')}` }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }
 
     // ── Always normalize to +91XXXXXXXXXX ───────────────────────
     const phone = normalizePhone(rawPhone)
-    console.log(`Phone normalized: ${rawPhone} → ${phone}`)
+    console.log(`Phone normalized: ${rawPhone} → ${phone}, role: ${role}`)
 
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -72,15 +87,25 @@ Deno.serve(async (req: Request) => {
     )
 
     // ── Step 1: Find existing user in users table ────────────────
+    // Matched by (phone, role) — NOT phone alone. This is the fix:
+    // the same phone number can have a separate 'customer' row and a
+    // separate 'worker' row, and this lookup only ever returns the
+    // one that matches the app asking. Backed by the
+    // users_phone_role_unique constraint at the DB level, so this can
+    // never accidentally return (or create) more than one row per
+    // (phone, role) pair.
     const { data: existingUser } = await supabaseAdmin
       .from('users')
       .select('id, full_name, role')
       .eq('phone', phone)
+      .eq('role', role)
       .maybeSingle()
 
     if (!existingUser) {
-      // Brand new user — signal Flutter to collect name
-      console.log('New user:', phone)
+      // Brand new user for THIS role — signal the app to collect a
+      // name (even if this same phone already has a row under the
+      // OTHER role — that's expected and fine, they're independent).
+      console.log(`New ${role} user:`, phone)
       return new Response(
         JSON.stringify({ is_new_user: true }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -92,7 +117,7 @@ Deno.serve(async (req: Request) => {
     // exact value. It must never be changed and must always be what
     // we return to the client.
     const userId = existingUser.id
-    console.log('Existing user found:', userId)
+    console.log(`Existing ${role} user found:`, userId)
 
     // ── Step 2: Best-effort auth.users bookkeeping (non-authoritative) ──
     // This exists only to keep a matching auth.users row around for
@@ -109,6 +134,13 @@ Deno.serve(async (req: Request) => {
     // id to the client. The client would then fail to find that user
     // and log itself out, bouncing back to /login right after a
     // successful login.
+    //
+    // NOTE: auth.users has its own phone-uniqueness behaviour, and
+    // now that ONE phone number can map to TWO public.users rows
+    // (customer + worker), this bookkeeping call can only ever attach
+    // one auth.users row per phone anyway. That's fine — this block
+    // is purely cosmetic/admin-dashboard convenience and never affects
+    // what's returned to either app.
     try {
       const { data: authData } = await supabaseAdmin.auth.admin.getUserById(userId)
 
@@ -124,7 +156,7 @@ Deno.serve(async (req: Request) => {
             id:            userId,
             phone:         phone,
             phone_confirm: true,
-            user_metadata: { firebase_uid },
+            user_metadata: { firebase_uid, role },
           })
           if (authError) {
             console.warn('createUser (non-fatal, cosmetic only):', authError.message)
@@ -150,7 +182,7 @@ Deno.serve(async (req: Request) => {
         is_new_user: false,
         user_id:     userId,
         full_name:   existingUser.full_name,
-        role:        existingUser.role ?? 'customer',
+        role:        existingUser.role,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     )

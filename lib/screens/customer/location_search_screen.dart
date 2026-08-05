@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'dart:async';
 import 'dart:convert';
 
@@ -118,48 +119,153 @@ class _LocationSearchScreenState extends State<LocationSearchScreen>
     setState(() => _selecting = true);
     HapticFeedback.selectionClick();
     try {
-      final url = Uri.parse(
+      final placeId = place['place_id'];
+
+      // Check OUR OWN corrections first — if a customer has already
+      // dragged the pin to fix this exact place before, and an admin
+      // approved that correction, use it directly. Skips Google entirely
+      // (faster, free, and permanently accurate for buildings we've
+      // already had to manually correct once).
+      try {
+        final correction = await Supabase.instance.client
+            .from('location_corrections')
+            .select('*')
+            .eq('place_id', placeId)
+            .eq('status', 'approved')
+            .order('reviewed_at', ascending: false)
+            .limit(1)
+            .maybeSingle();
+        if (correction != null) {
+          debugPrint('[PLACES] using saved correction for place_id=$placeId');
+          if (mounted) {
+            setState(() => _selecting = false);
+            context.pushReplacement('/location-picker', extra: {
+              'lat':          correction['corrected_lat'] as double,
+              'lng':          correction['corrected_lng'] as double,
+              'area':         correction['corrected_area'] as String? ?? '',
+              'city':         correction['corrected_city'] as String? ?? '',
+              'pincode':      correction['corrected_pincode'] as String? ?? '',
+              'full_address': correction['corrected_full_address'] as String? ?? '',
+              'isOnboarding': widget.isOnboarding,
+            });
+          }
+          return;
+        }
+      } catch (e) {
+        debugPrint('[PLACES] correction lookup failed (non-fatal): $e');
+        // fall through to normal Google lookup below
+      }
+
+      var lat = 0.0, lng = 0.0;
+      var fmtAddr = '';
+      List addressComponents = [];
+      String locationType = '';
+
+      // Primary lookup: Place Details.
+      final detailsUrl = Uri.parse(
         'https://maps.googleapis.com/maps/api/place/details/json'
-        '?place_id=${place['place_id']}'
+        '?place_id=$placeId'
         '&key=$_apiKey'
         '&sessiontoken=$_sessionToken'
         '&fields=geometry,formatted_address,address_components',
       );
-      final res = await http.get(url);
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+      final detailsRes = await http.get(detailsUrl);
+      if (detailsRes.statusCode == 200) {
+        final data = jsonDecode(detailsRes.body);
         if (data['status'] == 'OK') {
-          final result  = data['result'];
-          final lat     = result['geometry']['location']['lat'] as double;
-          final lng     = result['geometry']['location']['lng'] as double;
-          final fmtAddr = result['formatted_address'] as String? ?? '';
-
-          String area = '', city = '', pincode = '';
-          for (final comp in (result['address_components'] as List)) {
-            final types = (comp['types'] as List).cast<String>();
-            if (types.contains('sublocality_level_1') ||
-                types.contains('sublocality')) {
-              area = comp['long_name'];
-            }
-            if (types.contains('locality')) city = comp['long_name'];
-            if (types.contains('postal_code')) {
-              pincode = comp['long_name'];
-            }
-          }
-
-          if (mounted) {
-            setState(() => _selecting = false);
-            context.pushReplacement('/location-picker', extra: {
-              'lat':          lat,
-              'lng':          lng,
-              'area':         area,
-              'city':         city,
-              'pincode':      pincode,
-              'full_address': fmtAddr,
-              'isOnboarding': widget.isOnboarding,
-            });
-          }
+          final result = data['result'];
+          lat             = result['geometry']['location']['lat'] as double;
+          lng             = result['geometry']['location']['lng'] as double;
+          fmtAddr         = result['formatted_address'] as String? ?? '';
+          addressComponents = result['address_components'] as List? ?? [];
+          locationType    = result['geometry']['location_type'] as String? ?? '';
+          debugPrint('[PLACES] details lat=$lat lng=$lng '
+              'type=$locationType addr=$fmtAddr');
         }
+      }
+
+      // Place Details didn't give ROOFTOP-level precision — try the
+      // Geocoding API for the same place_id. It draws from a related but
+      // not identical Google dataset, and has been observed to return
+      // more precise (sometimes ROOFTOP) coordinates for buildings where
+      // Place Details only has approximate/block-level data — which
+      // matches exactly the "right street, wrong building" symptom for
+      // less-mapped residential societies.
+      if (locationType != 'ROOFTOP') {
+        try {
+          final geocodeUrl = Uri.parse(
+            'https://maps.googleapis.com/maps/api/geocode/json'
+            '?place_id=$placeId'
+            '&key=$_apiKey',
+          );
+          final geoRes = await http.get(geocodeUrl);
+          if (geoRes.statusCode == 200) {
+            final geoData = jsonDecode(geoRes.body);
+            // Always log the status — a REQUEST_DENIED here (most
+            // commonly because the API key isn't allowed to call the
+            // Geocoding API) would previously fail completely silently,
+            // making this exact problem invisible in the logs.
+            debugPrint('[PLACES] geocode apiStatus=${geoData['status']} '
+                'error=${geoData['error_message']}');
+            if (geoData['status'] == 'OK' &&
+                (geoData['results'] as List).isNotEmpty) {
+              final geoResult = geoData['results'][0];
+              final geoType =
+                  geoResult['geometry']['location_type'] as String? ?? '';
+              debugPrint('[PLACES] geocode fallback type=$geoType '
+                  'lat=${geoResult['geometry']['location']['lat']} '
+                  'lng=${geoResult['geometry']['location']['lng']}');
+              if (geoType == 'ROOFTOP') {
+                lat     = geoResult['geometry']['location']['lat'] as double;
+                lng     = geoResult['geometry']['location']['lng'] as double;
+                fmtAddr = geoResult['formatted_address'] as String? ?? fmtAddr;
+                addressComponents =
+                    geoResult['address_components'] as List? ?? addressComponents;
+                locationType = geoType;
+                debugPrint('[PLACES] using geocode fallback (more precise)');
+              }
+            }
+          } else {
+            debugPrint('[PLACES] geocode HTTP status=${geoRes.statusCode}');
+          }
+        } catch (e) {
+          debugPrint('[PLACES] geocode fallback failed: $e');
+        }
+      }
+
+      String area = '', city = '', pincode = '';
+      for (final comp in addressComponents) {
+        final types = (comp['types'] as List).cast<String>();
+        if (types.contains('sublocality_level_1') ||
+            types.contains('sublocality')) {
+          area = comp['long_name'];
+        }
+        if (types.contains('locality')) city = comp['long_name'];
+        if (types.contains('postal_code')) {
+          pincode = comp['long_name'];
+        }
+      }
+
+      if (mounted && (lat != 0.0 || lng != 0.0)) {
+        setState(() => _selecting = false);
+        context.pushReplacement('/location-picker', extra: {
+          'lat':          lat,
+          'lng':          lng,
+          'area':         area,
+          'city':         city,
+          'pincode':      pincode,
+          'full_address': fmtAddr,
+          'isOnboarding': widget.isOnboarding,
+          // For correction tracking — lets the picker screen offer to
+          // save a fix if the customer drags meaningfully far from
+          // where Google originally placed this search result.
+          'placeId':      placeId,
+          'searchLabel':  fmtAddr,
+          'originalLat':  lat,
+          'originalLng':  lng,
+        });
+      } else if (mounted) {
+        setState(() => _selecting = false);
       }
     } catch (_) {
       if (mounted) setState(() => _selecting = false);

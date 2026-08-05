@@ -58,6 +58,18 @@ class _LoginScreenState extends State<LoginScreen> {
   String  _error          = '';
   String? _verificationId;
   String? _userId;
+  // Guards against a race between Firebase's automatic SMS auto-retrieval
+  // (verificationCompleted) and Android's own Autofill Framework filling
+  // the on-screen OTP boxes from the same incoming SMS — both can fire
+  // within milliseconds of each other and each independently calls
+  // _signInWithCredential(). A phone-auth verification session can only
+  // be consumed once; whichever attempt reaches Firebase first succeeds,
+  // and the second one comes back with "session expired" even though
+  // nothing actually expired — it's just Firebase's generic error for a
+  // verification ID that's already been used. This flag makes sure only
+  // the FIRST attempt is ever sent to Firebase; the second is silently
+  // dropped instead of surfacing a confusing, false error to the user.
+  bool    _signingIn      = false;
 
   @override
   void dispose() {
@@ -179,6 +191,18 @@ class _LoginScreenState extends State<LoginScreen> {
   // ── Sign in with Firebase → call Edge Function ────────────────
   Future<void> _signInWithCredential(
       fb.PhoneAuthCredential credential) async {
+    // If a sign-in is already in flight (from the other of the two
+    // possible triggers — auto-verify or manual OTP entry — racing this
+    // one), drop this duplicate attempt entirely rather than sending it
+    // to Firebase, where it would fail with a confusing "session expired"
+    // error even though the first attempt is about to succeed normally.
+    if (_signingIn) {
+      debugPrint('Sign-in already in progress — ignoring duplicate '
+          'credential (auto-verify vs manual OTP race)');
+      return;
+    }
+    _signingIn = true;
+
     // ── Phase 1: Firebase auth + edge function. If either fails,
     // the user genuinely isn't signed in — show "Sign in failed".
     fb.User? fireUser;
@@ -198,6 +222,13 @@ class _LoginScreenState extends State<LoginScreen> {
         body: {
           'firebase_uid': fireUser.uid,
           'phone':        phone,
+          // REQUIRED — this is what keeps this app's users separate
+          // from the worker app's users for the same phone number.
+          // The edge function now looks up (and creates) rows scoped
+          // to (phone, role), backed by the users_phone_role_unique
+          // DB constraint. Without this, the edge function returns a
+          // 400 error ("role is required").
+          'role':         'customer',
         },
       );
 
@@ -206,6 +237,7 @@ class _LoginScreenState extends State<LoginScreen> {
       debugPrint('Edge function response: $data');
     } on fb.FirebaseAuthException catch (e) {
       debugPrint('Firebase sign in error: ${e.code} - ${e.message}');
+      _signingIn = false;
       if (mounted) {
         setState(() {
         _error   = e.message ?? 'Sign in failed.';
@@ -215,6 +247,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     } on FunctionException catch (e) {
       debugPrint('Edge function error: ${e.status} - ${e.details}');
+      _signingIn = false;
       if (mounted) {
         setState(() {
         _error   = 'Could not verify your account. Please try again.';
@@ -224,6 +257,7 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     } catch (e) {
       debugPrint('Sign in error: $e');
+      _signingIn = false;
       if (mounted) {
         setState(() {
         _error   = 'Sign in failed. Please try again.';
@@ -237,6 +271,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (data['is_new_user'] == true) {
       debugPrint('New user — going to profile step');
+      _signingIn = false;
       setState(() { _step = 'profile'; _loading = false; });
       return;
     }
@@ -272,6 +307,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (!authReady) {
       debugPrint('Firebase auth state never propagated — aborting navigation');
+      _signingIn = false;
       if (mounted) {
         setState(() => _error =
             'Signed in, but the app took too long to confirm it. '

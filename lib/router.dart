@@ -131,6 +131,10 @@ final router = GoRouter(
           initialPincode:     e['pincode']      as String?,
           initialFullAddress: e['full_address'] as String?,
           isOnboarding:       e['isOnboarding'] as bool? ?? false,
+          placeId:            e['placeId']      as String?,
+          searchLabel:        e['searchLabel']  as String?,
+          originalLat:        e['originalLat']  as double?,
+          originalLng:        e['originalLng']  as double?,
         );
       },
     ),

@@ -6,6 +6,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
+import 'geofence_service.dart';
 
 class LocationPickerScreen extends StatefulWidget {
   final double? initialLat;
@@ -15,6 +16,13 @@ class LocationPickerScreen extends StatefulWidget {
   final String? initialPincode;
   final String? initialFullAddress;
   final bool    isOnboarding;
+  // Present only when arriving from a search result — used to detect and
+  // offer saving a correction if the customer drags meaningfully far
+  // from where Google originally placed this result.
+  final String? placeId;
+  final String? searchLabel;
+  final double? originalLat;
+  final double? originalLng;
 
   const LocationPickerScreen({
     super.key,
@@ -25,6 +33,10 @@ class LocationPickerScreen extends StatefulWidget {
     this.initialPincode,
     this.initialFullAddress,
     this.isOnboarding = false,
+    this.placeId,
+    this.searchLabel,
+    this.originalLat,
+    this.originalLng,
   });
 
   @override
@@ -45,6 +57,16 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   String _fullAddress = '';
   bool   _geocoding   = false;
   bool   _pinMoving   = false;
+  // Set right before a programmatic camera move (e.g. landing here from a
+  // search result). Google Maps fires onCameraIdle for BOTH user drags AND
+  // programmatic animateCamera() calls — without this guard, the correct
+  // forward-geocoded search result (place name -> coordinates) was being
+  // immediately overwritten by a reverse-geocode (coordinates -> nearest
+  // address) the moment our own animateCamera() call settled, and reverse
+  // geocoding commonly snaps to the nearest ROAD rather than the exact
+  // building — producing the "right area, wrong street" symptom even
+  // though the pin itself was sitting at the correct coordinates.
+  bool   _suppressNextCameraIdle = false;
 
   // Serviceability — NOTE: this no longer blocks saving the address. It's
   // now purely informational (shows a "not bookable yet" banner + still
@@ -54,15 +76,35 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   bool   _notifyLoading    = false;
   bool   _notifyDone       = false;
 
-  // Active service areas, fetched ONCE (not per pin-drag) from the
-  // admin-managed `service_areas` table. Matching is done locally against
-  // this cached list every time the pin settles.
-  Set<String> _activePincodes = {};
+  // Active service ZONES (polygons), fetched ONCE (not per pin-drag) from
+  // the admin-managed `service_zones` table. This REPLACES the old
+  // pincode-based `_activePincodes` set — a pincode is a big, fixed
+  // government boundary that can't distinguish a well-mapped society from
+  // a chawl sitting in the same pincode. Polygons are admin-drawn shapes,
+  // so coverage can be traced exactly around the buildings/streets that
+  // are actually meant to be served, and the same "point inside shape?"
+  // check is done locally against this cached list every time the pin
+  // settles — same pattern as before, just a richer shape than a flat set.
+  List<ServiceZone> _activeZones = [];
   bool _areasLoaded = false;
 
   // Pin bounce animation
   late AnimationController _bounceCtrl;
   late Animation<double>   _bounceAnim;
+
+  // ── Map padding ────────────────────────────────────────────
+  // GoogleMap's `padding` tells the SDK's own camera/target logic to
+  // treat this many px at the bottom as reserved (for the bottom sheet),
+  // which shifts what the SDK considers the *visual center* of the map
+  // upward by half this amount. Our fixed center-pin overlay MUST use
+  // this exact same value (see the `Center` + `Padding` combo in build())
+  // or the two disagree about where "center" is: the map renders the
+  // camera target ~ (bottomPadding / 2) px higher on screen than a plain
+  // `Center()` widget would place a fixed overlay. At typical zoom levels
+  // that mismatch alone is tens of meters on the ground — this was the
+  // root cause of the "right street, wrong building" symptom, entirely
+  // independent of any coordinate/data bug.
+  static const double _mapBottomPadding = 240;
 
   // ── Colours ────────────────────────────────────────────────
   static const _cyan   = Color(0xFF00B1FC);
@@ -76,29 +118,20 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   static const _amber  = Color(0xFFD97706);
   static const _amberLt= Color(0xFFFFFBEB);
 
-  /// Exact pincode match — replaces the old loose area/city text matching.
-  /// Pincodes are unambiguous (unlike area names, which vary in spelling
-  /// and overlap between neighbourhoods), so this is now a straight set
-  /// lookup rather than fuzzy substring matching.
-  bool _checkServiceable(String pincode) {
-    if (_activePincodes.isEmpty) return true; // fail open if not loaded / none configured
-    if (pincode.isEmpty) return false; // no pincode resolved — can't confirm coverage
-    return _activePincodes.contains(pincode.trim());
-  }
+  /// Polygon-based match — replaces the old flat pincode-set lookup.
+  /// Checks whether [point] falls inside ANY admin-drawn service zone.
+  /// Fails open (returns true) if no zones are configured, same
+  /// behaviour as before when `_activePincodes` was empty — so a fresh
+  /// install with nothing drawn yet doesn't block every customer.
+  bool _checkServiceable(LatLng point) =>
+      GeofenceService.isServiceable(point, _activeZones);
 
   Future<void> _loadActiveAreas() async {
     try {
-      final rows = await _supabase
-          .from('service_areas')
-          .select('pincode')
-          .eq('is_active', true);
-      _activePincodes = (rows as List)
-          .map((r) => (r['pincode'] as String?)?.trim() ?? '')
-          .where((p) => p.isNotEmpty)
-          .toSet();
+      _activeZones = await GeofenceService.loadActiveZones();
     } catch (e) {
-      debugPrint('Load active areas error: $e');
-      _activePincodes = {};
+      debugPrint('Load active zones error: $e');
+      _activeZones = [];
     } finally {
       _areasLoaded = true;
     }
@@ -122,15 +155,38 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
     if (!mounted) return;
 
     if (widget.initialLat != null && widget.initialLng != null) {
+      debugPrint('[LOCPICKER] received initialLat=${widget.initialLat} '
+          'initialLng=${widget.initialLng} pincode=${widget.initialPincode} '
+          'fullAddress=${widget.initialFullAddress}');
       _pin         = LatLng(widget.initialLat!, widget.initialLng!);
       _area        = widget.initialArea        ?? '';
       _city        = widget.initialCity        ?? '';
       _pincode     = widget.initialPincode     ?? '';
       _fullAddress = widget.initialFullAddress ?? '';
+      // The map's camera was already positioned (at a stale default) by
+      // onMapCreated before this async init finished — setting _pin alone
+      // doesn't move the already-rendered camera. Without this explicit
+      // animate call, the map kept showing wherever it first rendered
+      // while the address text correctly showed the searched location —
+      // exactly the "map shows something different" bug. _detectAndMove()
+      // (the GPS path) already did this correctly; this branch didn't.
+      if (mounted) {
+        setState(() {
+          // Serviceability is coordinate-based now, so it can be
+          // computed immediately — no need to wait on reverse geocoding
+          // just to know if this pin can be booked.
+          _isServiceable = _checkServiceable(_pin);
+        });
+        debugPrint('[LOCPICKER] animating camera to _pin=$_pin');
+        _suppressNextCameraIdle = true;
+        _mapController?.animateCamera(
+            CameraUpdate.newLatLngZoom(_pin, 16));
+      }
+      // Reverse geocode is still needed if we don't already have a
+      // pincode/area to DISPLAY — but it no longer decides
+      // serviceability, that's already been set above from the polygon.
       if (_pincode.isEmpty) {
         _reverseGeocode(_pin);
-      } else {
-        setState(() => _isServiceable = _checkServiceable(_pincode));
       }
     } else {
       _detectAndMove();
@@ -150,7 +206,10 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           locationSettings: const LocationSettings(
               accuracy: LocationAccuracy.high));
       final latlng = LatLng(pos.latitude, pos.longitude);
-      setState(() => _pin = latlng);
+      setState(() {
+        _pin = latlng;
+        _isServiceable = _checkServiceable(latlng);
+      });
       _mapController?.animateCamera(
           CameraUpdate.newLatLngZoom(latlng, 16));
       await _reverseGeocode(latlng);
@@ -177,7 +236,9 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           _city        = city;
           _pincode     = pincode;
           _fullAddress = full;
-          _isServiceable = _checkServiceable(pincode);
+          // Serviceability is decided by polygon, checked against the
+          // exact coordinate — pincode here is purely for display now.
+          _isServiceable = _checkServiceable(latlng);
           _pinMoving   = false;
           _geocoding   = false;
         });
@@ -185,9 +246,23 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
         // Bounce pin
         _bounceCtrl.forward(from: 0)
             .then((_) => _bounceCtrl.reverse());
+      } else if (mounted) {
+        // No placemark resolved for text display, but we can still know
+        // whether this exact point is servable from the polygon alone.
+        setState(() {
+          _isServiceable = _checkServiceable(latlng);
+          _pinMoving = false;
+          _geocoding = false;
+        });
       }
     } catch (_) {
-      if (mounted) setState(() { _geocoding = false; _pinMoving = false; });
+      if (mounted) {
+        setState(() {
+          _isServiceable = _checkServiceable(latlng);
+          _geocoding = false;
+          _pinMoving = false;
+        });
+      }
     }
   }
 
@@ -230,8 +305,58 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
     }
   }
 
+  // If this came from a search result and the customer dragged the pin
+  // meaningfully far (>30m) from where Google originally placed it,
+  // submit that as a pending correction for admin review. Runs silently
+  // in the background — never blocks or delays confirming the address,
+  // since this is a nice-to-have data-quality signal, not something the
+  // customer should ever have to wait on or see fail.
+  Future<void> _maybeSubmitCorrection() async {
+    debugPrint('[CORRECTION] checking — placeId=${widget.placeId} '
+        'originalLat=${widget.originalLat} originalLng=${widget.originalLng} '
+        'currentPin=$_pin');
+    if (widget.placeId == null ||
+        widget.originalLat == null ||
+        widget.originalLng == null) {
+      debugPrint('[CORRECTION] skipped — no placeId/original coords '
+          '(this pin didn\'t come from a search result)');
+      return;
+    }
+    final movedMeters = Geolocator.distanceBetween(
+      widget.originalLat!, widget.originalLng!,
+      _pin.latitude, _pin.longitude,
+    );
+    debugPrint('[CORRECTION] moved ${movedMeters.toStringAsFixed(1)}m '
+        'from original Google result');
+    if (movedMeters < 30) {
+      debugPrint('[CORRECTION] skipped — under 30m threshold, treated as '
+          'minor fine-tuning not a real correction');
+      return;
+    }
+
+    try {
+      await _supabase.from('location_corrections').insert({
+        'place_id':              widget.placeId,
+        'search_label':          widget.searchLabel ?? _fullAddress,
+        'original_lat':          widget.originalLat,
+        'original_lng':          widget.originalLng,
+        'corrected_lat':         _pin.latitude,
+        'corrected_lng':         _pin.longitude,
+        'corrected_area':        _area,
+        'corrected_city':        _city,
+        'corrected_pincode':     _pincode,
+        'corrected_full_address': _fullAddress,
+      });
+      debugPrint('[CORRECTION] submitted for place_id=${widget.placeId}, '
+          'moved ${movedMeters.toStringAsFixed(0)}m');
+    } catch (e) {
+      debugPrint('[CORRECTION] submit failed (non-fatal): $e');
+    }
+  }
+
   void _onConfirm() {
     HapticFeedback.mediumImpact();
+    _maybeSubmitCorrection(); // fire-and-forget, don't await
     context.push('/address-confirm', extra: {
       'lat':          _pin.latitude,
       'lng':          _pin.longitude,
@@ -258,6 +383,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
               target: _pin, zoom: 15),
           onMapCreated: (ctrl) {
             _mapController = ctrl;
+            _suppressNextCameraIdle = true;
             ctrl.animateCamera(
                 CameraUpdate.newLatLngZoom(_pin, 16));
           },
@@ -265,41 +391,81 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
             _pin       = pos.target;
             _pinMoving = true;
           }),
-          onCameraIdle: () => _reverseGeocode(_pin),
+          onCameraIdle: () {
+            if (_suppressNextCameraIdle) {
+              debugPrint('[LOCPICKER] onCameraIdle suppressed (programmatic move)');
+              _suppressNextCameraIdle = false;
+              return;
+            }
+            _reverseGeocode(_pin);
+          },
           myLocationEnabled: true,
           myLocationButtonEnabled: false,
           zoomControlsEnabled: false,
           mapToolbarEnabled: false,
           mapType: MapType.normal,
-          padding: const EdgeInsets.only(bottom: 240),
+          padding: const EdgeInsets.only(bottom: _mapBottomPadding),
         ),
 
         // ── Centre pin ────────────────────────────────────────
-        Center(
-          child: AnimatedBuilder(
-            animation: _bounceAnim,
-            builder: (_, child) => Transform.translate(
-                offset: Offset(0, _bounceAnim.value),
-                child: child),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              // Shadow
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 150),
-                width:  _pinMoving ? 14 : 22,
-                height: _pinMoving ? 5  : 7,
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.14),
-                  borderRadius: BorderRadius.circular(10))),
-              // Pin
-              Icon(Icons.location_pin,
-                  color: _isServiceable ? _cyan : _red,
-                  size: _pinMoving ? 42 : 52,
-                  shadows: [Shadow(
-                      color: Colors.black.withValues(alpha: 0.18),
-                      blurRadius: 8,
-                      offset: const Offset(0, 4))]),
-              const SizedBox(height: 52),
-            ]),
+        // The pin icon's pointy TIP (not its visual center) marks the
+        // actual coordinate — for a standard teardrop marker icon, that
+        // tip sits at the very bottom of the icon's bounding box. So the
+        // icon needs to be shifted straight up by exactly half its own
+        // size to align the tip with the true screen center (where the
+        // map camera's target actually is). The previous approach used
+        // an empty SizedBox below the icon to try to achieve this
+        // indirectly, but the box height didn't precisely match — small
+        // pixel misalignment here translates directly into a
+        // real-world "few meters off" offset once decoded from the map.
+        //
+        // CRITICAL: this Center() must ALSO be wrapped in the same
+        // bottom Padding as the GoogleMap's own `padding` property above.
+        // GoogleMap's `padding` shifts the SDK's internal notion of the
+        // map's visual center upward by half of `_mapBottomPadding` (to
+        // account for the bottom sheet covering part of the screen) —
+        // but a bare `Center()` on this overlay has no idea that
+        // happened, and keeps centering on the full, unpadded screen.
+        // That mismatch (half of 240px ≈ 120px on screen) is what was
+        // silently offsetting the fixed pin icon from where the map's
+        // camera target (i.e. the coordinate actually being used) was
+        // rendered — independent of any bug in the lat/lng data itself.
+        // Wrapping in the identical padding here makes both agree on
+        // where "center" is.
+        Padding(
+          padding: const EdgeInsets.only(bottom: _mapBottomPadding),
+          child: Center(
+            child: Builder(builder: (_) {
+              final pinSize = _pinMoving ? 42.0 : 52.0;
+              return Transform.translate(
+                offset: Offset(0, -pinSize / 2),
+                child: AnimatedBuilder(
+                  animation: _bounceAnim,
+                  builder: (_, child) => Transform.translate(
+                      offset: Offset(0, _bounceAnim.value),
+                      child: child),
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.location_pin,
+                        color: _isServiceable ? _cyan : _red,
+                        size: pinSize,
+                        shadows: [Shadow(
+                            color: Colors.black.withValues(alpha: 0.18),
+                            blurRadius: 8,
+                            offset: const Offset(0, 4))]),
+                    // Ground shadow — sits right at the tip's contact
+                    // point, not floating above the pin.
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 150),
+                      width:  _pinMoving ? 14 : 22,
+                      height: _pinMoving ? 5  : 7,
+                      margin: const EdgeInsets.only(top: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(10))),
+                  ]),
+                ),
+              );
+            }),
           ),
         ),
 
