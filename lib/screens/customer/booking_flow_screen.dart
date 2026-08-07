@@ -84,6 +84,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   int  _step    = 1;
   bool _loading = false;
   bool _checkingInstant = false;
+  // Gates the whole screen behind a plain loading state until the
+  // default address's serviceability has been checked. If it's blocked
+  // (excluded zone or unlisted pincode), this stays true forever and the
+  // screen is popped instead — the customer never sees the date/address
+  // steps flash on screen even briefly.
+  bool _initializing = true;
 
   // ── Razorpay ──────────────────────────────────────────────────
   late Razorpay _razorpay;
@@ -335,9 +341,39 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       }
     });
 
+    // Check the default address's serviceability RIGHT NOW, before this
+    // screen's actual content (date/address/notes steps) is ever
+    // revealed — not just at the final confirm step. _initializing stays
+    // true the entire time this check is running, so build() keeps
+    // showing a plain loading spinner instead of the real UI.
+    //
+    // If blocked: show the dialog, then POP THE WHOLE SCREEN when it's
+    // dismissed — the customer never sees the schedule/instant flow at
+    // all, not even briefly. We deliberately don't bother loading promos,
+    // slot availability, or app settings in this case, since none of
+    // that will ever be shown.
+    //
+    // If they'd picked a different address that turns out serviceable,
+    // they can still get there by going back and re-entering — this
+    // early gate only ever looks at the DEFAULT address, since that's
+    // the only one known before the screen would otherwise open. The
+    // real, authoritative check still runs again at confirm time via
+    // _askConfirm() regardless of what happens here.
+    if (_addresses.isNotEmpty && !await _isSelectedAddressServiceable()) {
+      if (!mounted) return;
+      _showAreaNotServiceableDialog(onDismiss: () {
+        if (mounted && Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
+      });
+      return; // never set _initializing = false — screen stays gated/blank
+    }
+
     if (!widget.isFirstBooking) _loadPromos();
     if (_isSchedule) _loadSlotAvailability(_selectedDate);
     _loadAppSettings();
+
+    if (mounted) setState(() => _initializing = false);
   }
 
   // ── App settings (platform fee + search fee) ─────────────────
@@ -363,50 +399,42 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   // ═══════════════════════════════════════════════════════════════
-  // ZONE-BASED WORKER RESTRICTION
+  // PINCODE-BASED WORKER RESTRICTION
   // ═══════════════════════════════════════════════════════════════
   //
   // Mirrors the SAME restriction try_claim_slot enforces server-side
-  // (address's coordinate -> zone via find_zone_for_point -> zone_workers
-  // assignments), so the slot picker never shows a slot as "available"
-  // that would then be rejected at confirm time. This is purely a
-  // client-side PREVIEW for UX accuracy — try_claim_slot remains the real,
-  // authoritative, atomic gate; this just keeps the two in sync so the
-  // customer isn't surprised.
+  // (address's pincode -> worker_pincodes assignments), so the slot
+  // picker never shows a slot as "available" that would then be
+  // rejected at confirm time. This is purely a client-side PREVIEW for
+  // UX accuracy — try_claim_slot remains the real, authoritative,
+  // atomic gate; this just keeps the two in sync so the customer isn't
+  // surprised.
   //
   // Returns null if there's no restriction for the currently selected
-  // address (no coordinates on file, address doesn't fall inside any
-  // active zone, or that zone has zero worker assignments) — meaning
-  // every available worker remains eligible, exactly as before this
-  // feature existed. Fails open (returns null) on any error, so a
-  // network hiccup here never blocks a booking that would otherwise be
-  // allowed.
+  // address (no pincode on file, or that pincode has zero worker
+  // assignments) — meaning every available worker remains eligible,
+  // exactly as before this feature existed. Fails open (returns null)
+  // on any error, so a network hiccup here never blocks a booking that
+  // would otherwise be allowed.
   Future<Set<String>?> _resolveZoneRestrictedWorkerIds() async {
     try {
       final addr = _addresses.firstWhere(
           (a) => a['id'] == _selectedAddressId, orElse: () => {});
-      final lat = (addr['latitude'] as num?)?.toDouble();
-      final lng = (addr['longitude'] as num?)?.toDouble();
-      if (lat == null || lng == null) return null;
-
-      final zoneId = await _supabase.rpc('find_zone_for_point', params: {
-        'p_lat': lat,
-        'p_lng': lng,
-      });
-      if (zoneId == null) return null;
+      final pincode = (addr['pincode'] as String?)?.trim();
+      if (pincode == null || pincode.isEmpty) return null;
 
       final assignments = await _supabase
-          .from('zone_workers')
+          .from('worker_pincodes')
           .select('worker_id')
-          .eq('zone_id', zoneId);
+          .eq('pincode', pincode);
       final ids = (assignments as List)
           .map((r) => r['worker_id'] as String)
           .toSet();
-      // Empty assignment list = zone has no restriction configured yet —
-      // same "fail open" behaviour as try_claim_slot.
+      // Empty assignment list = pincode has no restriction configured
+      // yet — same "fail open" behaviour as try_claim_slot.
       return ids.isEmpty ? null : ids;
     } catch (e) {
-      debugPrint('Zone eligibility check failed (failing open): $e');
+      debugPrint('Pincode eligibility check failed (failing open): $e');
       return null;
     }
   }
@@ -1057,7 +1085,44 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // entry. Matching is now an exact pincode match (previously loose
   // area/city text matching) — pincodes are unambiguous, unlike area
   // names which vary in spelling and can overlap between neighbourhoods.
+  // ── Exclusion zone check ──────────────────────────────────────────
+  // Checked FIRST, before the service_areas allowlist. Mirrors the SAME
+  // check try_claim_slot runs server-side (via find_zone_for_point +
+  // service_zones.is_exclusion). This is purely a client-side PREVIEW so
+  // the customer sees "not serviceable" immediately, before ever reaching
+  // payment — try_claim_slot remains the real, authoritative, atomic
+  // gate; this just avoids a pay-then-refund round trip for an address
+  // that was always going to be rejected.
+  Future<bool> _isInExcludedZone() async {
+    final addr = _addresses.firstWhere(
+        (a) => a['id'] == _selectedAddressId, orElse: () => {});
+    final lat = (addr['latitude'] as num?)?.toDouble();
+    final lng = (addr['longitude'] as num?)?.toDouble();
+    if (lat == null || lng == null) return false;
+
+    try {
+      final zoneId = await _supabase.rpc('find_zone_for_point', params: {
+        'p_lat': lat,
+        'p_lng': lng,
+      });
+      if (zoneId == null) return false;
+
+      final row = await _supabase
+          .from('service_zones')
+          .select('is_exclusion')
+          .eq('id', zoneId)
+          .eq('is_active', true)
+          .maybeSingle();
+      return row != null && row['is_exclusion'] == true;
+    } catch (e) {
+      debugPrint('Exclusion zone check error: $e');
+      return false; // fail open — don't block a booking over a network hiccup
+    }
+  }
+
   Future<bool> _isSelectedAddressServiceable() async {
+    if (await _isInExcludedZone()) return false;
+
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
     final pincode = (addr['pincode'] as String?)?.trim() ?? '';
@@ -1076,7 +1141,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  void _showAreaNotServiceableDialog() {
+  void _showAreaNotServiceableDialog({VoidCallback? onDismiss}) {
     HapticFeedback.heavyImpact();
     showDialog(
       context: context,
@@ -1087,47 +1152,71 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         insetPadding: const EdgeInsets.symmetric(horizontal: 32),
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(24)),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Container(
-              width: 72, height: 72,
-              decoration: const BoxDecoration(
-                  color: Color(0xFFFEF2F2), shape: BoxShape.circle),
-              child: const Center(
-                  child: Text('😔', style: TextStyle(fontSize: 36))),
-            ),
-            const SizedBox(height: 20),
-            const Text('Not Available in This Area Yet',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900,
-                    color: _ink)),
-            const SizedBox(height: 10),
-            const Text(
-              'We don\'t serve this address yet. You can still browse '
-              'services, but booking isn\'t available for this location. '
-              'We\'re expanding soon!',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: _muted, fontSize: 13, height: 1.5),
-            ),
-            const SizedBox(height: 20),
-            GestureDetector(
-              onTap: () => Navigator.pop(ctx),
-              child: Container(
-                width: double.infinity, height: 48,
-                decoration: BoxDecoration(
-                    color: _bg, borderRadius: BorderRadius.circular(14)),
+        child: Stack(children: [
+          Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Container(
+                width: 72, height: 72,
+                decoration: const BoxDecoration(
+                    color: Color(0xFFFEF2F2), shape: BoxShape.circle),
                 child: const Center(
-                  child: Text('Got it',
-                      style: TextStyle(fontWeight: FontWeight.w800,
-                          color: _muted, fontSize: 14)),
+                    child: Text('😔', style: TextStyle(fontSize: 36))),
+              ),
+              const SizedBox(height: 20),
+              const Text('Not Available in This Area Yet',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900,
+                      color: _ink)),
+              const SizedBox(height: 10),
+              const Text(
+                'We don\'t serve this address yet. You can still browse '
+                'services, but booking isn\'t available for this location. '
+                'We\'re expanding soon!',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _muted, fontSize: 13, height: 1.5),
+              ),
+              const SizedBox(height: 20),
+              GestureDetector(
+                onTap: () => Navigator.pop(ctx),
+                child: Container(
+                  width: double.infinity, height: 48,
+                  decoration: BoxDecoration(
+                      color: _bg, borderRadius: BorderRadius.circular(14)),
+                  child: const Center(
+                    child: Text('Got it',
+                        style: TextStyle(fontWeight: FontWeight.w800,
+                            color: _muted, fontSize: 14)),
+                  ),
                 ),
               ),
+            ]),
+          ),
+          // Close (✕) — sits on the dialog card itself, top-right corner,
+          // not floating on the underlying page. Same effect as "Got it"
+          // (both just pop this dialog off the Navigator stack), just a
+          // more conventional place to look for a way to dismiss.
+          Positioned(
+            top: 12, right: 12,
+            child: GestureDetector(
+              onTap: () => Navigator.pop(ctx),
+              child: Container(
+                width: 32, height: 32,
+                decoration: BoxDecoration(
+                    color: _bg, shape: BoxShape.circle),
+                child: const Icon(Icons.close_rounded,
+                    color: _muted, size: 18),
+              ),
             ),
-          ]),
-        ),
+          ),
+        ]),
       ),
-    );
+    // Fires when the dialog closes, however it closes — "Got it" tap,
+    // the new ✕ tap, OR tapping the barrier outside it. Used by the
+    // initial-load gate to pop this whole screen once the customer
+    // acknowledges the message, instead of leaving them stuck on a
+    // permanently blank loading state.
+    ).then((_) => onDismiss?.call());
   }
 
   // ── Confirmation dialog ───────────────────────────────────────
@@ -1905,6 +1994,25 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // ── BUILD ────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
+    // While the initial address-serviceability check is running (or if
+    // it failed and this screen is about to be popped), show nothing but
+    // a plain loading spinner with a back button — never the actual
+    // date/address/notes content, even for a single frame. See
+    // _loadData(). No PopScope override here — the default Flutter
+    // routing behaviour is exactly what's wanted: if the "not
+    // serviceable" dialog is showing, the hardware/gesture back button
+    // closes IT first (dialogs are pushed as their own route via
+    // showDialog), and only a second back press (or the visible arrow
+    // below) would then leave this screen entirely.
+    if (_initializing) {
+      return const Scaffold(
+        backgroundColor: _bg,
+        body: Center(
+          child: CircularProgressIndicator(color: _cyan, strokeWidth: 2.5),
+        ),
+      );
+    }
+
     return PopScope(
       // Only let the system pop the whole route when we're on step 1 —
       // otherwise the hardware/gesture back button now does exactly what

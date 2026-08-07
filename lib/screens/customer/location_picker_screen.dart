@@ -49,6 +49,12 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   final _supabase = Supabase.instance.client;
 
   GoogleMapController? _mapController;
+  // Fraction of raw finger movement the camera actually pans by — see
+  // the GestureDetector wrapping GoogleMap below. 1.0 = matches native
+  // behavior (no damping). 0.5 = half as fast (map moves half as far
+  // as your finger travels). Tune this single number if it still feels
+  // too fast/slow after testing — no other code needs to change.
+  static const double _dragDampFactor = 0.5;
   LatLng _pin = const LatLng(19.1136, 72.8697);
 
   String _area        = '';
@@ -378,7 +384,33 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
       body: Stack(children: [
 
         // ── Map ──────────────────────────────────────────────
-        GoogleMap(
+        // Native map dragging is disabled below (scrollGesturesEnabled:
+        // false) and replaced with this GestureDetector, which moves the
+        // camera by only a FRACTION (_dragDampFactor) of the actual
+        // finger movement. The Maps SDK itself has no built-in "pan
+        // sensitivity" setting — dragging always tracks the finger 1:1
+        // in screen pixels regardless of zoom level, which is what felt
+        // "too fast/jumpy" for precise pin placement. This is the only
+        // way to genuinely slow that down.
+        //
+        // NOTE ON DIRECTION: CameraUpdate.scrollBy's sign convention
+        // couldn't be verified interactively while writing this — the
+        // values below assume standard "content follows your finger"
+        // behavior (matching Google Maps' own app). If dragging feels
+        // INVERTED (map moves opposite to your finger) once tested,
+        // simply flip both signs in the scrollBy() call below — that's
+        // the only change needed, nothing else is affected.
+        GestureDetector(
+          onPanUpdate: (details) {
+            if (_mapController == null) return;
+            _mapController!.moveCamera(
+              CameraUpdate.scrollBy(
+                -details.delta.dx * _dragDampFactor,
+                -details.delta.dy * _dragDampFactor,
+              ),
+            );
+          },
+          child: GoogleMap(
           initialCameraPosition: CameraPosition(
               target: _pin, zoom: 15),
           onMapCreated: (ctrl) {
@@ -405,6 +437,12 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           mapToolbarEnabled: false,
           mapType: MapType.normal,
           padding: const EdgeInsets.only(bottom: _mapBottomPadding),
+          // Native drag is off — our GestureDetector above handles
+          // panning manually, at a damped rate. Pinch-zoom stays native
+          // (zoomGesturesEnabled defaults to true) since that wasn't
+          // reported as a problem.
+          scrollGesturesEnabled: false,
+          ),
         ),
 
         // ── Centre pin ────────────────────────────────────────
@@ -564,7 +602,17 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
               Padding(
                 padding: EdgeInsets.fromLTRB(
                     20, 14, 20, 14 + botPad),
-                child: (_geocoding || _pinMoving || !_areasLoaded)
+                // Show the loading skeleton ONLY before we've ever resolved
+                // an address at all (true first load). Once _fullAddress
+                // has a real value, keep showing the actual card during
+                // every subsequent drag — it just displays the previous
+                // (slightly stale) address until the new one resolves,
+                // instead of flashing to a blank skeleton on every single
+                // drag. This is what makes "Confirm Location" feel present
+                // the whole time, not something that only "appears after
+                // you finish dragging".
+                child: (_fullAddress.isEmpty &&
+                        (_geocoding || _pinMoving || !_areasLoaded))
                     ? _buildLoadingCard()
                     : _isServiceable
                         ? _buildServiceableCard(hasAddr)

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/supabase_service.dart';
+import '../services/app_update_service.dart';
 import '../utils/theme.dart';
 
 class SplashScreen extends StatefulWidget {
@@ -15,6 +16,10 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with SingleTickerProviderStateMixin {
+  // Guards against build() touching the late _ctrl field before
+  // _startSplash() has actually run — since the update check now sits
+  // behind an await before that happens.
+  bool _splashStarted = false;
   late AnimationController _ctrl;
   late Animation<double> _scale;
   late Animation<double> _wordOpacity;
@@ -27,6 +32,28 @@ class _SplashScreenState extends State<SplashScreen>
   @override
   void initState() {
     super.initState();
+    debugPrint('🔵 SPLASH INIT — update check starting now');
+
+    // Check for a mandatory Play Store update FIRST — before the splash
+    // animation even starts, so a customer on an outdated build never
+    // gets to see the app's normal UI at all. If Play grants an
+    // Immediate update, this call blocks (Play's own full-screen prompt
+    // takes over) until the update completes or is cancelled by the OS;
+    // it never returns to let the rest of this screen proceed in that
+    // case. If no update is needed/available, it resolves quickly and
+    // the splash animation continues completely normally.
+    _checkForUpdateThenStart();
+  }
+
+  Future<void> _checkForUpdateThenStart() async {
+    debugPrint('🔵 Calling AppUpdateService.checkAndForceImmediateUpdate()');
+    final triggered = await AppUpdateService.checkAndForceImmediateUpdate();
+    debugPrint('🔵 Update check finished — immediate update triggered: $triggered');
+    if (!mounted) return;
+    _startSplash();
+  }
+
+  void _startSplash() {
     _ctrl = AnimationController(vsync: this, duration: _totalDuration);
 
     // Fades the wordmark in right at the start (pop-in).
@@ -73,6 +100,8 @@ class _SplashScreenState extends State<SplashScreen>
         weight: 45,
       ),
     ]).animate(_ctrl);
+
+    setState(() => _splashStarted = true);
 
     _ctrl.forward();
     _ctrl.addStatusListener((status) {
@@ -133,12 +162,21 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   void dispose() {
-    _ctrl.dispose();
+    if (_splashStarted) _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    // Plain background only, while the update check is still running —
+    // _ctrl doesn't exist yet at this point, so nothing here may
+    // reference it. This also means: if Play Store's Immediate update
+    // prompt takes over, all the customer ever sees behind/before it is
+    // this blank cyan background, never a half-initialized animation.
+    if (!_splashStarted) {
+      return const Scaffold(backgroundColor: AppColors.cyan);
+    }
+
     return Scaffold(
       backgroundColor: AppColors.cyan,
       body: Center(
