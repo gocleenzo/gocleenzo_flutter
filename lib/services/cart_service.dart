@@ -1,10 +1,16 @@
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // ── Tier definition ───────────────────────────────────────────────
 class ServiceTier {
   final int mins;
   final int price;
   const ServiceTier(this.mins, this.price);
+
+  Map<String, dynamic> toJson() => {'mins': mins, 'price': price};
+  factory ServiceTier.fromJson(Map<String, dynamic> j) =>
+      ServiceTier(j['mins'] as int, j['price'] as int);
 }
 
 // ── Cart item types ───────────────────────────────────────────────
@@ -74,12 +80,53 @@ class CartItem {
     'quantity':         quantity,
     'duration_minutes': totalDuration,
   };
+
+  // ── Persistence (save/restore across app close) ──────────────
+  // Full serialization of everything needed to reconstruct this exact
+  // item — NOT the same as toBookingItem() above, which only includes
+  // what a booking record needs. This needs tiers/pricePerUnit/etc. too,
+  // since re-hydrating a CartItem after app restart requires every
+  // field the constructor takes.
+  Map<String, dynamic> toJson() => {
+    'serviceId':       serviceId,
+    'serviceName':      serviceName,
+    'emoji':            emoji,
+    'type':             type.name,
+    'tiers':            tiers.map((t) => t.toJson()).toList(),
+    'pricePerUnit':     pricePerUnit,
+    'durationPerUnit':  durationPerUnit,
+    'maxQty':           maxQty,
+    'quantity':         quantity,
+  };
+
+  factory CartItem.fromJson(Map<String, dynamic> j) => CartItem(
+    serviceId:       j['serviceId'] as String,
+    serviceName:     j['serviceName'] as String,
+    emoji:           j['emoji'] as String?,
+    type:            CartItemType.values.byName(j['type'] as String),
+    tiers:           (j['tiers'] as List)
+        .map((t) => ServiceTier.fromJson(t as Map<String, dynamic>))
+        .toList(),
+    pricePerUnit:    j['pricePerUnit'] as int,
+    durationPerUnit: j['durationPerUnit'] as int,
+    maxQty:          j['maxQty'] as int,
+    quantity:        j['quantity'] as int,
+  );
 }
 
 /// Global singleton cart — all prices read from database, nothing hardcoded.
 class CartService extends ChangeNotifier {
-  CartService._();
+  CartService._() {
+    // Fires once, the first time CartService.instance is ever accessed
+    // (e.g. from services_screen's State field). Loads whatever was
+    // saved from a previous session, so a customer who adds items,
+    // fully closes the app, and reopens it later finds their cart
+    // exactly as they left it.
+    _loadPersisted();
+  }
   static final CartService instance = CartService._();
+
+  static const _prefsKey = 'cleenzo_cart_v1';
 
   // ── Service type config (only behavior, no prices) ────────────
   static const _tieredServices = {
@@ -194,6 +241,39 @@ class CartService extends ChangeNotifier {
   final Map<String, CartItem> _items = {};
   bool _isFirstBooking = false;
 
+  // ── Persistence ────────────────────────────────────────────────
+  Future<void> _loadPersisted() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefsKey);
+      if (raw == null || raw.isEmpty) return;
+      final List<dynamic> list = jsonDecode(raw);
+      for (final entry in list) {
+        final item = CartItem.fromJson(entry as Map<String, dynamic>);
+        _items[item.serviceId] = item;
+      }
+      if (_items.isNotEmpty) notifyListeners();
+    } catch (e) {
+      debugPrint('CartService: failed to load persisted cart (non-fatal): $e');
+    }
+  }
+
+  /// Fire-and-forget — UI state already updates via notifyListeners() in
+  /// each mutation below; this just writes the same state to disk right
+  /// after, so a subsequent app close/reopen restores it. An empty cart
+  /// persists as an empty list, which is exactly what makes clear()
+  /// (called after a successful booking, or by the customer directly)
+  /// correctly wipe the saved cart too — nothing lingers after checkout.
+  Future<void> _persist() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = jsonEncode(_items.values.map((i) => i.toJson()).toList());
+      await prefs.setString(_prefsKey, raw);
+    } catch (e) {
+      debugPrint('CartService: failed to persist cart (non-fatal): $e');
+    }
+  }
+
   void setFirstBooking(bool v) {
     _isFirstBooking = v;
     notifyListeners();
@@ -274,6 +354,7 @@ class CartService extends ChangeNotifier {
       );
     }
     notifyListeners();
+    _persist();
     return null;
   }
 
@@ -286,16 +367,19 @@ class CartService extends ChangeNotifier {
       _items.remove(serviceId);
     }
     notifyListeners();
+    _persist();
   }
 
   void remove(String serviceId) {
     _items.remove(serviceId);
     notifyListeners();
+    _persist();
   }
 
   void clear() {
     _items.clear();
     notifyListeners();
+    _persist();
   }
 
   List<Map<String, dynamic>> toCartItems() =>

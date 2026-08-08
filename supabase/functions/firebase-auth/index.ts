@@ -94,9 +94,15 @@ Deno.serve(async (req: Request) => {
     // users_phone_role_unique constraint at the DB level, so this can
     // never accidentally return (or create) more than one row per
     // (phone, role) pair.
+    //
+    // is_deleted is included here deliberately: a soft-deleted
+    // account's phone is NEVER cleared (see account_screen.dart's
+    // delete flow), so this lookup will still find that row if the
+    // same phone signs in again. That's intentional — see the
+    // reactivation branch below.
     const { data: existingUser } = await supabaseAdmin
       .from('users')
-      .select('id, full_name, role')
+      .select('id, full_name, role, is_deleted')
       .eq('phone', phone)
       .eq('role', role)
       .maybeSingle()
@@ -108,6 +114,29 @@ Deno.serve(async (req: Request) => {
       console.log(`New ${role} user:`, phone)
       return new Response(
         JSON.stringify({ is_new_user: true }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      )
+    }
+
+    if (existingUser.is_deleted) {
+      // REACTIVATION — this phone+role previously deleted their
+      // account, but their row (and its id) was deliberately kept.
+      // Un-delete it now and treat this exactly like a first-time
+      // signup on the CLIENT side (ask for name again — shown blank,
+      // even though we still have the old data in the DB) — but
+      // critically, this is the SAME id as before, so their old
+      // booking history (and therefore _isFirstBooking's calculation)
+      // is preserved. This is what stops someone from deleting +
+      // re-registering repeatedly to keep re-claiming the
+      // first-booking ₹25 offer.
+      console.log(`Reactivating deleted ${role} user:`, existingUser.id)
+      await supabaseAdmin
+        .from('users')
+        .update({ is_deleted: false, is_active: true, deleted_at: null })
+        .eq('id', existingUser.id)
+
+      return new Response(
+        JSON.stringify({ is_new_user: true, reactivated_user_id: existingUser.id }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
     }

@@ -58,6 +58,16 @@ class _LoginScreenState extends State<LoginScreen> {
   String  _error          = '';
   String? _verificationId;
   String? _userId;
+  // Set only when the edge function tells us this "new user" signup is
+  // actually a REACTIVATION of a previously soft-deleted account (same
+  // phone, same role) — see firebase-auth's is_deleted branch. When
+  // set, _saveProfile() must UPDATE this existing row instead of
+  // INSERT-ing a new one, since a row (with this exact id) already
+  // exists and would violate the users_phone_role_unique constraint on
+  // insert. Keeping the same id is deliberate — it's what preserves
+  // this customer's real booking history (and therefore
+  // _isFirstBooking) across a delete-then-resignup cycle.
+  String? _reactivatedUserId;
   // Guards against a race between Firebase's automatic SMS auto-retrieval
   // (verificationCompleted) and Android's own Autofill Framework filling
   // the on-screen OTP boxes from the same incoming SMS — both can fire
@@ -271,6 +281,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
     if (data['is_new_user'] == true) {
       debugPrint('New user — going to profile step');
+      _reactivatedUserId = data['reactivated_user_id'] as String?;
+      if (_reactivatedUserId != null) {
+        debugPrint('This is a REACTIVATION of id: $_reactivatedUserId');
+      }
       _signingIn = false;
       setState(() { _step = 'profile'; _loading = false; });
       return;
@@ -337,12 +351,24 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() { _loading = true; _error = ''; });
     try {
       final phone = '+91${_phoneCtrl.text}';
-      final data  = await _supabase.from('users').insert({
-        'full_name': _nameCtrl.text.trim(),
-        'phone':     phone,
-        'role':      'customer',
-        'gender':    _gender.isEmpty ? null : _gender,
-      }).select().single();
+
+      final Map<String, dynamic> data;
+      if (_reactivatedUserId != null) {
+        // Reactivation — UPDATE the existing (soft-deleted, now
+        // un-deleted) row instead of inserting a new one. Same id,
+        // same booking history, just fresh name/gender.
+        data = await _supabase.from('users').update({
+          'full_name': _nameCtrl.text.trim(),
+          'gender':    _gender.isEmpty ? null : _gender,
+        }).eq('id', _reactivatedUserId!).select().single();
+      } else {
+        data = await _supabase.from('users').insert({
+          'full_name': _nameCtrl.text.trim(),
+          'phone':     phone,
+          'role':      'customer',
+          'gender':    _gender.isEmpty ? null : _gender,
+        }).select().single();
+      }
 
       _userId = data['id'] as String;
 

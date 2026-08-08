@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
 
 class AccountScreen extends StatefulWidget {
@@ -10,10 +13,13 @@ class AccountScreen extends StatefulWidget {
 }
 
 class _AccountScreenState extends State<AccountScreen> {
+  final _supabase = Supabase.instance.client;
+
   Map<String, dynamic>? _profile;
   int  _addressCount = 0;
   int  _bookingCount = 0;
   bool _loading = true;
+  bool _deleting = false;
 
   @override
   void initState() {
@@ -86,6 +92,201 @@ class _AccountScreenState extends State<AccountScreen> {
       debugPrint('Sign out error: $e');
     }
     if (mounted) context.go('/login');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  // DELETE ACCOUNT
+  // ═══════════════════════════════════════════════════════════════
+  //
+  // This is a SOFT delete — the users row and its id are kept (so
+  // bookings/reviews/promo_usage referencing this customer stay
+  // intact for records), but personally identifying fields are
+  // scrubbed. Phone number is deliberately NOT cleared: if this
+  // customer ever signs up again with the same number, the
+  // firebase-auth edge function reactivates this exact same row
+  // (same id) instead of creating a new one — which is what stops
+  // someone from deleting + re-registering to farm the ₹25
+  // first-booking offer repeatedly, since _isFirstBooking is
+  // computed from this id's own booking history.
+
+  Future<bool> _hasActiveBooking(String userId) async {
+    final rows = await _supabase
+        .from('bookings')
+        .select('id')
+        .eq('customer_id', userId)
+        .inFilter('status', ['pending', 'accepted', 'otp_verified', 'in_progress'])
+        .limit(1);
+    return (rows as List).isNotEmpty;
+  }
+
+  Future<void> _deleteAccount() async {
+    final userId = await SupabaseService.loadCachedUserId() ??
+        SupabaseService.currentUserId;
+    if (userId == null) return;
+
+    setState(() => _deleting = true);
+
+    try {
+      final hasActive = await _hasActiveBooking(userId);
+      if (!mounted) return;
+      setState(() => _deleting = false);
+
+      if (hasActive) {
+        _showBlockedDialog();
+        return;
+      }
+
+      final confirmed = await _showDeleteConfirmDialog();
+      if (confirmed != true) return;
+
+      setState(() => _deleting = true);
+
+      // Nothing about their profile is touched or erased — name, email,
+      // photo, gender, city all stay exactly as they were. Deletion is
+      // purely a flag: is_deleted/is_active mark the account as hidden
+      // and inactive, but every field remains intact in the database.
+      // On a later re-login with the same number, the app finds this
+      // same row and shows their real original profile again, exactly
+      // as it was — nothing needs to be re-entered.
+      await _supabase.from('users').update({
+        'is_active': false,
+        'is_deleted': true,
+        'deleted_at': DateTime.now().toUtc().toIso8601String(),
+      }).eq('id', userId);
+
+      // Addresses have no reason to survive a deletion — hard delete these.
+      try {
+        await _supabase.from('addresses').delete().eq('user_id', userId);
+      } catch (e) {
+        debugPrint('Delete addresses error (non-fatal): $e');
+      }
+
+      // Sign out of both Firebase and Supabase, clear cached id, so
+      // nothing about this session lingers on the device.
+      try {
+        await fb.FirebaseAuth.instance.signOut();
+      } catch (e) {
+        debugPrint('Firebase sign out error (non-fatal): $e');
+      }
+      try {
+        await SupabaseService.signOut();
+      } catch (e) {
+        debugPrint('Supabase sign out error (non-fatal): $e');
+      }
+
+      if (!mounted) return;
+      setState(() => _deleting = false);
+      context.go('/login');
+    } catch (e) {
+      debugPrint('Delete account error: $e');
+      if (mounted) {
+        setState(() => _deleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: const Text(
+              'Could not delete your account. Please try again.'),
+          backgroundColor: const Color(0xFFEF4444),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
+        ));
+      }
+    }
+  }
+
+  void _showBlockedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18)),
+        title: const Text('Finish your booking first',
+            style: TextStyle(fontWeight: FontWeight.w800)),
+        content: const Text(
+            'You have an active or upcoming booking. Please wait for '
+            'it to complete, or cancel it, before deleting your account.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Got it',
+                style: TextStyle(color: Color(0xFF00B1FC),
+                    fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Requires the customer to type DELETE exactly (case-sensitive) before
+  /// the destructive action button becomes enabled — deliberately more
+  /// friction than the Sign Out confirmation, since this is irreversible.
+  Future<bool?> _showDeleteConfirmDialog() {
+    final controller = TextEditingController();
+    return showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final canConfirm = controller.text.trim() == 'DELETE';
+          return AlertDialog(
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18)),
+            title: const Text('Delete your account?',
+                style: TextStyle(fontWeight: FontWeight.w800)),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Your account will be deactivated and you\'ll be '
+                  'signed out. Your saved addresses will be permanently '
+                  'removed. Your profile and booking history are kept '
+                  'safely, so everything is restored if you sign in '
+                  'again with the same number.',
+                  style: TextStyle(color: Color(0xFF64748B), height: 1.4),
+                ),
+                const SizedBox(height: 16),
+                const Text('Type DELETE to confirm',
+                    style: TextStyle(fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF64748B))),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  textCapitalization: TextCapitalization.characters,
+                  onChanged: (_) => setDialogState(() {}),
+                  decoration: InputDecoration(
+                    hintText: 'DELETE',
+                    isDense: true,
+                    contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel',
+                    style: TextStyle(color: Color(0xFF64748B))),
+              ),
+              TextButton(
+                onPressed: canConfirm
+                    ? () => Navigator.pop(ctx, true)
+                    : null,
+                child: Text('Delete Account',
+                    style: TextStyle(
+                        color: canConfirm
+                            ? const Color(0xFFEF4444)
+                            : const Color(0xFFFCA5A5),
+                        fontWeight: FontWeight.w700)),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   /// Back-press on Account always returns to the Services (home) tab —
@@ -295,6 +496,46 @@ class _AccountScreenState extends State<AccountScreen> {
                     ]),
                   ),
                 ),
+
+                const SizedBox(height: 12),
+
+                // Delete account — deliberately plainer/less prominent
+                // than Sign Out (a text-only tap target, no filled
+                // background) since this is a rarer, more destructive
+                // action that shouldn't visually compete with everyday
+                // actions, while still being clearly present and
+                // reachable (not buried in a submenu) per Apple/Google
+                // account-deletion requirements.
+                GestureDetector(
+                  onTap: _deleting ? null : _deleteAccount,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (_deleting)
+                          const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Color(0xFF94A3B8)),
+                          )
+                        else
+                          const Icon(Icons.delete_outline_rounded,
+                              color: Color(0xFF94A3B8), size: 16),
+                        const SizedBox(width: 6),
+                        Text(
+                          _deleting ? 'Deleting…' : 'Delete Account',
+                          style: const TextStyle(
+                              color: Color(0xFF94A3B8),
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
                 const SizedBox(height: 16),
                 const Text('Cleenzo v1.0 · Made in Mumbai',
                     style: TextStyle(

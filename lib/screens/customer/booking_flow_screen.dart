@@ -1680,6 +1680,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (!mounted) return;
       setState(() => _loading = false);
+      // Clear the cart now that the booking is genuinely confirmed —
+      // previously this never happened at all, so cart items sat
+      // there indefinitely even after a successful order.
+      CartService.instance.clear();
       Navigator.pushReplacement(context, MaterialPageRoute(
         builder: (_) => BookingDetailScreen(bookingId: bookingId, isNew: true),
       ));
@@ -1871,6 +1875,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (mounted) {
         setState(() => _loading = false);
+        // Same cart-clearing fix as the online-payment path above.
+        CartService.instance.clear();
         Navigator.pushReplacement(context, MaterialPageRoute(
           builder: (_) => BookingDetailScreen(
               bookingId: bookingId, isNew: true),
