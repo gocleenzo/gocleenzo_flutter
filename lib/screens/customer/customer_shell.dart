@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import '../../services/notification_service.dart';
+import '../../widgets/active_booking_tracker.dart';
 
 class CustomerShell extends StatefulWidget {
   final StatefulNavigationShell navigationShell;
@@ -87,7 +88,18 @@ class _CustomerShellState extends State<CustomerShell> {
         _handleBack(context);
       },
       child: Scaffold(
-        body: widget.navigationShell,
+        // The active-booking tracker sits in its own Column slot ABOVE
+        // the bottom nav bar, inside `body` — this keeps it visible
+        // across every tab (Services/Bookings/Offers) since it lives at
+        // the shell level, not inside any individual tab's own screen.
+        // It renders nothing (SizedBox.shrink) when there's no active
+        // booking, so it costs no layout space the rest of the time.
+        body: Column(
+          children: [
+            Expanded(child: widget.navigationShell),
+            const ActiveBookingTracker(),
+          ],
+        ),
         bottomNavigationBar: Container(
           decoration: BoxDecoration(
             color: Colors.white,

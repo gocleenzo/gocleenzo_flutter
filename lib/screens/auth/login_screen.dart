@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:async';
 import '../../services/notification_service.dart';
 import '../../services/supabase_service.dart';
 import '../../utils/theme.dart';
@@ -81,51 +82,151 @@ class _LoginScreenState extends State<LoginScreen> {
   // dropped instead of surfacing a confusing, false error to the user.
   bool    _signingIn      = false;
 
+  // ── Resend handling ──────────────────────────────────────────
+  // Firebase's own token for linking a genuine resend to the SAME
+  // verification attempt (via forceResendingToken). Without passing this
+  // back on resend, Firebase can treat a rapid re-request as a near-
+  // duplicate and not actually issue a fresh SMS/session — which is what
+  // was causing "type the OTP once it finally arrives -> session has
+  // expired" even right after tapping Resend.
+  int? _resendToken;
+  // 30s cooldown before Resend is tappable again — standard OTP UX,
+  // and it also stops the user (or a mis-tap) from firing multiple
+  // concurrent verification requests before the first one even has a
+  // chance to deliver.
+  static const _resendCooldownSeconds = 30;
+  int _resendSecondsLeft = 0;
+  Timer? _resendCooldownTimer;
+  // Bumped on every resend to force OtpInputRow to remount with a fresh
+  // ValueKey — clears any stale digits left over from an expired code
+  // instead of leaving them sitting in the box looking "entered".
+  int _otpFieldGeneration = 0;
+
   @override
   void dispose() {
     _phoneCtrl.dispose();
     _nameCtrl.dispose();
+    _resendCooldownTimer?.cancel();
     super.dispose();
   }
 
+  void _startResendCooldown() {
+    _resendCooldownTimer?.cancel();
+    setState(() => _resendSecondsLeft = _resendCooldownSeconds);
+    _resendCooldownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (!mounted) { t.cancel(); return; }
+      setState(() {
+        _resendSecondsLeft -= 1;
+        if (_resendSecondsLeft <= 0) t.cancel();
+      });
+    });
+  }
+
+  /// True for transient connectivity failures (dropped signal, DNS
+  /// hiccup, request timeout) — the kind of error a brief retry can
+  /// often ride straight through — as opposed to a genuine auth failure
+  /// (wrong code, expired session) that retrying would never fix.
+  bool _isNetworkError(Object e) {
+    if (e is fb.FirebaseAuthException) return e.code == 'network-request-failed';
+    if (e is TimeoutException) return true;
+    final s = e.toString().toLowerCase();
+    return s.contains('socketexception') ||
+        s.contains('network') ||
+        s.contains('timeout') ||
+        s.contains('failed host lookup') ||
+        s.contains('connection closed') ||
+        s.contains('connection reset') ||
+        s.contains('clientexception');
+  }
+
+  /// Runs [action] with a [timeout], silently retrying up to [maxRetries]
+  /// more times (1s, then 2s backoff) ONLY when the failure looks like a
+  /// transient network issue per [_isNetworkError] — a genuine auth error
+  /// (wrong OTP, expired session) is rethrown immediately on the first
+  /// attempt without wasting time retrying something a retry can never
+  /// fix. This is what makes mobile-data sign-ins resilient to the kind
+  /// of brief signal drop / tower handoff that WiFi doesn't experience,
+  /// without ever masking a real error.
+  ///
+  /// [timeout] should be generous for anything that can have a genuine
+  /// cold start (e.g. a Supabase Edge Function) — too short a timeout
+  /// here makes NORMAL slowness look identical to a dropped connection,
+  /// which is what happened when this was a flat 20s for every call.
+  Future<T> _withNetworkRetry<T>(
+    Future<T> Function() action, {
+    int maxRetries = 2,
+    Duration timeout = const Duration(seconds: 20),
+  }) async {
+    int attempt = 0;
+    while (true) {
+      try {
+        return await action().timeout(timeout);
+      } catch (e) {
+        attempt++;
+        if (attempt > maxRetries || !_isNetworkError(e)) rethrow;
+        debugPrint('Network retry $attempt/$maxRetries after: $e');
+        await Future.delayed(Duration(seconds: attempt));
+      }
+    }
+  }
+
   // ── STEP 1: Send OTP via Firebase ────────────────────────────
-  Future<void> _sendOtp() async {
+  // [isResend] passes Firebase's forceResendingToken (captured from the
+  // previous codeSent callback) so a genuine resend is properly linked to
+  // this verification attempt instead of silently no-op'ing.
+  Future<void> _sendOtp({bool isResend = false}) async {
     if (_phoneCtrl.text.length < 10) return;
-    setState(() { _loading = true; _error = ''; });
+    setState(() {
+      _loading = true;
+      _error = '';
+      if (isResend) {
+        _otp = '';
+        _otpFieldGeneration++; // forces OtpInputRow to remount empty
+      }
+    });
 
     try {
       await _fireAuth.verifyPhoneNumber(
         phoneNumber: '+91${_phoneCtrl.text}',
-        timeout: const Duration(seconds: 60),
+        // Widened from 60s -> 120s. This only controls how long Firebase
+        // waits before firing codeAutoRetrievalTimeout (falling back to
+        // manual entry) — a longer window gives slow SMS delivery more
+        // of a chance to auto-fill before the user is forced to type it
+        // manually, without changing the actual server-side session
+        // validity window.
+        timeout: const Duration(seconds: 120),
+        forceResendingToken: isResend ? _resendToken : null,
         verificationCompleted: (fb.PhoneAuthCredential credential) async {
           debugPrint('Auto-verification completed');
           await _signInWithCredential(credential);
         },
         verificationFailed: (fb.FirebaseAuthException e) {
-          debugPrint('Verification failed: ${e.message}');
+          debugPrint('Verification failed: ${e.code} - ${e.message}');
           if (mounted) {
             setState(() {
-            _error   = e.message ?? 'Failed to send OTP. Try again.';
-            _loading = false;
-          });
+              _error   = _friendlyAuthError(e);
+              _loading = false;
+            });
           }
         },
         codeSent: (String verificationId, int? resendToken) {
-          debugPrint('OTP sent. verificationId set.');
+          debugPrint('OTP sent. verificationId set. resendToken=$resendToken');
           if (mounted) {
             setState(() {
-            _verificationId = verificationId;
-            _step           = 'otp';
-            _loading        = false;
-          });
+              _verificationId = verificationId;
+              _resendToken    = resendToken;
+              _step           = 'otp';
+              _loading        = false;
+            });
           }
+          _startResendCooldown();
         },
         codeAutoRetrievalTimeout: (String verificationId) {
           debugPrint('Auto retrieval timeout');
           if (mounted) {
             setState(() {
-            _verificationId = verificationId;
-          });
+              _verificationId = verificationId;
+            });
           }
         },
       );
@@ -133,11 +234,32 @@ class _LoginScreenState extends State<LoginScreen> {
       debugPrint('Send OTP error: $e');
       if (mounted) {
         setState(() {
-        _error   = 'Failed to send OTP. Please try again.';
-        _loading = false;
-      });
+          _error   = 'Failed to send OTP. Please try again.';
+          _loading = false;
+        });
       }
     }
+  }
+
+  /// Turns Firebase's raw auth error into a clear, actionable message
+  /// instead of showing its internal wording verbatim (which is exactly
+  /// how "The SMS code has expired. Please re-send the verification code
+  /// to try again." was reaching the user as-is — technically accurate,
+  /// but not actionable on its own inside this screen's flow).
+  String _friendlyAuthError(fb.FirebaseAuthException e) {
+    final msg = (e.message ?? '').toLowerCase();
+    if (e.code == 'session-expired' || msg.contains('expired')) {
+      return 'That code expired before it arrived. Tap "Resend OTP" below '
+          'for a fresh one.';
+    }
+    if (e.code == 'invalid-verification-code') {
+      return 'Incorrect OTP. Please check the code and try again.';
+    }
+    if (e.code == 'too-many-requests') {
+      return 'Too many attempts. Please wait a few minutes before trying '
+          'again.';
+    }
+    return e.message ?? 'Failed to send OTP. Try again.';
   }
 
   // ── STEP 2: Verify OTP ────────────────────────────────────────
@@ -161,20 +283,29 @@ class _LoginScreenState extends State<LoginScreen> {
     } on fb.FirebaseAuthException catch (e) {
       debugPrint('FirebaseAuthException: ${e.code} - ${e.message}');
       if (mounted) {
+        final expired = e.code == 'session-expired' ||
+            (e.message ?? '').toLowerCase().contains('expired');
         setState(() {
-        _error   = e.code == 'invalid-verification-code'
-            ? 'Invalid OTP. Please try again.'
-            : e.message ?? 'Verification failed.';
-        _loading = false;
-      });
+          _error   = _friendlyAuthError(e);
+          _loading = false;
+          // An expired session's verificationId can never succeed no
+          // matter how many times it's retried — clear it and the typed
+          // code so the ONLY path forward the UI offers is a real resend,
+          // rather than letting the user keep retrying the same dead code.
+          if (expired) {
+            _verificationId = null;
+            _otp = '';
+            _otpFieldGeneration++;
+          }
+        });
       }
     } catch (e) {
       debugPrint('Verify OTP error: $e');
       if (mounted) {
         setState(() {
-        _error   = 'Something went wrong. Please try again.';
-        _loading = false;
-      });
+          _error   = 'Something went wrong. Please try again.';
+          _loading = false;
+        });
       }
     }
   }
@@ -219,7 +350,11 @@ class _LoginScreenState extends State<LoginScreen> {
     Map<String, dynamic> data;
     try {
       debugPrint('Signing in with credential...');
-      final userCred = await _fireAuth.signInWithCredential(credential);
+      // Retries automatically on a dropped/flaky connection (common on
+      // mobile data, rare on WiFi) — a genuine wrong/expired code is
+      // NOT retried, it fails immediately below in the catch block.
+      final userCred = await _withNetworkRetry(
+          () => _fireAuth.signInWithCredential(credential));
       fireUser = userCred.user;
       if (fireUser == null) throw Exception('Firebase user is null');
       debugPrint('Firebase signed in: ${fireUser.uid}');
@@ -227,19 +362,31 @@ class _LoginScreenState extends State<LoginScreen> {
       final phone = '+91${_phoneCtrl.text}';
 
       debugPrint('Calling edge function...');
-      final res = await _supabase.functions.invoke(
-        'firebase-auth',
-        body: {
-          'firebase_uid': fireUser.uid,
-          'phone':        phone,
-          // REQUIRED — this is what keeps this app's users separate
-          // from the worker app's users for the same phone number.
-          // The edge function now looks up (and creates) rows scoped
-          // to (phone, role), backed by the users_phone_role_unique
-          // DB constraint. Without this, the edge function returns a
-          // 400 error ("role is required").
-          'role':         'customer',
-        },
+      // Firebase credential is already consumed/valid at this point, so
+      // only THIS call is retried if it's the one that hits a network
+      // blip — no need to redo the Firebase step or ask for a new OTP.
+      //
+      // 45s (not the default 20s) — this call can have a genuine cold
+      // start (Supabase Edge Functions spin up on demand) plus a DB
+      // lookup/insert, and 20s was cutting off calls that were simply
+      // slow, not actually disconnected — which is what made "Network
+      // issue" appear even on a good WiFi connection.
+      final res = await _withNetworkRetry(
+        () => _supabase.functions.invoke(
+          'firebase-auth',
+          body: {
+            'firebase_uid': fireUser!.uid,
+            'phone':        phone,
+            // REQUIRED — this is what keeps this app's users separate
+            // from the worker app's users for the same phone number.
+            // The edge function now looks up (and creates) rows scoped
+            // to (phone, role), backed by the users_phone_role_unique
+            // DB constraint. Without this, the edge function returns a
+            // 400 error ("role is required").
+            'role':         'customer',
+          },
+        ),
+        timeout: const Duration(seconds: 45),
       );
 
       debugPrint('Edge function status: ${res.status}');
@@ -249,10 +396,17 @@ class _LoginScreenState extends State<LoginScreen> {
       debugPrint('Firebase sign in error: ${e.code} - ${e.message}');
       _signingIn = false;
       if (mounted) {
+        final expired = e.code == 'session-expired' ||
+            (e.message ?? '').toLowerCase().contains('expired');
         setState(() {
-        _error   = e.message ?? 'Sign in failed.';
-        _loading = false;
-      });
+          _error   = _friendlyAuthError(e);
+          _loading = false;
+          if (expired) {
+            _verificationId = null;
+            _otp = '';
+            _otpFieldGeneration++;
+          }
+        });
       }
       return;
     } on FunctionException catch (e) {
@@ -260,19 +414,34 @@ class _LoginScreenState extends State<LoginScreen> {
       _signingIn = false;
       if (mounted) {
         setState(() {
-        _error   = 'Could not verify your account. Please try again.';
-        _loading = false;
-      });
+          _error   = 'Could not verify your account. Please try again.';
+          _loading = false;
+        });
       }
       return;
     } catch (e) {
       debugPrint('Sign in error: $e');
       _signingIn = false;
       if (mounted) {
+        // Network failures get a specific, actionable message and —
+        // deliberately — the typed OTP and verificationId are LEFT
+        // INTACT (not cleared like the expired-session case above),
+        // since the code itself was correct; only the connection/server
+        // was slow. The customer can just tap "Verify & Continue" again
+        // — often the retry alone succeeds once a cold start has warmed
+        // up, with no fresh OTP needed.
         setState(() {
-        _error   = 'Sign in failed. Please try again.';
-        _loading = false;
-      });
+          if (e is TimeoutException) {
+            _error = 'That took longer than expected. Please tap '
+                'Verify again.';
+          } else if (_isNetworkError(e)) {
+            _error = 'Network issue — please check your connection and '
+                'tap Verify again.';
+          } else {
+            _error = 'Sign in failed. Please try again.';
+          }
+          _loading = false;
+        });
       }
       return;
     }
@@ -535,7 +704,7 @@ class _LoginScreenState extends State<LoginScreen> {
           label: 'Proceed',
           icon: Icons.arrow_forward,
           loading: _loading,
-          onPressed: val.text.length == 10 ? _sendOtp : null,
+          onPressed: val.text.length == 10 ? () => _sendOtp() : null,
         ),
       ),
     ]);
@@ -613,6 +782,10 @@ class _LoginScreenState extends State<LoginScreen> {
       const SizedBox(height: 6),
       const SizedBox(height: 16),
       OtpInputRow(
+        // Remounts with a clean slate whenever we resend or hit an
+        // expired-session error, so no stale digits from a dead code
+        // linger visually in the boxes.
+        key: ValueKey(_otpFieldGeneration),
         onCompleted: (v) {
           debugPrint('OTP completed: $v');
           setState(() => _otp = v);
@@ -630,11 +803,23 @@ class _LoginScreenState extends State<LoginScreen> {
         onPressed: _otp.length == 6 ? _verifyOtp : null,
       ),
       const SizedBox(height: 8),
+      // Resend — disabled during the cooldown window with a visible
+      // countdown, and properly passes forceResendingToken via
+      // _sendOtp(isResend: true) so Firebase treats it as a genuine
+      // resend of THIS attempt rather than a fresh, possibly-ignored
+      // duplicate request.
       TextButton(
-        onPressed: _loading ? null : _sendOtp,
-        child: const Text('Resend OTP',
-            style: TextStyle(
-                color: AppColors.cyan, fontWeight: FontWeight.w600)),
+        onPressed: (_loading || _resendSecondsLeft > 0)
+            ? null
+            : () => _sendOtp(isResend: true),
+        child: Text(
+          _resendSecondsLeft > 0
+              ? 'Resend OTP in ${_resendSecondsLeft}s'
+              : 'Resend OTP',
+          style: TextStyle(
+              color: _resendSecondsLeft > 0 ? AppColors.gray400 : AppColors.cyan,
+              fontWeight: FontWeight.w600),
+        ),
       ),
     ]);
   }

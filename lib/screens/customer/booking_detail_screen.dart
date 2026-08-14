@@ -48,9 +48,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   String? _workerOtp;
 
-  // Customer's own phone/email, for Razorpay prefill on the extra-time
-  // payment — without this, Razorpay's checkout makes the customer type
-  // their phone number in again even though they're already logged in.
   String? _customerPhone;
   String? _customerEmail;
 
@@ -175,6 +172,18 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         final qty = s['qty'] as int;
         return qty > 1 ? '${s['name']} ×$qty' : s['name'] as String;
       }).join(', ');
+
+  /// Customer-facing display of the worker's name uses FIRST NAME ONLY —
+  /// full names aren't shown to customers. Used everywhere this screen
+  /// surfaces the assigned worker's name (the status card's worker row).
+  /// Avatar initials still use the full name (so two workers sharing a
+  /// first name still get distinct initials) — only the visible TEXT
+  /// label is trimmed to first name.
+  String _firstName(String full) {
+    final trimmed = full.trim();
+    if (trimmed.isEmpty) return 'Professional';
+    return trimmed.split(RegExp(r'\s+')).first;
+  }
 
   Future<void> _loadWorkerOtp() async {
     final workerId = _booking?['worker_id'] as String?;
@@ -525,11 +534,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   }
 
   // ── Build ────────────────────────────────────────────────────
-  // Wrapped in PopScope so the SYSTEM back button (hardware/gesture)
-  // behaves exactly like the on-screen back arrow's fallback — previously
-  // system back had no fallback at all, meaning a booking detail screen
-  // opened directly (e.g. from a push notification, with nothing else on
-  // the stack) could exit the app instead of returning to /bookings.
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -798,9 +802,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
 
   Widget _buildWorkerRow() {
     final worker = _booking?['worker'] as Map<String, dynamic>?;
-    final name   = worker?['full_name'] as String? ?? 'Professional';
+    final fullName = worker?['full_name'] as String? ?? 'Professional';
+    final displayName = _firstName(fullName);
     final phone  = worker?['phone'] as String? ?? '';
-    final initials = name.trim().split(' ')
+    // Avatar initials still derived from the FULL name (so two workers
+    // sharing a first name still get visually distinct initials) — only
+    // the visible text label is trimmed to first name.
+    final initials = fullName.trim().split(' ')
         .where((w) => w.isNotEmpty).take(2)
         .map((w) => w[0].toUpperCase()).join();
 
@@ -821,7 +829,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         const SizedBox(width: 12),
         Expanded(child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(name, style: const TextStyle(
+          Text(displayName, style: const TextStyle(
               fontWeight: FontWeight.w800, fontSize: 14, color: _ink)),
           const Text('Verified Professional',
               style: TextStyle(color: _muted, fontSize: 11)),
