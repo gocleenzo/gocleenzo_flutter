@@ -522,6 +522,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final now          = DateTime.now();
     final hour         = now.hour;
     final durationMins = _serviceDurationMins;
+    
 
     // 1. Time window check: slot START must be within 7AM-7PM
     if (hour < _instantStartHour || hour >= _instantEndHour) {
@@ -899,6 +900,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       // Minimum lead time from right now — NOT a flat 2 hours.
       final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
       final durationMins = _serviceDurationMins;
+      debugPrint('SLOT DEBUG: durationMins=$durationMins, cartItems=${widget.cartItems}, overrideDuration=${widget.overrideDuration}');
 
       // ONE query for all workers' date-specific schedules (incl. breaks),
       // instead of a per-worker day-of-week lookup — efficient regardless
@@ -1028,17 +1030,24 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           booking['address_id'] != null &&
           booking['address_id'].toString() == newAddressId;
 
-      final bEndWithBuffer = sameAddress
-          ? bEnd
+      final bufferMins = sameAddress
+          ? 0
           // If this job's customer already used the "+20 min Extra Time"
           // feature, that extension already ate 20 of the normal 30-min
           // travel buffer's worth of the worker's slack — only 10
           // genuine minutes remain before the worker needs to leave for
           // the next (different-address) job. Same-address always stays
           // 0 regardless, since no travel is needed either way.
-          : bEnd.add(Duration(minutes: extraMins > 0 ? 10 : _travelBufferMins));
+          : (extraMins > 0 ? 10 : _travelBufferMins);
 
-      if (slotDt.isBefore(bEndWithBuffer) && slotEnd.isAfter(bStart)) {
+      // Buffer applied to BOTH sides of the existing booking's window —
+      // before AND after. A new candidate ending EXACTLY when an
+      // existing booking starts must be blocked, since that leaves zero
+      // travel time before the existing job.
+      final bEndWithBuffer   = bEnd.add(Duration(minutes: bufferMins));
+      final bStartWithBuffer = bStart.subtract(Duration(minutes: bufferMins));
+
+      if (slotDt.isBefore(bEndWithBuffer) && slotEnd.isAfter(bStartWithBuffer)) {
         return false;
       }
     }
