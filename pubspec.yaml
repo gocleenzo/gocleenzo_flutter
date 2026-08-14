@@ -69,11 +69,16 @@ dev_dependencies:
 
 flutter_launcher_icons:
   android: true
-  ios: false
+  ios: true
   image_path: "assets/logo.png"
   min_sdk_android: 21
   adaptive_icon_background: "#06B6D4"
   adaptive_icon_foreground: "assets/logo.png"
+  # Required for iOS — Apple's App Store icon (1024x1024) rejects any
+  # transparency at all. This strips the alpha channel and fills
+  # transparent areas with white automatically, so the same source
+  # logo.png works for both platforms without needing a second file.
+  remove_alpha_ios: true
   web:
     generate: false
   windows:
