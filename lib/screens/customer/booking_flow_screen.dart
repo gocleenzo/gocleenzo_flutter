@@ -190,50 +190,52 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   int get _finalAmount =>
       (_baseAmount - _discount + _feesTotal).clamp(0, 999999);
 
-  /// Rounds minutes up to the nearest 60min boundary (hourly slots).
+  /// Rounds minutes up to the nearest 30min boundary — matches _timeSlots,
+  /// which is itself a 30-min grid (07:00, 07:30, 08:00, ...).
+  ///
+  /// NOTE: this rounding helper is now UNUSED in the reservation path
+  /// below (kept only in case something else still calls it) — see the
+  /// comment on _serviceDurationMins for why padding+rounding was
+  /// removed entirely.
   static int _roundUpToHour(int mins) =>
-      mins <= 0 ? 60 : ((mins / 60).ceil()) * 60;
+      mins <= 0 ? 30 : ((mins / 30).ceil()) * 30;
 
   /// Actual service duration in minutes — used for ALL slot checking logic.
   ///
-  /// Rule: exact duration + 10min buffer, rounded up to next full hour.
-  /// Matches the same formula used in service_detail_screen._computedDuration.
-  ///
-  /// Priority:
-  /// 1. overrideDuration — passed from service_detail_screen, already
-  ///    has buffer + rounding applied. Use as-is.
-  /// 2. Cart bookings — sum each item's duration × quantity, then
-  ///    add 10min buffer and round up to next hour.
-  /// 3. Single service fallback — DB duration_minutes + buffer + rounding.
-  static const _durationBuffer = 10; // mins
-
+  /// Reserves the EXACT service duration — no added buffer, no rounding
+  /// to any grid. Previously this added a flat 10-min buffer and then
+  /// rounded UP to the next 30-min boundary, which meant an exact 30-min
+  /// service (30 + 10 = 40min) always got rounded up to a full 60
+  /// minutes reserved — a real 30-min job was blocking a worker for
+  /// twice as long as it actually took, on top of whatever real travel
+  /// buffer applied afterward. The 30-min _timeSlots list is only a
+  /// display grid for START times — it was never meant to also force
+  /// the BLOCK duration itself onto that same grid. The travel buffer
+  /// (_travelBufferMins, itself skipped for same-address bookings — see
+  /// _isWorkerFreeAtSlot) is the only real gap between two DIFFERENT
+  /// jobs now; nothing pads the job's own duration anymore.
   int get _serviceDurationMins {
-    // 1. Cart takes priority — sum all items, add buffer, round up to next
-    //    hour. Checked BEFORE overrideDuration: cart is the more specific
-    //    source, and a stray overrideDuration value (e.g. left over from a
-    //    single-service flow) must never shadow a multi-item cart.
-    //
-    //    Each item's 'duration_minutes' is ALREADY the total for that
-    //    whole line (CartItem.totalDuration reads straight from the tier
-    //    matching the selected quantity — e.g. 3× a 30-min service reads
-    //    the 90-min tier directly, it's not "30min × 3" arithmetic done
-    //    here). So this just sums each item's duration as-is — no
-    //    re-multiplying by quantity, which used to inflate a correct
-    //    90-minute total for 3 units up to 270.
+    // 1. Cart — sum each item's duration exactly as stored (already the
+    //    correct total per line — see note below), no padding.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
         total += (item['duration_minutes'] as num?)?.toInt() ?? 60;
       }
-      return _roundUpToHour((total > 0 ? total : 60) + _durationBuffer);
+      return total > 0 ? total : 60;
     }
 
-    // 2. Explicit override (already has buffer + rounding from service detail)
+    // 2. Explicit override from service_detail_screen.dart. NOTE: that
+    //    screen may still independently add its own buffer/rounding
+    //    before passing this value down — this screen no longer adds
+    //    any padding of its own, but if bookings coming through THIS
+    //    path still show over-reservation, the same fix needs to be
+    //    applied in service_detail_screen._computedDuration too, since
+    //    this file doesn't have visibility into that screen's logic.
     if (widget.overrideDuration != null) return widget.overrideDuration!;
 
-    // 3. DB fallback: exact + buffer + round up
-    final raw = (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
-    return _roundUpToHour(raw + _durationBuffer);
+    // 3. DB fallback — exact duration, no padding.
+    return (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
   }
 
   int get _slotsBlocked => (_serviceDurationMins / 60).ceil();
@@ -265,6 +267,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   String? _userId;
+  // Set at the start of _confirmBookingWithPayment, read later in
+  // _onPaymentSuccess (a separate Razorpay callback that doesn't have
+  // direct access to that method's local variables) — needed to call
+  // complete_payment_booking_recovery with the SAME attempt_ref/otp the
+  // pending draft was saved under.
+  String? _pendingAttemptRef;
+  String? _pendingBookingOtp;
   // Customer's phone/email, fetched once in _loadData() and passed to
   // Razorpay's checkout as prefill data — without this, Razorpay's own
   // checkout screen makes the customer type their phone number in AGAIN
@@ -546,9 +555,17 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (workers.isEmpty) return 'no_workers';
 
+      // NOTE: booking_duration_minutes is included alongside
+      // services(duration_minutes) — it's the authoritative, already-
+      // buffered/rounded duration actually RESERVED for each existing
+      // booking (set via p_booking_duration_minutes in try_claim_slot).
+      // See _isWorkerFreeAtSlot for why this matters: without it, a
+      // multi-service/cart booking (whose services() join often resolves
+      // to null) would silently fall back to using the CURRENT customer's
+      // own duration instead of the existing booking's real one.
       final activeBookingsData = await _supabase
           .from('bookings')
-          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, services(duration_minutes)')
+          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, address_id, services(duration_minutes)')
           .inFilter('status', ['accepted', 'in_progress'])
           .inFilter('payment_status', ['cod', 'paid']);
       final activeBookings = (activeBookingsData as List).cast<Map<String, dynamic>>();
@@ -567,7 +584,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
         // Check worker is not currently on a job (incl. travel buffer)
         if (!_isWorkerFreeAtSlot(workerId, now, durationMins,
-            activeBookings)) {
+            activeBookings, newAddressId: _selectedAddressId)) {
           continue;
         }
 
@@ -859,9 +876,19 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       // Pull bookings that could still overlap this day. We widen the query
       // slightly on the lower bound so an in-progress job that started the
       // previous day (overnight edge case) is still accounted for.
+      //
+      // NOTE: booking_duration_minutes is included alongside
+      // services(duration_minutes) — it's the authoritative, already-
+      // buffered/rounded duration actually RESERVED for each existing
+      // booking (set via p_booking_duration_minutes in try_claim_slot).
+      // See _isWorkerFreeAtSlot for why this matters: without it, a
+      // multi-service/cart booking (whose services() join often resolves
+      // to null) would silently fall back to using the CURRENT customer's
+      // own duration instead of the existing booking's real one — wildly
+      // over- or under-blocking slots around it.
       final bookingsData = await _supabase
           .from('bookings')
-          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, services(duration_minutes)')
+          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, address_id, services(duration_minutes)')
           .inFilter('status', ['accepted', 'in_progress', 'pending'])
           .inFilter('payment_status', ['cod', 'paid'])
           .gte('scheduled_at', dayStartUtc.subtract(const Duration(hours: 6)).toIso8601String())
@@ -892,7 +919,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           if (!_isWorkerScheduledForDate(workerId, slotDt, durationMins, scheduleLookup)) {
             continue;
           }
-          if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings)) continue;
+          if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings, newAddressId: _selectedAddressId)) continue;
           anyWorkerFree = true;
           break;
         }
@@ -947,7 +974,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   /// "free" until 30 min after they actually finish, not the originally
   /// scheduled finish time.
   bool _isWorkerFreeAtSlot(String workerId, DateTime slotDt,
-      int durationMins, List<Map<String, dynamic>> bookings) {
+      int durationMins, List<Map<String, dynamic>> bookings,
+      {String? newAddressId}) {
     final slotEnd = slotDt.add(Duration(minutes: durationMins));
 
     for (final booking in bookings) {
@@ -960,16 +988,55 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final bStart = workStartedAt ?? scheduledAt;
       if (bStart == null) continue;
 
-      final bDur = (booking['services']?['duration_minutes'] as num?)?.toInt()
+      // booking_duration_minutes is the authoritative, already-buffered/
+      // rounded duration that was actually RESERVED for this existing
+      // booking at the time it was made (set via p_booking_duration_minutes
+      // in try_claim_slot) — this is what must be used to compute when
+      // this worker becomes free again. Falling straight through to
+      // `durationMins` (the NEW customer's own duration, unrelated to
+      // this existing booking) was the bug: for any cart/multi-service
+      // booking, the services() join below resolves to null (bookings
+      // made via booking_items don't have a single service_id), so the
+      // code silently substituted the CURRENT customer's selected
+      // duration for someone else's already-booked job — wildly over- or
+      // under-blocking the slots around it.
+      final bDur = (booking['booking_duration_minutes'] as num?)?.toInt()
+          ?? (booking['services']?['duration_minutes'] as num?)?.toInt()
           ?? durationMins;
-      final bDurRounded = (bDur / 60).ceil() * 60;
+      // 30-min grid, matching _roundUpToHour above — booking_duration_minutes
+      // is normally already on this grid (it WAS _serviceDurationMins at
+      // creation time), so this is mainly a safety no-op for that case, and
+      // only actually rounds anything when falling back to the raw
+      // services.duration_minutes or durationMins values above.
+      final bDurRounded = (bDur / 30).ceil() * 30;
       final extraMins = (booking['extra_time_mins'] as num?)?.toInt() ?? 0;
 
       // Actual/expected end, including any extra time already added.
       final bEnd = bStart.add(Duration(minutes: bDurRounded + extraMins));
-      // Worker isn't free again until 30 min after that.
-      final bEndWithBuffer =
-          bEnd.add(const Duration(minutes: _travelBufferMins));
+
+      // Same address as the NEW booking being checked -> no travel time
+      // is actually needed between the two jobs, so skip the 30-min
+      // buffer entirely, regardless of how short the new service is.
+      // Different address (or either side missing an address id) ->
+      // keep the full buffer, since real travel time is needed. This
+      // mirrors the same rule applied server-side in try_claim_slot /
+      // check_slot_availability — without it, this client-side preview
+      // could show a slot as blocked that a real booking attempt would
+      // actually allow.
+      final sameAddress = newAddressId != null &&
+          newAddressId.isNotEmpty &&
+          booking['address_id'] != null &&
+          booking['address_id'].toString() == newAddressId;
+
+      final bEndWithBuffer = sameAddress
+          ? bEnd
+          // If this job's customer already used the "+20 min Extra Time"
+          // feature, that extension already ate 20 of the normal 30-min
+          // travel buffer's worth of the worker's slack — only 10
+          // genuine minutes remain before the worker needs to leave for
+          // the next (different-address) job. Same-address always stays
+          // 0 regardless, since no travel is needed either way.
+          : bEnd.add(Duration(minutes: extraMins > 0 ? 10 : _travelBufferMins));
 
       if (slotDt.isBefore(bEndWithBuffer) && slotEnd.isAfter(bStart)) {
         return false;
@@ -1219,12 +1286,53 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     ).then((_) => onDismiss?.call());
   }
 
+  // ── Pre-payment slot availability recheck ─────────────────────
+  // The customer may have picked their date/time several minutes ago
+  // (step 1) and only now, at the final confirm tap, is about to pay —
+  // plenty of time for someone else to have taken that slot in between.
+  // Previously this was only caught AFTER payment succeeded (inside
+  // _onPaymentSuccess -> try_claim_slot), meaning the customer paid
+  // first and only then found out, even though the payment was
+  // immediately auto-refunded. Checking here — right when "Choose
+  // Payment & Confirm" is tapped, before Razorpay ever opens — surfaces
+  // "Slot Just Filled Up!" immediately instead, with no pay-then-refund
+  // round trip. try_claim_slot's own atomic check still runs after
+  // payment as the final safety net for the rare case where the slot
+  // fills in the few seconds between this check and payment completing.
+  Future<bool> _checkSlotStillAvailable() async {
+    try {
+      final scheduledAt = _isInstant ? DateTime.now().toUtc() : _buildScheduledAt();
+      final result = await _supabase.rpc('check_slot_availability', params: {
+        'p_address_id':    _selectedAddressId,
+        'p_scheduled_at':  scheduledAt.toIso8601String(),
+        'p_duration_mins': _serviceDurationMins,
+      });
+      final res = result as Map<String, dynamic>;
+      return res['available'] == true;
+    } catch (e) {
+      debugPrint('check_slot_availability error: $e');
+      return true; // fail open — never block on a preview-check hiccup
+    }
+  }
+
   // ── Confirmation dialog ───────────────────────────────────────
   Future<void> _askConfirm() async {
     if (!await _isSelectedAddressServiceable()) {
       _showAreaNotServiceableDialog();
       return;
     }
+
+    // Re-verify BEFORE showing the confirm dialog / opening payment —
+    // see _checkSlotStillAvailable above for why this moved earlier.
+    if (_isSchedule) {
+      final stillAvailable = await _checkSlotStillAvailable();
+      if (!mounted) return;
+      if (!stillAvailable) {
+        _showSlotFullDialog();
+        return;
+      }
+    }
+
     HapticFeedback.selectionClick();
     final confirmed = await showDialog<bool>(
       context: context,
@@ -1441,6 +1549,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     // reference tag is enough to identify this attempt in the Razorpay
     // dashboard if support needs to look it up later.
     final attemptRef = 'attempt_${DateTime.now().millisecondsSinceEpoch}';
+    _pendingAttemptRef = attemptRef;
 
     // Create the Razorpay order server-side FIRST. This binds the checkout
     // to a specific, server-verified amount — without this, a tampered
@@ -1476,6 +1585,55 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
     if (!mounted) return;
     setState(() => _loading = false);
+
+    // Save a full draft of this booking attempt BEFORE opening Razorpay
+    // checkout. If the app is killed/backgrounded/loses network right
+    // after payment succeeds but before _onPaymentSuccess finishes, this
+    // draft is what the server-side webhook (/api/payments/webhook) uses
+    // to complete the booking on its own — otherwise a captured payment
+    // with no booking and no refund could silently happen, since none of
+    // that follow-up logic would ever get to run. Failure to save this
+    // draft is NON-FATAL — it never blocks the actual payment flow; it
+    // just means there'd be nothing for the webhook to recover with,
+    // same as before this safety net existed.
+    final scheduledAtForDraft = _isInstant
+        ? DateTime.now().toUtc()
+        : _buildScheduledAt();
+    final otpForDraft =
+        (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
+    _pendingBookingOtp = otpForDraft; // reused in _onPaymentSuccess below
+    try {
+      await _supabase.rpc('create_pending_payment_booking', params: {
+        'p_attempt_ref':                attemptRef,
+        'p_customer_id':                userId,
+        'p_address_id':                 _selectedAddressId,
+        'p_scheduled_at':                scheduledAtForDraft.toIso8601String(),
+        'p_booking_type':                _isInstant ? 'instant' : 'schedule',
+        'p_service_id':                  widget.serviceId,
+        'p_cart_items': widget.cartItems != null && widget.cartItems!.isNotEmpty
+            ? widget.cartItems!.map((c) => {
+                'service_id': c['service_id'],
+                'name':       c['name'],
+                'quantity':   c['quantity'],
+                'price':      c['price'],
+              }).toList()
+            : null,
+        'p_base_price':                  _baseAmount,
+        'p_discount_amount':             _discount,
+        'p_final_amount':                _finalAmount,
+        'p_otp':                         otpForDraft,
+        'p_promo_code':      _appliedPromoCode.isNotEmpty ? _appliedPromoCode : null,
+        'p_selected_bhk':                widget.selectedBhk,
+        'p_quantity':                    widget.quantity,
+        'p_is_first_booking':            widget.isFirstBooking,
+        'p_estimated_arrival_minutes':   _isInstant ? 15 : null,
+        'p_booking_duration_minutes':    _serviceDurationMins,
+        'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+      });
+    } catch (e) {
+      // Non-fatal by design — see comment above. Log only.
+      debugPrint('create_pending_payment_booking failed (non-fatal): $e');
+    }
 
     final options = {
       'key':          _razorpayKey,
@@ -1605,54 +1763,116 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final scheduledAt = _isInstant
         ? DateTime.now().toUtc()
         : _buildScheduledAt();
-    final otp = (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
+    // Reuse the SAME otp already saved in the pending draft (set in
+    // _confirmBookingWithPayment) — falls back to generating one fresh
+    // only if that never got set (e.g. this payment flow started before
+    // this field existed).
+    final otp = _pendingBookingOtp ??
+        (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
 
     try {
-      final result = await _supabase.rpc('try_claim_slot', params: {
-        'p_customer_id':          userId,
-        'p_address_id':           _selectedAddressId,
-        'p_scheduled_at':         scheduledAt.toIso8601String(),
-        'p_duration_mins':        _serviceDurationMins,
-        'p_base_price':           _baseAmount,
-        'p_discount_amount':      _discount,
-        'p_final_amount':         _finalAmount,
-        'p_otp':                  otp,
-        'p_booking_type':         _isInstant ? 'instant' : 'schedule',
-        'p_payment_status':       'paid',
-        'p_payment_method':       'online',
-        'p_service_id':           widget.serviceId,
-        'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
-        'p_promo_code':           _appliedPromoCode.isNotEmpty ? _appliedPromoCode : null,
-        'p_selected_bhk':         widget.selectedBhk,
-        'p_quantity':             widget.quantity,
-        'p_is_first_booking':     widget.isFirstBooking,
-        'p_estimated_arrival':    _isInstant ? 15 : null,
-        'p_booking_duration_minutes': _serviceDurationMins,
+      // Goes through the SAME locked recovery function the server-side
+      // webhook also uses (complete_payment_booking_recovery), instead
+      // of calling try_claim_slot directly here. This is deliberate: if
+      // this app callback and the webhook ever fired at close to the
+      // same moment (e.g. slow network right as the app resumes), calling
+      // try_claim_slot independently in each place could create TWO
+      // separate bookings for one payment. Routing both through the same
+      // row-locked function means whichever gets there first wins, and
+      // the other cleanly sees 'already_completed' and does nothing.
+      final recovery = await _supabase.rpc('complete_payment_booking_recovery', params: {
+        'p_attempt_ref': _pendingAttemptRef,
+        'p_payment_id':  paymentId,
       });
+      final recoveryResult = recovery as Map<String, dynamic>;
+      final action = recoveryResult['action'] as String?;
 
-      if (!mounted) return;
+      String? bookingId;
 
-      final res = result as Map<String, dynamic>;
-      final success = res['success'] as bool? ?? false;
-
-      if (!success) {
-        // Payment succeeded but the slot is gone — refund immediately.
-        final reason = res['reason'] as String? ?? 'error';
-        await _refundPayment(paymentId, reason: reason);
+      if (action == 'booking_created' || action == 'already_completed') {
+        bookingId = recoveryResult['booking_id'] as String?;
+      } else if (action == 'needs_refund') {
+        // The slot was genuinely gone by the time this ran — refund.
+        // (complete_payment_booking_recovery only marks this in the DB;
+        // it doesn't call Razorpay itself, since the DB function can't
+        // hold the Razorpay secret — that call happens here instead.)
+        await _refundPayment(paymentId, reason: recoveryResult['reason']?.toString() ?? 'slot_full');
         if (!mounted) return;
         setState(() => _loading = false);
-        _showSnack('Payment refunded ✅ — the slot was just taken',
-            isError: false);
+        _showSnack('Payment refunded ✅ — the slot was just taken', isError: false);
+        final reason = recoveryResult['reason']?.toString();
         if (reason == 'slot_full' || reason == 'no_workers') {
           _isInstant ? _showNoWorkersDialog() : _showSlotFullDialog();
         } else {
-          _showSnack('Booking failed: ${res['message'] ?? reason}',
-              isError: true);
+          _showSnack('Booking failed: ${recoveryResult['message'] ?? reason}', isError: true);
         }
         return;
+      } else if (action == 'no_draft_found') {
+        // The draft save before payment silently failed (non-fatal by
+        // design) — fall back to the direct path so the customer isn't
+        // stuck just because that bookkeeping insert had a hiccup.
+        final result = await _supabase.rpc('try_claim_slot', params: {
+          'p_customer_id':          userId,
+          'p_address_id':           _selectedAddressId,
+          'p_scheduled_at':         scheduledAt.toIso8601String(),
+          'p_duration_mins':        _serviceDurationMins,
+          'p_base_price':           _baseAmount,
+          'p_discount_amount':      _discount,
+          'p_final_amount':         _finalAmount,
+          'p_otp':                  otp,
+          'p_booking_type':         _isInstant ? 'instant' : 'schedule',
+          'p_payment_status':       'paid',
+          'p_payment_method':       'online',
+          'p_service_id':           widget.serviceId,
+          'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+          'p_promo_code':           _appliedPromoCode.isNotEmpty ? _appliedPromoCode : null,
+          'p_selected_bhk':         widget.selectedBhk,
+          'p_quantity':             widget.quantity,
+          'p_is_first_booking':     widget.isFirstBooking,
+          'p_estimated_arrival':    _isInstant ? 15 : null,
+          'p_booking_duration_minutes': _serviceDurationMins,
+        });
+        if (!mounted) return;
+        final res = result as Map<String, dynamic>;
+        if (res['success'] != true) {
+          final reason = res['reason'] as String? ?? 'error';
+          await _refundPayment(paymentId, reason: reason);
+          if (!mounted) return;
+          setState(() => _loading = false);
+          _showSnack('Payment refunded ✅ — the slot was just taken', isError: false);
+          if (reason == 'slot_full' || reason == 'no_workers') {
+            _isInstant ? _showNoWorkersDialog() : _showSlotFullDialog();
+          } else {
+            _showSnack('Booking failed: ${res['message'] ?? reason}', isError: true);
+          }
+          return;
+        }
+        bookingId = res['booking_id'] as String;
+        if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
+          try {
+            await _supabase.from('booking_items').insert(
+              widget.cartItems!.map((c) => {
+                'booking_id':   bookingId,
+                'service_id':   c['service_id'] as String,
+                'service_name': (c['name'] as String?) ?? 'Service',
+                'quantity':     (c['quantity'] as num).toInt(),
+                'unit_price':   (c['price'] as num).toInt(),
+                'total_price':  (c['price'] as num).toInt() *
+                    (c['quantity'] as num).toInt(),
+              }).toList(),
+            );
+          } catch (e) { debugPrint('booking_items skipped: $e'); }
+        }
+      } else {
+        // 'error' or any unexpected action — treat as a genuine failure.
+        throw Exception('Recovery RPC returned unexpected action: $action');
       }
 
-      final bookingId = res['booking_id'] as String;
+      if (bookingId == null) {
+        throw Exception('No booking_id returned after successful recovery');
+      }
+
+      if (!mounted) return;
 
       // Follow-up writes — non-critical, same pattern as elsewhere.
       try {
@@ -1662,30 +1882,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         }).eq('id', bookingId);
       } catch (e) { debugPrint('post-booking update skipped: $e'); }
 
-      if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
-        try {
-          await _supabase.from('booking_items').insert(
-            widget.cartItems!.map((c) => {
-              'booking_id':   bookingId,
-              'service_id':   c['service_id'] as String,
-              'service_name': (c['name'] as String?) ?? 'Service',
-              'quantity':     (c['quantity'] as num).toInt(),
-              'unit_price':   (c['price'] as num).toInt(),
-              'total_price':  (c['price'] as num).toInt() *
-                  (c['quantity'] as num).toInt(),
-            }).toList(),
-          );
-        } catch (e) { debugPrint('booking_items skipped: $e'); }
-      }
-
-      if (!mounted) return;
       setState(() => _loading = false);
       // Clear the cart now that the booking is genuinely confirmed —
       // previously this never happened at all, so cart items sat
       // there indefinitely even after a successful order.
       CartService.instance.clear();
       Navigator.pushReplacement(context, MaterialPageRoute(
-        builder: (_) => BookingDetailScreen(bookingId: bookingId, isNew: true),
+        builder: (_) => BookingDetailScreen(bookingId: bookingId!, isNew: true),
       ));
     } catch (e) {
       // Booking creation itself errored (network/db) even though payment

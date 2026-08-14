@@ -65,3 +65,7 @@ android/key.properties
 cleenzo-release-key.jks
 
 >>>>>>> 265433a5cdc1d7dec966c40d706282028823e3fe
+
+*.apk
+*.aab
+bfg.jar
