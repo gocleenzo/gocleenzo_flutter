@@ -900,7 +900,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       // Minimum lead time from right now — NOT a flat 2 hours.
       final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
       final durationMins = _serviceDurationMins;
-      debugPrint('SLOT DEBUG: durationMins=$durationMins, cartItems=${widget.cartItems}, overrideDuration=${widget.overrideDuration}');
+      debugPrint('SLOT DEBUG (schedule): durationMins=$durationMins, cartItems=${widget.cartItems}, overrideDuration=${widget.overrideDuration}');
 
       // ONE query for all workers' date-specific schedules (incl. breaks),
       // instead of a per-worker day-of-week lookup — efficient regardless

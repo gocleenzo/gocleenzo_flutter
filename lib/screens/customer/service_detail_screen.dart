@@ -281,24 +281,37 @@ class _ServiceDetailScreenState extends State<ServiceDetailScreen>
     if (!_isFirstBookingEligible) return _originalPrice;
     return 25;
   }
-
-  static const _durationBufferMins = 10;
-
+  /// Reserves the EXACT service duration — no added buffer, no rounding.
+  ///
+  /// This is the value passed to BookingFlowScreen as `overrideDuration`
+  /// for the DIRECT (non-cart) booking path — "Schedule" / "Book Now"
+  /// tapped straight from this service detail screen.
+  ///
+  /// Previously this added a flat 10-min buffer and then rounded UP to
+  /// the nearest FULL HOUR, so a 30-min service booked via this path
+  /// reserved a full 60 minutes of the worker's time (30 + 10 = 40 ->
+  /// rounded to 60), and a 90-min service reserved 120. That's why the
+  /// slot picker showed far more blocked time than expected when booking
+  /// directly, while the CART path — which sums each item's exact
+  /// duration with no padding — was correct. Both paths now match.
+  ///
+  /// The real gap between two different jobs is the travel buffer, which
+  /// the availability checks apply separately (booking_flow_screen.dart's
+  /// _isWorkerFreeAtSlot, and server-side try_claim_slot /
+  /// check_slot_availability) — it was never meant to also be baked into
+  /// the job's own reserved duration on top of that.
   int get _computedDuration {
     final p = _pricing;
     if (p['type'] == 'hourly') return 60; // base 1hr for scheduling
-    int exactMins;
     switch (p['type'] as String) {
       case 'per_unit':
-        exactMins = (p['duration_per_unit'] as int? ?? 30);
+        return (p['duration_per_unit'] as int? ?? 30);
       case 'by_bhk':
-        exactMins = (p['durations'] as Map)[_selectedBhk] as int;
+        return (p['durations'] as Map)[_selectedBhk] as int;
       default:
-        exactMins = (p['duration'] as int?) ??
+        return (p['duration'] as int?) ??
             (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
     }
-    final withBuffer = exactMins + _durationBufferMins;
-    return ((withBuffer / 60).ceil()) * 60;
   }
 
   int get _displayDuration {
