@@ -69,3 +69,8 @@ cleenzo-release-key.jks
 *.apk
 *.aab
 bfg.jar
+
+*.key
+*.certSigningRequest
+*.p12
+*.mobileprovision
