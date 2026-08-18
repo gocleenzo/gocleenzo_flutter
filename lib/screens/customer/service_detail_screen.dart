@@ -4,6 +4,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
 import '../../services/cart_service.dart';
 import 'booking_flow_screen.dart';
+import 'recurring_booking_screen.dart';
 
 // ── Pricing config (LOCAL FALLBACK) ──────────────────────────────────────────
 class _ServicePricing {

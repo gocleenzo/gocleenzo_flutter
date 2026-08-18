@@ -7,6 +7,7 @@ import '../../services/supabase_service.dart';
 import '../../services/cart_service.dart';
 import 'service_detail_screen.dart';
 import 'booking_flow_screen.dart';
+import 'recurring_booking_screen.dart';
 
 class ServicesScreen extends StatefulWidget {
   const ServicesScreen({super.key});
@@ -272,12 +273,50 @@ class _ServicesScreenState extends State<ServicesScreen>
         builder: (_) => ServiceDetailScreen(serviceId: svc['id'] as String)));
   }
 
+  // Recurring packages are only offered for Hourly Cleaning — this finds
+  // that service from whatever's already loaded and jumps straight into
+  // RecurringBookingScreen, used by both the small card chip and the
+  // horizontal "Recurring Booking" banner above the grid.
+  void _openRecurring() {
+    HapticFeedback.selectionClick();
+    final hourly = _services.firstWhere(
+      (s) => s['name'] == 'Hourly Cleaning',
+      orElse: () => {},
+    );
+    if (hourly.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Weekly packages are temporarily unavailable.'),
+        behavior: SnackBarBehavior.floating,
+      ));
+      return;
+    }
+    final basePrice = (hourly['base_price'] as num?)?.toInt() ?? 0;
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => RecurringBookingScreen(
+        serviceId:     hourly['id'] as String,
+        serviceName:   hourly['name'] as String,
+        pricePerVisit: basePrice,
+        durationMins:  60,
+      ),
+    ));
+  }
+
   // ── Quick add to cart from grid card ─────────────────────────
-  CartItem _templateFor(Map<String, dynamic> svc) {
+ CartItem _templateFor(Map<String, dynamic> svc) {
     final name      = svc['name'] as String? ?? '';
     final basePrice = (svc['base_price'] as num?)?.toInt()
         ?? CartService.defaultPriceFor(svc);
     final t = CartService.typeOf(name);
+    // For 'fixed' services, CartService.durationFor(name) falls back to a
+    // hardcoded 60 min for anything not in its own small _tieredServices
+    // list — Kitchen Cabinet Cleaning (180 min) and Wardrobe Cleaning
+    // (150 min) both hit that fallback and silently reserved only 60
+    // min of worker time regardless of what duration_minutes actually
+    // said in the database. For fixed services, read the REAL duration
+    // straight from the service record instead of trusting that lookup.
+    final durationMins = t == CartItemType.fixed
+        ? ((svc['duration_minutes'] as num?)?.toInt() ?? CartService.durationFor(name))
+        : CartService.durationFor(name);
     return CartItem(
       serviceId:       svc['id'] as String,
       serviceName:     name,
@@ -288,7 +327,7 @@ class _ServicesScreenState extends State<ServicesScreen>
           ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking)
           : [],
       pricePerUnit:    basePrice,
-      durationPerUnit: CartService.durationFor(name),
+      durationPerUnit: durationMins,
       maxQty:          CartService.maxQtyFor(name),
     );
   }
@@ -374,6 +413,7 @@ class _ServicesScreenState extends State<ServicesScreen>
               SliverToBoxAdapter(child: _buildEmpty())
             else ...[
               if (grid.isNotEmpty) ...[
+                SliverToBoxAdapter(child: _anim(_buildRecurringBanner())),
                 _sliverHeader(isAllTab ? 'All house help services' : _activeTab),
                 _buildGrid(grid),
               ] else
@@ -455,6 +495,61 @@ class _ServicesScreenState extends State<ServicesScreen>
     ]);
   }
 
+  // Small horizontal banner that jumps straight into the weekly recurring
+  // flow (Hourly Cleaning only). Sits right above "All house help
+  // services" — a second, more visible entry point alongside the small
+  // "Weekly" chip on the Hourly Cleaning card itself.
+  Widget _buildRecurringBanner() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+      child: GestureDetector(
+        onTap: _openRecurring,
+        child: Container(
+          height: 62,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.centerLeft, end: Alignment.centerRight,
+              colors: [Color(0xFF0F172A), Color(0xFF0E7490)]),
+            borderRadius: BorderRadius.circular(18),
+            boxShadow: [BoxShadow(
+                color: const Color(0xFF0E7490).withValues(alpha: 0.30),
+                blurRadius: 16, offset: const Offset(0, 6))]),
+          child: Row(children: [
+            Container(
+              width: 36, height: 36,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(11)),
+              child: const Icon(Icons.repeat_rounded, color: Colors.white, size: 19)),
+            const SizedBox(width: 12),
+            const Expanded(child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min, children: [
+              Text('Recurring Booking',
+                  style: TextStyle(color: Colors.white,
+                      fontSize: 14.5, fontWeight: FontWeight.w900)),
+              SizedBox(height: 1),
+              Text('7 days, same pro, one payment',
+                  style: TextStyle(color: Colors.white70, fontSize: 11)),
+            ])),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(20)),
+              child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                Text('Book', style: TextStyle(
+                    color: Colors.white, fontSize: 12, fontWeight: FontWeight.w800)),
+                SizedBox(width: 3),
+                Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 13),
+              ])),
+          ]),
+        ),
+      ),
+    );
+  }
+
   Widget _heroBannerCard(String imagePath) {
     return ClipRRect(
       borderRadius: const BorderRadius.only(
@@ -496,6 +591,12 @@ class _ServicesScreenState extends State<ServicesScreen>
     final inCart     = qty > 0;
     final cartItem   = _cart.itemFor(svc['id'] as String? ?? '');
     final isFullHouse = name == 'Full House Cleaning';
+    // Weekly recurring packages are only offered for Hourly Cleaning —
+    // see recurring_booking_screen.dart for the full 7-day flow. The chip
+    // below is the ONLY entry point into that flow (product decision:
+    // Option B — a badge on the card itself, no separate service picker
+    // screen, since the service is fixed to Hourly Cleaning already).
+    final isHourly = name == 'Hourly Cleaning';
 
     // Display price — from cart item if in cart, else base
     final originalPrice = (svc['original_price'] as num?)?.toInt();
@@ -506,6 +607,11 @@ class _ServicesScreenState extends State<ServicesScreen>
             : basePrice);
 
     // Duration label — hidden for Full House (BHK based, no single duration)
+    // Fixed-type services read their real duration_minutes from the
+    // service record — see _templateFor's comment for why the
+    // CartService.durationFor(name) fallback was wrong for these.
+    final fixedDurationMins = (svc['duration_minutes'] as num?)?.toInt()
+        ?? CartService.durationFor(name);
     final durLabel = inCart && cartItem != null
         ? cartItem.durationLabel
         : (itemType == CartItemType.tiered
@@ -514,7 +620,7 @@ class _ServicesScreenState extends State<ServicesScreen>
                 ? '60 min/hr'
                 : isFullHouse
                     ? ''
-                    : '${CartService.durationFor(name)} min');
+                    : '$fixedDurationMins min');
 
     return GestureDetector(
       onTap: () => _open(svc),
@@ -527,6 +633,39 @@ class _ServicesScreenState extends State<ServicesScreen>
               borderRadius: BorderRadius.circular(18),
               child: Stack(fit: StackFit.expand, children: [
                 _serviceImage(svc, icon),
+
+                // "Weekly" recurring package entry point — Hourly
+                // Cleaning only. Tapping goes straight into
+                // RecurringBookingScreen with this service pre-filled at
+                // 1 hour/day (fixed) — bypasses the normal service detail
+                // page entirely, since the service choice is implicit.
+                if (isHourly)
+                  Positioned(
+                    top: 8, left: 8,
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        Navigator.push(context, MaterialPageRoute(
+                          builder: (_) => RecurringBookingScreen(
+                            serviceId:     svc['id'] as String,
+                            serviceName:   name,
+                            pricePerVisit: basePrice,
+                            durationMins:  60,
+                          ),
+                        ));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0F172A).withValues(alpha: 0.75),
+                          borderRadius: BorderRadius.circular(8)),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.repeat_rounded, color: Colors.white, size: 11),
+                          SizedBox(width: 3),
+                          Text('Weekly', style: TextStyle(
+                              color: Colors.white, fontSize: 9.5, fontWeight: FontWeight.w800)),
+                        ]))),
+                  ),
 
                 // Duration badge — hidden when label is empty (e.g. Full House)
                 if (durLabel.isNotEmpty)
