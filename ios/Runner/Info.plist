@@ -32,12 +32,26 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
-	<key>UISupportedInterfaceOrientations~ipad</key>
-	<array>
-		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationPortraitUpsideDown</string>
-	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<!--
+	  Firebase Phone Auth on iOS falls back to an in-browser reCAPTCHA
+	  verification (SMS auto-retrieval isn't available on iOS), which
+	  redirects back into the app via the custom URL scheme registered
+	  below. Firebase's own SDK is meant to silently intercept and consume
+	  that redirect to finish signing the user in.
+
+	  By default, Flutter's iOS engine ALSO forwards every incoming URL to
+	  go_router for its own deep-link handling. Since this app registers no
+	  routes for Firebase's auth-callback URL, go_router showed a
+	  "Page Not Found" screen on top of/instead of the login completing —
+	  the exact bug this key fixes. This app doesn't use deep links for
+	  anything else (no shared links, no password-reset links routed
+	  through go_router), so disabling Flutter's deep-link forwarding
+	  entirely is safe and lets Firebase's native SDK handle its own
+	  callback exclusively, uncontested.
+	-->
+	<key>FlutterDeepLinkingEnabled</key>
 	<false/>
 	<!-- Firebase Phone Auth — reCAPTCHA URL scheme -->
 	<key>CFBundleURLTypes</key>
