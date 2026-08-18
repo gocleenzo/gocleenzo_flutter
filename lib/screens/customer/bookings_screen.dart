@@ -197,6 +197,33 @@ class _BookingsScreenState extends State<BookingsScreen>
                   padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
                   child: Row(
                     children: [
+                      // Back button — /bookings is a shell tab, always
+                      // reached via context.go() (not push), so there's
+                      // nothing on the stack for Navigator.pop() to
+                      // return to. iOS has no system back gesture that
+                      // reaches Flutter here (the only real candidates —
+                      // the Cupertino edge-swipe requires canPop==true,
+                      // which this shell deliberately sets to false; the
+                      // bottom-edge swipe is the OS's own Home gesture
+                      // and never reaches any app's code at all) — this
+                      // on-screen arrow is the only reliable way back,
+                      // matching the same pattern already used on Offers.
+                      GestureDetector(
+                        onTap: () => context.go('/services'),
+                        child: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.18),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(0.25), width: 1),
+                          ),
+                          child: const Icon(Icons.arrow_back_ios_new,
+                              color: Colors.white, size: 16),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
                       // Icon avatar
                       Container(
                         width: 46,

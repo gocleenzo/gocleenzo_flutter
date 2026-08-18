@@ -292,6 +292,14 @@ class _AccountScreenState extends State<AccountScreen> {
   /// Back-press on Account always returns to the Services (home) tab —
   /// Account is opened via a standalone icon (not a bottom-nav tab), so
   /// it sits outside CustomerShell's PopScope and needs its own here.
+  ///
+  /// This is ALSO now wired to a visible on-screen back arrow in the
+  /// header (see build() below), since iOS has no system back gesture
+  /// that ever reaches this handler: the Cupertino edge-swipe only
+  /// attaches when Navigator.canPop() is true, and the bottom-edge swipe
+  /// is the OS's own Home gesture, resolved entirely outside any app's
+  /// code. The on-screen arrow is the only reliable way back on iOS,
+  /// matching the same pattern already used on Bookings and Offers.
   void _handleBack(BuildContext context) {
     debugPrint('[ACCOUNT BACK] fired, canPop=${context.canPop()}');
     if (context.canPop()) {
@@ -352,6 +360,26 @@ class _AccountScreenState extends State<AccountScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                // Back button — see _handleBack's comment above for why
+                // this is needed on iOS (no system back gesture reaches
+                // this screen at all). Matches the same visual style as
+                // the arrow already used on Bookings and Offers.
+                GestureDetector(
+                  onTap: () => _handleBack(context),
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.25), width: 1),
+                    ),
+                    child: const Icon(Icons.arrow_back_ios_new,
+                        color: Colors.white, size: 16),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 const Text('My Profile',
                     style: TextStyle(color: Colors.white,
                         fontSize: 22, fontWeight: FontWeight.w800)),
