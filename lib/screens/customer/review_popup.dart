@@ -53,6 +53,25 @@ class _ReviewPopupState extends State<_ReviewPopup> {
   String? _error;
 
   @override
+  void initState() {
+    super.initState();
+    // Refresh the session as SOON as the popup opens, not just reactively
+    // when submit fails. This popup can sit open for a while as the
+    // customer picks stars and types a message — refreshing early gives
+    // Supabase's refresh call time to complete well before the customer
+    // actually taps Submit, so the common case (access token merely
+    // stale, refresh token still valid) resolves invisibly in the
+    // background instead of surfacing as an error at submit time.
+    Supabase.instance.client.auth.refreshSession().catchError((e) {
+      debugPrint('Review popup: proactive session refresh failed: $e');
+      // Not fatal here — _submit() still does its own refresh attempt
+      // right before writing, so a failure this early doesn't block
+      // anything; it's purely a head start.
+      return AuthResponse();
+    });
+  }
+
+  @override
   void dispose() {
     _msgCtrl.dispose();
     super.dispose();
@@ -71,10 +90,35 @@ class _ReviewPopupState extends State<_ReviewPopup> {
       _error = null;
     });
     final c = Supabase.instance.client;
+
+    // Always refresh right before writing, not only when currentUser is
+    // null — the client-side user object can still be non-null while the
+    // underlying access token is stale and gets rejected server-side.
+    // Refreshing unconditionally here catches both cases with the least
+    // code. If the refresh token itself is invalid/expired (a genuine,
+    // unavoidable re-login case — not something any client code can
+    // bypass), this simply fails and we fall through to the null check
+    // below with a clear message.
+    try {
+      await c.auth.refreshSession();
+    } catch (e) {
+      debugPrint('Review: pre-submit session refresh failed: $e');
+    }
+
+    final user = c.auth.currentUser;
+    if (user == null) {
+      if (!mounted) return;
+      setState(() {
+        _submitting = false;
+        _error = 'Your session expired. Please close and reopen the app, then try again.';
+      });
+      return;
+    }
+
     try {
       await c.from('reviews').upsert({
         'booking_id': widget.bookingId,
-        'customer_id': c.auth.currentUser!.id,
+        'customer_id': user.id,
         if (widget.workerId != null) 'worker_id': widget.workerId,
         if (widget.serviceId != null) 'service_id': widget.serviceId,
         'service_rating': _serviceStars,
@@ -84,7 +128,14 @@ class _ReviewPopupState extends State<_ReviewPopup> {
       }, onConflict: 'booking_id');
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } catch (_) {
+    } catch (e) {
+      // Was previously `catch (_)`, silently swallowing the real Postgres
+      // error and leaving only the generic "Could not submit" message —
+      // this is exactly what made an earlier RLS/trigger permission bug
+      // take multiple rounds of manual SQL debugging to track down. Now
+      // logs the actual error so any future issue here shows up
+      // immediately in the console instead of requiring that again.
+      debugPrint('Review submit error: $e');
       if (!mounted) return;
       setState(() {
         _submitting = false;
@@ -144,7 +195,7 @@ class _ReviewPopupState extends State<_ReviewPopup> {
                 _starBlock('Service', _serviceStars,
                     (v) => setState(() => _serviceStars = v)),
                 const SizedBox(height: 18),
-                _starBlock('Worker', _workerStars,
+                _starBlock('Professional', _workerStars,
                     (v) => setState(() => _workerStars = v)),
                 const SizedBox(height: 18),
 
