@@ -86,6 +86,11 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
 
   String? _userId;
   String? _userPhone;
+  // Set in _startPayment, read in _onPaymentSuccess (a separate Razorpay
+  // callback with no direct access to that method's local variables) —
+  // needed to call complete_recurring_package_recovery with the SAME
+  // attempt_ref the pending draft was saved under.
+  String? _pendingAttemptRef;
   String? _userEmail;
 
   late Razorpay _razorpay;
@@ -224,6 +229,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     setState(() { _loading = true; _error = null; });
 
     final attemptRef = 'pkg_${DateTime.now().millisecondsSinceEpoch}';
+    _pendingAttemptRef = attemptRef;
     String orderId;
     try {
       final resp = await http.post(
@@ -248,6 +254,34 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
 
     if (!mounted) return;
     setState(() => _loading = false);
+
+    // Save a full draft of this package attempt BEFORE opening Razorpay
+    // checkout — mirrors the exact same safety net already built for
+    // regular bookings. If the app is killed/backgrounded right after
+    // Razorpay confirms payment but before create_recurring_package()
+    // finishes, this draft is what the server-side webhook uses to
+    // complete the package on its own instead of silently losing a
+    // captured payment. Non-fatal by design — a failure here never
+    // blocks the actual payment flow.
+    try {
+      final overrides = _dayOverrides.entries
+          .map((e) => {'day': e.key, 'time': e.value}).toList();
+      await _supabase.rpc('create_pending_recurring_package', params: {
+        'p_attempt_ref':           attemptRef,
+        'p_customer_id':           _userId,
+        'p_address_id':            _selectedAddressId,
+        'p_service_id':            widget.serviceId,
+        'p_start_date':            _dateStr(_startDate!),
+        'p_time_of_day':           _selectedTime,
+        'p_duration_mins':         widget.durationMins,
+        'p_price_per_visit':       widget.pricePerVisit,
+        'p_total_amount':          _totalAmount,
+        'p_day_overrides':         overrides,
+        'p_special_instructions':  _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+      });
+    } catch (e) {
+      debugPrint('create_pending_recurring_package failed (non-fatal): $e');
+    }
 
     try {
       _razorpay.open({
@@ -309,29 +343,30 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     }
 
     try {
-      final overrides = _dayOverrides.entries
-          .map((e) => {'day': e.key, 'time': e.value}).toList();
-
-      final result = await _supabase.rpc('create_recurring_package', params: {
-        'p_customer_id':          _userId,
-        'p_address_id':           _selectedAddressId,
-        'p_service_id':           widget.serviceId,
-        'p_start_date':           _dateStr(_startDate!),
-        'p_time':                 _selectedTime,
-        'p_duration_mins':        widget.durationMins,
-        'p_price_per_visit':      widget.pricePerVisit,
-        'p_total_amount':         _totalAmount,
-        'p_payment_id':           paymentId,
-        'p_day_overrides':        overrides,
-        'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+      // Goes through the SAME locked recovery function the server-side
+      // webhook also uses (complete_recurring_package_recovery), instead
+      // of calling create_recurring_package directly. If this app
+      // callback and the webhook ever fired close together (e.g. slow
+      // network right as the app resumes), calling create_recurring_package
+      // independently in each place could create TWO packages for one
+      // payment. Routing both through the same row-locked function means
+      // whichever gets there first wins, and the other cleanly sees
+      // 'already_completed' and does nothing.
+      final recovery = await _supabase.rpc('complete_recurring_package_recovery', params: {
+        'p_attempt_ref': _pendingAttemptRef,
+        'p_payment_id':  paymentId,
       });
+      final recoveryResult = recovery as Map<String, dynamic>;
+      final action = recoveryResult['action'] as String?;
 
-      if (!mounted) return;
-      final res = result as Map<String, dynamic>;
+      if (action == 'package_created' || action == 'already_completed') {
+        setState(() => _loading = false);
+        _showSuccessDialog();
+        return;
+      }
 
-      if (res['success'] != true) {
-        // Slots were taken between checkout and now — refund in full.
-        await _refund(paymentId, res['reason']?.toString() ?? 'package_creation_failed');
+      if (action == 'needs_refund') {
+        await _refund(paymentId, recoveryResult['reason']?.toString() ?? 'package_creation_failed');
         if (!mounted) return;
         setState(() {
           _loading = false;
@@ -341,8 +376,44 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         return;
       }
 
-      setState(() => _loading = false);
-      _showSuccessDialog();
+      if (action == 'no_draft_found') {
+        // The draft save before payment silently failed (non-fatal by
+        // design) — fall back to the direct path so the customer isn't
+        // stuck just because that bookkeeping insert had a hiccup.
+        final overrides = _dayOverrides.entries
+            .map((e) => {'day': e.key, 'time': e.value}).toList();
+        final result = await _supabase.rpc('create_recurring_package', params: {
+          'p_customer_id':          _userId,
+          'p_address_id':           _selectedAddressId,
+          'p_service_id':           widget.serviceId,
+          'p_start_date':           _dateStr(_startDate!),
+          'p_time':                 _selectedTime,
+          'p_duration_mins':        widget.durationMins,
+          'p_price_per_visit':      widget.pricePerVisit,
+          'p_total_amount':         _totalAmount,
+          'p_payment_id':           paymentId,
+          'p_day_overrides':        overrides,
+          'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+        });
+        if (!mounted) return;
+        final res = result as Map<String, dynamic>;
+        if (res['success'] != true) {
+          await _refund(paymentId, res['reason']?.toString() ?? 'package_creation_failed');
+          if (!mounted) return;
+          setState(() {
+            _loading = false;
+            _error = 'Those slots were just taken. Your payment has been '
+                     'refunded — please pick a different time.';
+          });
+          return;
+        }
+        setState(() => _loading = false);
+        _showSuccessDialog();
+        return;
+      }
+
+      // 'error' or any unexpected action — treat as a genuine failure.
+      throw Exception('Recovery RPC returned unexpected action: $action');
     } catch (e) {
       debugPrint('package creation error: $e');
       await _refund(paymentId, 'package_creation_error');
