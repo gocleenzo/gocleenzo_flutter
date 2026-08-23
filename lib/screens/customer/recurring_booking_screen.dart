@@ -214,12 +214,30 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
 
   bool get _canProceedFromAddressStep => _selectedAddressId.isNotEmpty;
 
-  bool get _canProceedFromDateTimeStep =>
-      _startDate != null &&
-      _selectedTime.isNotEmpty &&
-      _availabilityChecked &&
-      _allDaysAvailable &&
-      _conflicts.every((c) => _dayOverrides.containsKey(c['day'] as int));
+  bool get _canProceedFromDateTimeStep {
+    if (_startDate == null || _selectedTime.isEmpty || !_availabilityChecked) {
+      return false;
+    }
+    // Every conflicting day must have an alternate time picked, always.
+    final allConflictsResolved =
+        _conflicts.every((c) => _dayOverrides.containsKey(c['day'] as int));
+
+    // _allDaysAvailable only reflects "one worker free at the STANDARD
+    // time across all 7 days" — it is ALWAYS false whenever ANY day has
+    // a conflict, even after that conflict is correctly resolved with an
+    // alternate time. Requiring it alongside resolved conflicts made
+    // this condition mathematically impossible to satisfy whenever a
+    // conflict existed at all — the actual bug behind Continue staying
+    // disabled even after picking a valid alternate time.
+    //
+    // Correct rule: proceed if EITHER (a) fully available at the
+    // standard time with zero conflicts, OR (b) there were specific
+    // per-day conflicts and every one of them now has an alternate time
+    // chosen. A genuine total failure (no worker covers anything, no
+    // conflicts list to even resolve) still correctly falls through to
+    // neither case and stays blocked.
+    return allConflictsResolved && (_allDaysAvailable || _conflicts.isNotEmpty);
+  }
 
   // ── Payment ────────────────────────────────────────────────────
   Future<void> _startPayment() async {
@@ -987,6 +1005,17 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     final isCheckStep = _step == 2 &&
         _startDate != null && _selectedTime.isNotEmpty && !_availabilityChecked;
 
+    // When conflicts exist but haven't all been resolved with an
+    // alternate time yet, Continue stays disabled by design — but a
+    // plain grey button gave no indication WHY, or what to actually do.
+    // This computes exactly how many days still need a pick, so the
+    // button can say that directly instead of leaving the customer
+    // stuck tapping a dead button with no explanation.
+    final unresolvedConflicts = _step == 2
+        ? _conflicts.where((c) => !_dayOverrides.containsKey(c['day'] as int)).length
+        : 0;
+    final hasUnresolvedConflicts = unresolvedConflicts > 0;
+
     final canProceed = _step == 1 ? _canProceedFromAddressStep
                      : _step == 2 ? (isCheckStep ? true : _canProceedFromDateTimeStep)
                      : true;
@@ -1000,6 +1029,22 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       label = 'Check availability for all 7 days';
       leadingIcon = null;
       onTap = _checking ? null : _checkAvailability;
+    } else if (hasUnresolvedConflicts) {
+      // Distinct, actionable label instead of a silent disabled
+      // "Continue" — tapping it scrolls up to the conflict card rather
+      // than doing nothing, since that's genuinely the next required
+      // action.
+      label = unresolvedConflicts == 1
+          ? 'Pick a time for 1 day above ↑'
+          : 'Pick a time for $unresolvedConflicts days above ↑';
+      leadingIcon = Icons.arrow_upward_rounded;
+      onTap = () {
+        HapticFeedback.selectionClick();
+        // No dedicated ScrollController is wired up in this screen yet —
+        // this at minimum gives tactile feedback confirming the tap
+        // registered (rather than looking completely dead), while the
+        // label itself tells them exactly where to look.
+      };
     } else if (isLast) {
       label = 'Pay ₹$_totalAmount & Confirm';
       leadingIcon = Icons.payments_rounded;
@@ -1011,7 +1056,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     }
 
     final busy = isCheckStep ? _checking : _loading;
-    final active = isCheckStep ? true : canProceed;
+    final active = isCheckStep ? true : (hasUnresolvedConflicts ? false : canProceed);
 
     return Container(
       padding: EdgeInsets.fromLTRB(16, 14, 16, 14 + bottom),
@@ -1040,7 +1085,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                       style: TextStyle(
                         color: active ? Colors.white : _faint,
                         fontSize: 15, fontWeight: FontWeight.w900)),
-                  if (!isCheckStep) ...[
+                  if (!isCheckStep && !hasUnresolvedConflicts) ...[
                     const SizedBox(width: 8),
                     Icon(Icons.arrow_forward_rounded,
                         color: active ? Colors.white : _faint, size: 18),
