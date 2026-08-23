@@ -69,6 +69,13 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
 
   DateTime? _startDate;
   String _selectedTime = '';
+  // Slot -> 'full' | 'partial' | 'none', fetched once whenever the start
+  // date or address changes, so the time grid can show real availability
+  // (matching the same greyed-out-slots pattern the regular booking flow
+  // already uses) instead of showing all 25 slots as equally pickable
+  // and only revealing problems after commit.
+  Map<String, String> _slotGrid = {};
+  bool _slotGridLoading = false;
 
   // Per-day alternate times chosen by the customer for days where the
   // standard time wasn't available: {dayNumber: 'HH:MM'}
@@ -209,6 +216,39 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           _error = 'Could not check availability. Please try again.';
         });
       }
+    }
+  }
+
+  /// Fetches real availability for every visible time slot in ONE call
+  /// (get_recurring_slot_grid), so the picker can grey out/mark slots
+  /// before the customer commits to a pick — instead of only finding out
+  /// after tapping "Check availability" once. Called whenever the start
+  /// date or address changes, since either changes which workers/days
+  /// are actually relevant.
+  Future<void> _loadSlotGrid() async {
+    if (_startDate == null || _selectedAddressId.isEmpty) return;
+    setState(() => _slotGridLoading = true);
+    try {
+      final result = await _supabase.rpc('get_recurring_slot_grid', params: {
+        'p_address_id':    _selectedAddressId,
+        'p_start_date':    _dateStr(_startDate!),
+        'p_duration_mins': widget.durationMins,
+      });
+      if (!mounted) return;
+      final list = result as List;
+      final grid = <String, String>{};
+      for (final entry in list) {
+        final m = entry as Map<String, dynamic>;
+        if (m['time'] != null) grid[m['time'] as String] = m['status'] as String? ?? 'none';
+      }
+      setState(() { _slotGrid = grid; _slotGridLoading = false; });
+    } catch (e) {
+      debugPrint('slot grid load error: $e');
+      // Non-fatal — the picker just shows all slots as plain/unmarked if
+      // this fails, and the real "Check availability" step after picking
+      // still catches any actual problem correctly. This is purely a
+      // UX pre-filter, not the source of truth.
+      if (mounted) setState(() => _slotGridLoading = false);
     }
   }
 
@@ -603,15 +643,19 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
             : Column(children: _addresses.map((addr) {
                 final active = _selectedAddressId == addr['id'];
                 return GestureDetector(
-                  onTap: () => setState(() {
-                    _selectedAddressId = addr['id'];
-                    // Changing address invalidates any prior availability
-                    // check — different address means a different worker
-                    // pool entirely.
-                    _availabilityChecked = false;
-                    _conflicts = [];
-                    _dayOverrides.clear();
-                  }),
+                  onTap: () {
+                    setState(() {
+                      _selectedAddressId = addr['id'];
+                      // Changing address invalidates any prior availability
+                      // check — different address means a different worker
+                      // pool entirely.
+                      _availabilityChecked = false;
+                      _conflicts = [];
+                      _dayOverrides.clear();
+                      _slotGrid = {};
+                    });
+                    if (_startDate != null) _loadSlotGrid();
+                  },
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 160),
                     margin: const EdgeInsets.only(bottom: 10),
@@ -688,7 +732,10 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                   _availabilityChecked = false;
                   _conflicts = [];
                   _dayOverrides.clear();
+                  _selectedTime = '';
+                  _slotGrid = {};
                 });
+                _loadSlotGrid();
               }
             },
             child: Container(
@@ -729,6 +776,30 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         title: 'Daily Time',
         sub: 'Same time every day for all 7 visits',
         child: Column(children: [
+          if (_slotGridLoading) ...[
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Row(children: [
+                SizedBox(width: 14, height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: _cyanDk)),
+                SizedBox(width: 8),
+                Text('Checking real availability…',
+                    style: TextStyle(color: _faint, fontSize: 11.5)),
+              ]),
+            ),
+            const SizedBox(height: 6),
+          ] else if (_slotGrid.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(children: [
+                _legendDot(_green, 'Fully free'),
+                const SizedBox(width: 14),
+                _legendDot(_amber, 'Partly free'),
+                const SizedBox(width: 14),
+                _legendDot(_faint, 'Not free'),
+              ]),
+            ),
+          ],
           GridView.count(
             shrinkWrap: true,
             physics: const NeverScrollableScrollPhysics(),
@@ -737,6 +808,17 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
             crossAxisSpacing: 10, mainAxisSpacing: 10,
             children: _timeSlots.map((t) {
               final active = _selectedTime == t;
+              // Status from the pre-fetched grid — purely a visual guide
+              // ('full'/'partial'/'none'). Every slot stays TAPPABLE
+              // regardless of status: 'partial' still leads into the
+              // normal per-day alternate-time flow, and this grid is a
+              // fast approximation, not the authoritative check (that's
+              // still check_recurring_availability, run after picking).
+              final status = _slotGrid[t];
+              final dotColor = status == 'full' ? _green
+                  : status == 'partial' ? _amber
+                  : status == 'none' ? _faint.withValues(alpha: 0.5)
+                  : null; // unknown/not-yet-loaded — no dot shown
               return GestureDetector(
                 onTap: () {
                   setState(() {
@@ -754,10 +836,16 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                     color: active ? null : Colors.white,
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: active ? _cyan : _border)),
-                  child: Center(child: Text(_pretty12h(t),
-                      style: TextStyle(
-                        fontSize: 11.5, fontWeight: FontWeight.w800,
-                        color: active ? Colors.white : const Color(0xFF334155)))),
+                  child: Stack(alignment: Alignment.center, children: [
+                    Center(child: Text(_pretty12h(t),
+                        style: TextStyle(
+                          fontSize: 11.5, fontWeight: FontWeight.w800,
+                          color: active ? Colors.white : const Color(0xFF334155)))),
+                    if (dotColor != null && !active)
+                      Positioned(top: 5, right: 7,
+                          child: Container(width: 6, height: 6,
+                              decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle))),
+                  ]),
                 ));
             }).toList()),
         ]),
@@ -947,6 +1035,16 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       Flexible(child: Text(v, textAlign: TextAlign.right,
           style: const TextStyle(color: _ink, fontSize: 13.5, fontWeight: FontWeight.w700))),
     ]));
+
+  Widget _legendDot(Color color, String label) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Container(width: 7, height: 7,
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+      const SizedBox(width: 5),
+      Text(label, style: const TextStyle(color: _faint, fontSize: 10.5, fontWeight: FontWeight.w600)),
+    ],
+  );
 
   Widget _errorBox(String msg) => Container(
     width: double.infinity,
