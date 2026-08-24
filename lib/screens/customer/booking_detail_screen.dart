@@ -338,7 +338,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       case 'otp_verified':
         return 'OTP verified. The professional is ready to start work.';
       case 'in_progress':
-        return 'Your professional is currently working at your location.';
+        return 'Our professional is currently working at your location.';
       case 'completed':
         return 'Service completed! We hope you loved it. Please rate your experience.';
       case 'cancelled':
@@ -1539,7 +1539,15 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
         body: jsonEncode({
           'amount':   _kExtraTimePriceRupees * 100, // paise
           'currency': 'INR',
-          'receipt':  'extra_time_${widget.bookingId}_${DateTime.now().millisecondsSinceEpoch}',
+          // Razorpay caps `receipt` at 40 characters — a full UUID
+          // booking_id plus a timestamp blows way past that (and was
+          // the actual cause of the 500 "Failed to create order"
+          // error this replaced). Use just the first 8 chars of the
+          // booking id (same short form already shown elsewhere in
+          // this screen, e.g. the app bar's booking number) plus a
+          // short time suffix — still unique enough per attempt
+          // without touching the limit.
+          'receipt':  'xt_${widget.bookingId.substring(0, 8)}_${DateTime.now().millisecondsSinceEpoch % 1000000}',
           'notes': {
             'type':       'extra_time',
             'booking_id': widget.bookingId,
