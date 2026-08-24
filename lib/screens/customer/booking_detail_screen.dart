@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'review_popup.dart';
@@ -62,6 +64,12 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   static const _razorpayKey = 'rzp_live_TJIl6FAZg8I1ru';
   static const _kExtraTimeMinsAdded  = 20;
   static const _kExtraTimePriceRupees = 59;
+
+  // ── API base URL for the admin backend's payment routes ─────────
+  // Same host the app already calls for order creation elsewhere
+  // (booking flow / recurring packages). Centralized here as a
+  // constant so it's obvious where to change it if that host moves.
+  static const _paymentsApiBase = 'https://gocleenzo-admin.vercel.app';
 
   bool _reviewPromptShown = false;
 
@@ -1503,12 +1511,60 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     );
   }
 
-  void _startExtraTimePayment() {
+  // ── Extra time payment ───────────────────────────────────────
+  // FIXED: previously opened Razorpay checkout with only an `amount`
+  // and no `order_id` at all ("orderless" checkout). That meant no
+  // Razorpay Order object ever existed for this payment — so if the
+  // app was killed/backgrounded/lost network right after Razorpay
+  // captured the money but BEFORE _onExtraTimePaymentSuccess() below
+  // finished its Supabase update, the payment was permanently
+  // unrecoverable: the server-side webhook needs a real order_id (to
+  // read notes.type + notes.booking_id off of) and there was none.
+  //
+  // Now: create a real order via /api/payments/order FIRST (same as
+  // the normal booking flow already does), passing notes so the
+  // webhook can identify this as an extra_time payment and which
+  // booking it belongs to — then open checkout with that order_id.
+  // This gives extra-time payments the same server-side safety net
+  // normal bookings and recurring packages already have.
+  Future<void> _startExtraTimePayment() async {
     if (_addingExtraTime) return;
     setState(() => _addingExtraTime = true);
 
+    String orderId;
+    try {
+      final res = await http.post(
+        Uri.parse('$_paymentsApiBase/api/payments/order'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'amount':   _kExtraTimePriceRupees * 100, // paise
+          'currency': 'INR',
+          'receipt':  'extra_time_${widget.bookingId}_${DateTime.now().millisecondsSinceEpoch}',
+          'notes': {
+            'type':       'extra_time',
+            'booking_id': widget.bookingId,
+          },
+        }),
+      ).timeout(const Duration(seconds: 15));
+
+      if (res.statusCode != 200) {
+        throw Exception('Order creation failed: ${res.statusCode} ${res.body}');
+      }
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      final id = data['order_id'] as String?;
+      if (id == null) throw Exception('No order_id in response: ${res.body}');
+      orderId = id;
+    } catch (e) {
+      debugPrint('Extra time order creation error: $e');
+      if (mounted) setState(() => _addingExtraTime = false);
+      _showExtraTimeSnack('Could not start payment. Please try again.',
+          isError: true);
+      return;
+    }
+
     final options = {
       'key':         _razorpayKey,
+      'order_id':    orderId,
       'amount':      _kExtraTimePriceRupees * 100,
       'name':        'Cleenzo',
       'description': '+20 min Extra Time',
@@ -1552,10 +1608,17 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       _showExtraTimeSnack(
           '✅ +20 min added! ₹59 paid — no extra cash needed for this.');
     } catch (e) {
+      // Note: even if THIS client-side update fails (e.g. app loses
+      // network right here), the payment is no longer unrecoverable —
+      // the webhook will independently confirm the same payment via
+      // Razorpay's payment.captured event and call
+      // complete_extra_time_payment_recovery, which is idempotent
+      // with this same update. The customer's money and booking state
+      // will still end up correct even if this snackbar shows an error.
       debugPrint('Extra time DB update error: $e');
       _showExtraTimeSnack(
-          'Payment succeeded but saving failed. Contact support with '
-          'payment ID ${response.paymentId}.',
+          'Payment succeeded — confirming it now. If it doesn\'t show up '
+          'in a minute, contact support with payment ID ${response.paymentId}.',
           isError: true);
     } finally {
       if (mounted) setState(() => _addingExtraTime = false);
