@@ -302,33 +302,25 @@ class _ServicesScreenState extends State<ServicesScreen>
   }
 
   // ── Quick add to cart from grid card ─────────────────────────
- CartItem _templateFor(Map<String, dynamic> svc) {
+   CartItem _templateFor(Map<String, dynamic> svc) {
     final name      = svc['name'] as String? ?? '';
+    final id        = svc['id'] as String;
     final basePrice = (svc['base_price'] as num?)?.toInt()
         ?? CartService.defaultPriceFor(svc);
-    final t = CartService.typeOf(name);
-    // For 'fixed' services, CartService.durationFor(name) falls back to a
-    // hardcoded 60 min for anything not in its own small _tieredServices
-    // list — Kitchen Cabinet Cleaning (180 min) and Wardrobe Cleaning
-    // (150 min) both hit that fallback and silently reserved only 60
-    // min of worker time regardless of what duration_minutes actually
-    // said in the database. For fixed services, read the REAL duration
-    // straight from the service record instead of trusting that lookup.
-    final durationMins = t == CartItemType.fixed
-        ? ((svc['duration_minutes'] as num?)?.toInt() ?? CartService.durationFor(name))
-        : CartService.durationFor(name);
+    // Reads cart_type from the DB row — admin-controlled, no longer a
+    // hardcoded name match. See cart_type_column.sql.
+    final t = CartService.typeOfService(svc);
     return CartItem(
-      serviceId:       svc['id'] as String,
+      serviceId:       id,
       serviceName:     name,
       emoji:           _emojis[name],
       type:            t,
-      // Tiers built from database price columns — no hardcoded prices
       tiers:           t == CartItemType.tiered
-          ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking)
+          ? CartService.buildTiers(svc, isFirstBooking: _cart.isFirstBookingPriceFor(id, name))
           : [],
       pricePerUnit:    basePrice,
-      durationPerUnit: durationMins,
-      maxQty:          CartService.maxQtyFor(name),
+      durationPerUnit: CartService.durationForService(svc),
+      maxQty:          CartService.maxQtyForService(svc),
     );
   }
 
@@ -585,8 +577,8 @@ class _ServicesScreenState extends State<ServicesScreen>
     final basePrice  = (svc['base_price'] as num?)?.toInt() ?? 0;
     final icon       = _iconFor('${svc['category'] ?? ''} $name');
     final s          = _scale(context);
-    final isCartable = CartService.isCartable(name);
-    final itemType   = CartService.typeOf(name);
+        final isCartable = CartService.isCartable(name); // no_cart list stays name-based (fine)
+    final itemType   = CartService.typeOfService(svc);
     final qty        = _cart.quantityOf(svc['id'] as String? ?? '');
     final inCart     = qty > 0;
     final cartItem   = _cart.itemFor(svc['id'] as String? ?? '');
@@ -717,7 +709,7 @@ class _ServicesScreenState extends State<ServicesScreen>
                             child: Container(width: 34, height: 34,
                                 alignment: Alignment.center,
                                 child: Icon(Icons.add_rounded,
-                                    color: qty < CartService.maxQtyFor(name)
+                                                                    color: qty < CartService.maxQtyForService(svc)
                                         ? _cyan : _faint,
                                     size: 18))),
                         ])),

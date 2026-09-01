@@ -24,12 +24,6 @@ class BookingFlowScreen extends StatefulWidget {
   final List<Map<String, dynamic>>? cartItems;
   final int?    overridePrice;
   final int?    overrideDuration;
-  // The customer's ACTUAL selected duration (e.g. 30 min tier), before the
-  // +10min buffer and hour-rounding applied for worker slot-blocking.
-  // overrideDuration is already buffered/rounded — this is not. Used only
-  // for the customer-facing "Duration" display; slot-blocking logic still
-  // uses overrideDuration/_serviceDurationMins as before.
-  // Pass this from service_detail_screen.dart alongside overrideDuration.
   final int?    rawDurationMins;
   final String? selectedBhk;
   final int?    quantity;
@@ -69,36 +63,18 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   static const _green    = Color(0xFF10B981);
   static const _greenDk  = Color(0xFF059669);
 
-  // Instant booking window — 7AM to 7PM IST
   static const _instantStartHour = 7;
   static const _instantEndHour   = 19;
-
-  // Minimum lead time from "now" before ANY slot is bookable.
   static const _minNoticeMins = 30;
-
-  // Travel buffer a worker needs after finishing one job before they can
-  // start the next one. Applied on top of each existing booking's
-  // actual/expected end time (which itself accounts for extra time used).
   static const _travelBufferMins = 30;
 
   int  _step    = 1;
   bool _loading = false;
   bool _checkingInstant = false;
-  // Gates the whole screen behind a plain loading state until the
-  // default address's serviceability has been checked. If it's blocked
-  // (excluded zone or unlisted pincode), this stays true forever and the
-  // screen is popped instead — the customer never sees the date/address
-  // steps flash on screen even briefly.
   bool _initializing = true;
 
-  // ── Razorpay ──────────────────────────────────────────────────
   late Razorpay _razorpay;
-  // Test key — replace with live key when going live
   static const _razorpayKey = 'rzp_live_TJIl6FAZg8I1ru';
-  // (booking is now created AFTER payment succeeds — see _onPaymentSuccess —
-  // so there's no "pending" booking id to track between opening Razorpay
-  // and the callback firing; all data needed to create the booking is
-  // already held in this State's fields/widget properties.)
 
   DateTime _selectedDate = DateTime.now();
   String   _selectedTime = '';
@@ -114,7 +90,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   String _appliedPromoCode = '';
   int    _discount         = 0;
 
-  // ── App settings / fees ──────────────────────────────────────
   int  _platformFee       = 5;
   int  _searchFee         = 19;
   bool _searchFeeEnabled  = true;
@@ -159,23 +134,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   List<DateTime> get _dates =>
       List.generate(7, (i) => DateTime.now().add(Duration(days: i)));
 
-  // Every cart item's 'price' field is ALREADY the total for that whole
-  // line (all its units) — CartService.buildTiers() bakes the correct
-  // first-booking ₹25-for-the-first-unit discount into each ELIGIBLE
-  // service independently when the cart item is built. So this just sums
-  // each item's price as-is.
-  //
-  // This used to do two things wrong: (1) multiply price by quantity a
-  // SECOND time (price was already the line total, not a per-unit rate —
-  // so a qty-2 item was charged at price×2 instead of just price, roughly
-  // doubling real charges for any multi-unit cart item), and (2) when
-  // isFirstBooking was true, blindly override item[0]'s price to a flat
-  // ₹25 regardless of its actual quantity or whether it was even an
-  // eligible service, while leaving every other item at full undiscounted
-  // price even if THEY were eligible services too. Both are gone now —
-  // the already-correct per-item price from the cart is trusted directly,
-  // which is also exactly what the cart screen itself displays, so the
-  // payment amount and the cart total can no longer disagree.
   int get _baseAmount {
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       return widget.cartItems!.fold(0, (s, c) => s + (c['price'] as num).toInt());
@@ -190,33 +148,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   int get _finalAmount =>
       (_baseAmount - _discount + _feesTotal).clamp(0, 999999);
 
-  /// Rounds minutes up to the nearest 30min boundary — matches _timeSlots,
-  /// which is itself a 30-min grid (07:00, 07:30, 08:00, ...).
-  ///
-  /// NOTE: this rounding helper is now UNUSED in the reservation path
-  /// below (kept only in case something else still calls it) — see the
-  /// comment on _serviceDurationMins for why padding+rounding was
-  /// removed entirely.
   static int _roundUpToHour(int mins) =>
       mins <= 0 ? 30 : ((mins / 30).ceil()) * 30;
 
-  /// Actual service duration in minutes — used for ALL slot checking logic.
-  ///
-  /// Reserves the EXACT service duration — no added buffer, no rounding
-  /// to any grid. Previously this added a flat 10-min buffer and then
-  /// rounded UP to the next 30-min boundary, which meant an exact 30-min
-  /// service (30 + 10 = 40min) always got rounded up to a full 60
-  /// minutes reserved — a real 30-min job was blocking a worker for
-  /// twice as long as it actually took, on top of whatever real travel
-  /// buffer applied afterward. The 30-min _timeSlots list is only a
-  /// display grid for START times — it was never meant to also force
-  /// the BLOCK duration itself onto that same grid. The travel buffer
-  /// (_travelBufferMins, itself skipped for same-address bookings — see
-  /// _isWorkerFreeAtSlot) is the only real gap between two DIFFERENT
-  /// jobs now; nothing pads the job's own duration anymore.
   int get _serviceDurationMins {
-    // 1. Cart — sum each item's duration exactly as stored (already the
-    //    correct total per line — see note below), no padding.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
@@ -224,29 +159,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       }
       return total > 0 ? total : 60;
     }
-
-    // 2. Explicit override from service_detail_screen.dart. NOTE: that
-    //    screen may still independently add its own buffer/rounding
-    //    before passing this value down — this screen no longer adds
-    //    any padding of its own, but if bookings coming through THIS
-    //    path still show over-reservation, the same fix needs to be
-    //    applied in service_detail_screen._computedDuration too, since
-    //    this file doesn't have visibility into that screen's logic.
     if (widget.overrideDuration != null) return widget.overrideDuration!;
-
-    // 3. DB fallback — exact duration, no padding.
     return (_service?['duration_minutes'] as num?)?.toInt() ?? 60;
   }
 
   int get _slotsBlocked => (_serviceDurationMins / 60).ceil();
 
-  /// The customer's ACTUAL selected duration — no +10min buffer, no
-  /// hour-rounding. This is what should be shown to the customer/admin as
-  /// "Duration", separate from `_serviceDurationMins` (which is purely an
-  /// internal value for reserving worker time slots).
   int get _rawServiceDurationMins {
-    // 1. Cart: sum each item's real duration — already the total per line,
-    //    see note above. No buffer/rounding here either.
     if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
       int total = 0;
       for (final item in widget.cartItems!) {
@@ -254,30 +173,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       }
       return total > 0 ? total : 60;
     }
-
-    // 2. Single-service flow: use the raw value passed in explicitly.
     if (widget.rawDurationMins != null) return widget.rawDurationMins!;
-
-    // 3. Fallback — no raw value was passed (e.g. caller hasn't been
-    // updated yet to pass rawDurationMins). Falls back to the DB's base
-    // duration_minutes if available, else the buffered value as a last
-    // resort (better than nothing, but will overstate actual duration).
     final dbRaw = (_service?['duration_minutes'] as num?)?.toInt();
     return dbRaw ?? _serviceDurationMins;
   }
 
   String? _userId;
-  // Set at the start of _confirmBookingWithPayment, read later in
-  // _onPaymentSuccess (a separate Razorpay callback that doesn't have
-  // direct access to that method's local variables) — needed to call
-  // complete_payment_booking_recovery with the SAME attempt_ref/otp the
-  // pending draft was saved under.
   String? _pendingAttemptRef;
   String? _pendingBookingOtp;
-  // Customer's phone/email, fetched once in _loadData() and passed to
-  // Razorpay's checkout as prefill data — without this, Razorpay's own
-  // checkout screen makes the customer type their phone number in AGAIN
-  // before showing payment methods, even though they're already logged in.
   String? _userPhone;
   String? _userEmail;
 
@@ -350,24 +253,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       }
     });
 
-    // Check the default address's serviceability RIGHT NOW, before this
-    // screen's actual content (date/address/notes steps) is ever
-    // revealed — not just at the final confirm step. _initializing stays
-    // true the entire time this check is running, so build() keeps
-    // showing a plain loading spinner instead of the real UI.
-    //
-    // If blocked: show the dialog, then POP THE WHOLE SCREEN when it's
-    // dismissed — the customer never sees the schedule/instant flow at
-    // all, not even briefly. We deliberately don't bother loading promos,
-    // slot availability, or app settings in this case, since none of
-    // that will ever be shown.
-    //
-    // If they'd picked a different address that turns out serviceable,
-    // they can still get there by going back and re-entering — this
-    // early gate only ever looks at the DEFAULT address, since that's
-    // the only one known before the screen would otherwise open. The
-    // real, authoritative check still runs again at confirm time via
-    // _askConfirm() regardless of what happens here.
     if (_addresses.isNotEmpty && !await _isSelectedAddressServiceable()) {
       if (!mounted) return;
       _showAreaNotServiceableDialog(onDismiss: () {
@@ -375,7 +260,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           Navigator.of(context).pop();
         }
       });
-      return; // never set _initializing = false — screen stays gated/blank
+      return;
     }
 
     if (!widget.isFirstBooking) _loadPromos();
@@ -385,7 +270,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (mounted) setState(() => _initializing = false);
   }
 
-  // ── App settings (platform fee + search fee) ─────────────────
   Future<void> _loadAppSettings() async {
     try {
       final data = await _supabase
@@ -407,24 +291,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // PINCODE-BASED WORKER RESTRICTION
-  // ═══════════════════════════════════════════════════════════════
-  //
-  // Mirrors the SAME restriction try_claim_slot enforces server-side
-  // (address's pincode -> worker_pincodes assignments), so the slot
-  // picker never shows a slot as "available" that would then be
-  // rejected at confirm time. This is purely a client-side PREVIEW for
-  // UX accuracy — try_claim_slot remains the real, authoritative,
-  // atomic gate; this just keeps the two in sync so the customer isn't
-  // surprised.
-  //
-  // Returns null if there's no restriction for the currently selected
-  // address (no pincode on file, or that pincode has zero worker
-  // assignments) — meaning every available worker remains eligible,
-  // exactly as before this feature existed. Fails open (returns null)
-  // on any error, so a network hiccup here never blocks a booking that
-  // would otherwise be allowed.
   Future<Set<String>?> _resolveZoneRestrictedWorkerIds() async {
     try {
       final addr = _addresses.firstWhere(
@@ -439,8 +305,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final ids = (assignments as List)
           .map((r) => r['worker_id'] as String)
           .toSet();
-      // Empty assignment list = pincode has no restriction configured
-      // yet — same "fail open" behaviour as try_claim_slot.
       return ids.isEmpty ? null : ids;
     } catch (e) {
       debugPrint('Pincode eligibility check failed (failing open): $e');
@@ -448,20 +312,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ═══════════════════════════════════════════════════════════════
-  // INSTANT BOOKING AVAILABILITY CHECK
-  // ═══════════════════════════════════════════════════════════════
-
-  /// Returns null if all checks pass (can proceed).
-  /// Returns an error reason string if booking should be blocked.
-  /// Holds date-specific schedule data for a set of workers, fetched in a
-  /// single query. [byWorkerDate] is workerId -> 'yyyy-MM-dd' -> that day's
-  /// {enabled, start, end, breaks}. [hasAny] is the set of worker IDs who
-  /// have EVER had at least one worker_schedule_dates row — used to decide
-  /// the fallback for a date with no explicit entry: if the worker has
-  /// never used date-specific scheduling at all, default to available
-  /// 7AM-7PM with no break (same as the old system's default); if they
-  /// have some dates set but not this one, treat as unavailable that date.
   Future<_WorkerScheduleLookup> _fetchWorkerScheduleDates(
       List<String> workerIds) async {
     if (workerIds.isEmpty) return _WorkerScheduleLookup({}, {});
@@ -485,9 +335,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     return _WorkerScheduleLookup(byWorkerDate, hasAny);
   }
 
-  /// Is this worker scheduled to work at [slotDt] for [durationMins], per
-  /// their DATE-SPECIFIC schedule (worker_schedule_dates) — replaces the
-  /// old day-of-week _isWorkerInShift. Excludes their break window, if any.
   bool _isWorkerScheduledForDate(
     String workerId, DateTime slotDt, int durationMins,
     _WorkerScheduleLookup lookup,
@@ -501,14 +348,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final entry = lookup.byWorkerDate[workerId]?[dateStr];
     if (entry == null) {
       if (lookup.hasAny.contains(workerId)) return false;
-      // Never used date-specific scheduling at all — fallback default.
       return slotMins >= 420 && slotEndMins <= 1140;
     }
     if (entry['enabled'] != true) return false;
     final startMins = _timeToMins(entry['start'] as String);
     final endMins   = _timeToMins(entry['end'] as String);
     if (slotMins < startMins || slotEndMins > endMins) return false;
-    // Exclude the worker's break — the actual feature being fixed here.
     for (final b in (entry['breaks'] as List)) {
       final bStart = _timeToMins(b['from'] as String);
       final bEnd   = _timeToMins(b['to'] as String);
@@ -522,21 +367,17 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final now          = DateTime.now();
     final hour         = now.hour;
     final durationMins = _serviceDurationMins;
-    
 
-    // 1. Time window check: slot START must be within 7AM-7PM
+
     if (hour < _instantStartHour || hour >= _instantEndHour) {
       return 'time_window';
     }
 
-    // 2. Duration overflow check: service must complete before 7PM
-    //    e.g. 6:30PM + 90min = 8:00PM > 7PM -> blocked
     final serviceEndMins = (now.hour * 60 + now.minute) + durationMins;
     if (serviceEndMins > _instantEndHour * 60) {
-      return 'time_window'; // same dialog: not enough time today
+      return 'time_window';
     }
 
-    // 3. Worker availability check
     try {
       final workersData = await _supabase
           .from('workers')
@@ -544,9 +385,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .eq('is_available', true);
       var workers = (workersData as List).cast<Map<String, dynamic>>();
 
-      // Zone restriction — same rule try_claim_slot applies server-side.
-      // See _resolveZoneRestrictedWorkerIds for the "null = unrestricted"
-      // contract.
       final eligibleIds = await _resolveZoneRestrictedWorkerIds();
       if (eligibleIds != null) {
         workers = workers
@@ -556,14 +394,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (workers.isEmpty) return 'no_workers';
 
-      // NOTE: booking_duration_minutes is included alongside
-      // services(duration_minutes) — it's the authoritative, already-
-      // buffered/rounded duration actually RESERVED for each existing
-      // booking (set via p_booking_duration_minutes in try_claim_slot).
-      // See _isWorkerFreeAtSlot for why this matters: without it, a
-      // multi-service/cart booking (whose services() join often resolves
-      // to null) would silently fall back to using the CURRENT customer's
-      // own duration instead of the existing booking's real one.
       final activeBookingsData = await _supabase
           .from('bookings')
           .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, address_id, services(duration_minutes)')
@@ -577,26 +407,22 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       for (final worker in workers) {
         final workerId = worker['user_id'] as String;
 
-        // Check worker is scheduled today (date-specific, excludes break)
-        // AND that duration fits before shift end
         if (!_isWorkerScheduledForDate(workerId, now, durationMins, scheduleLookup)) {
           continue;
         }
 
-        // Check worker is not currently on a job (incl. travel buffer)
         if (!_isWorkerFreeAtSlot(workerId, now, durationMins,
             activeBookings, newAddressId: _selectedAddressId)) {
           continue;
         }
 
-        // Found a free worker who can complete the job
         return null;
       }
 
       return 'no_workers';
     } catch (e) {
       debugPrint('Instant availability check error: $e');
-      return null; // fail open
+      return null;
     }
   }
 
@@ -607,7 +433,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     setState(() => _checkingInstant = false);
 
     if (reason == null) {
-      // All good — move to next step
       setState(() => _step++);
       return;
     }
@@ -834,7 +659,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
-  // ── Slot Availability (for scheduled bookings) ───────────────
   Future<void> _loadSlotAvailability(DateTime date) async {
     setState(() { _slotsLoading = true; _slotAvailability = {}; });
     try {
@@ -844,14 +668,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           .eq('is_available', true);
       var workers = (workersData as List).cast<Map<String, dynamic>>();
 
-      // Zone restriction — same rule try_claim_slot applies server-side.
-      // Checked here BEFORE computing per-slot availability so the
-      // picker's green/grey slots always match what a real booking
-      // attempt against this address would actually accept. Without
-      // this, a customer could see a slot as available, pick it, and
-      // have it rejected at confirm time with a confusing "slot just
-      // filled up" message even though nothing was ever actually full —
-      // it was simply zone-restricted the whole time.
       final eligibleIds = await _resolveZoneRestrictedWorkerIds();
       if (eligibleIds != null) {
         workers = workers
@@ -874,19 +690,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final dayEndUtc =
           DateTime(date.year, date.month, date.day, 23, 59, 59).toUtc();
 
-      // Pull bookings that could still overlap this day. We widen the query
-      // slightly on the lower bound so an in-progress job that started the
-      // previous day (overnight edge case) is still accounted for.
-      //
-      // NOTE: booking_duration_minutes is included alongside
-      // services(duration_minutes) — it's the authoritative, already-
-      // buffered/rounded duration actually RESERVED for each existing
-      // booking (set via p_booking_duration_minutes in try_claim_slot).
-      // See _isWorkerFreeAtSlot for why this matters: without it, a
-      // multi-service/cart booking (whose services() join often resolves
-      // to null) would silently fall back to using the CURRENT customer's
-      // own duration instead of the existing booking's real one — wildly
-      // over- or under-blocking slots around it.
       final bookingsData = await _supabase
           .from('bookings')
           .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, address_id, services(duration_minutes)')
@@ -897,14 +700,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
 
       final now      = DateTime.now();
-      // Minimum lead time from right now — NOT a flat 2 hours.
       final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
       final durationMins = _serviceDurationMins;
       debugPrint('SLOT DEBUG (schedule): durationMins=$durationMins, cartItems=${widget.cartItems}, overrideDuration=${widget.overrideDuration}');
 
-      // ONE query for all workers' date-specific schedules (incl. breaks),
-      // instead of a per-worker day-of-week lookup — efficient regardless
-      // of how many workers are being checked.
       final workerIds = workers.map((w) => w['user_id'] as String).toList();
       final scheduleLookup = await _fetchWorkerScheduleDates(workerIds);
 
@@ -965,16 +764,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     return int.parse(parts[0]) * 60 + int.parse(parts[1]);
   }
 
-  /// Returns true only if the worker has no existing booking that overlaps
-  /// [slotDt, slotDt + durationMins] once a 30-min travel buffer is added
-  /// after each existing booking's actual/expected end time.
-  ///
-  /// "Actual/expected end" of an existing booking =
-  ///   (work_started_at ?? scheduled_at) + planned duration + extra_time_mins
-  /// i.e. if the worker used the +20min extra-time feature mid-job, that
-  /// extra time pushes the buffer window later too — the worker isn't
-  /// "free" until 30 min after they actually finish, not the originally
-  /// scheduled finish time.
   bool _isWorkerFreeAtSlot(String workerId, DateTime slotDt,
       int durationMins, List<Map<String, dynamic>> bookings,
       {String? newAddressId}) {
@@ -990,41 +779,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       final bStart = workStartedAt ?? scheduledAt;
       if (bStart == null) continue;
 
-      // booking_duration_minutes is the authoritative, already-buffered/
-      // rounded duration that was actually RESERVED for this existing
-      // booking at the time it was made (set via p_booking_duration_minutes
-      // in try_claim_slot) — this is what must be used to compute when
-      // this worker becomes free again. Falling straight through to
-      // `durationMins` (the NEW customer's own duration, unrelated to
-      // this existing booking) was the bug: for any cart/multi-service
-      // booking, the services() join below resolves to null (bookings
-      // made via booking_items don't have a single service_id), so the
-      // code silently substituted the CURRENT customer's selected
-      // duration for someone else's already-booked job — wildly over- or
-      // under-blocking the slots around it.
       final bDur = (booking['booking_duration_minutes'] as num?)?.toInt()
           ?? (booking['services']?['duration_minutes'] as num?)?.toInt()
           ?? durationMins;
-      // 30-min grid, matching _roundUpToHour above — booking_duration_minutes
-      // is normally already on this grid (it WAS _serviceDurationMins at
-      // creation time), so this is mainly a safety no-op for that case, and
-      // only actually rounds anything when falling back to the raw
-      // services.duration_minutes or durationMins values above.
       final bDurRounded = (bDur / 30).ceil() * 30;
       final extraMins = (booking['extra_time_mins'] as num?)?.toInt() ?? 0;
 
-      // Actual/expected end, including any extra time already added.
       final bEnd = bStart.add(Duration(minutes: bDurRounded + extraMins));
 
-      // Same address as the NEW booking being checked -> no travel time
-      // is actually needed between the two jobs, so skip the 30-min
-      // buffer entirely, regardless of how short the new service is.
-      // Different address (or either side missing an address id) ->
-      // keep the full buffer, since real travel time is needed. This
-      // mirrors the same rule applied server-side in try_claim_slot /
-      // check_slot_availability — without it, this client-side preview
-      // could show a slot as blocked that a real booking attempt would
-      // actually allow.
       final sameAddress = newAddressId != null &&
           newAddressId.isNotEmpty &&
           booking['address_id'] != null &&
@@ -1032,18 +794,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       final bufferMins = sameAddress
           ? 0
-          // If this job's customer already used the "+20 min Extra Time"
-          // feature, that extension already ate 20 of the normal 30-min
-          // travel buffer's worth of the worker's slack — only 10
-          // genuine minutes remain before the worker needs to leave for
-          // the next (different-address) job. Same-address always stays
-          // 0 regardless, since no travel is needed either way.
           : (extraMins > 0 ? 10 : _travelBufferMins);
 
-      // Buffer applied to BOTH sides of the existing booking's window —
-      // before AND after. A new candidate ending EXACTLY when an
-      // existing booking starts must be blocked, since that leaves zero
-      // travel time before the existing job.
       final bEndWithBuffer   = bEnd.add(Duration(minutes: bufferMins));
       final bStartWithBuffer = bStart.subtract(Duration(minutes: bufferMins));
 
@@ -1054,7 +806,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     return true;
   }
 
-  // ── Promos ───────────────────────────────────────────────────
   Future<void> _loadPromos() async {
     if (_userId == null) return;
     setState(() => _promosLoading = true);
@@ -1108,7 +859,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
   void _applyPromo(Map<String, dynamic> promo) {
     if (widget.isFirstBooking) return;
-    // One promo per order — block if another is already applied
     if (_appliedPromoId.isNotEmpty &&
         _appliedPromoId != promo['id'].toString()) {
       _showSnack('Remove current promo first before applying another',
@@ -1154,21 +904,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
-  // ── Service area check ──────────────────────────────────────────
-  // Address saving is never gated (see address_confirm_screen.dart) — this
-  // is the ONE place a customer actually gets blocked from booking if
-  // their selected address falls outside an admin-enabled service_areas
-  // entry. Matching is now an exact pincode match (previously loose
-  // area/city text matching) — pincodes are unambiguous, unlike area
-  // names which vary in spelling and can overlap between neighbourhoods.
-  // ── Exclusion zone check ──────────────────────────────────────────
-  // Checked FIRST, before the service_areas allowlist. Mirrors the SAME
-  // check try_claim_slot runs server-side (via find_zone_for_point +
-  // service_zones.is_exclusion). This is purely a client-side PREVIEW so
-  // the customer sees "not serviceable" immediately, before ever reaching
-  // payment — try_claim_slot remains the real, authoritative, atomic
-  // gate; this just avoids a pay-then-refund round trip for an address
-  // that was always going to be rejected.
   Future<bool> _isInExcludedZone() async {
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
@@ -1192,7 +927,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return row != null && row['is_exclusion'] == true;
     } catch (e) {
       debugPrint('Exclusion zone check error: $e');
-      return false; // fail open — don't block a booking over a network hiccup
+      return false;
     }
   }
 
@@ -1202,7 +937,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
     final pincode = (addr['pincode'] as String?)?.trim() ?? '';
-    if (pincode.isEmpty) return true; // no pincode on file — nothing to check against
+    if (pincode.isEmpty) return true;
 
     try {
       final rows = await _supabase
@@ -1213,7 +948,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return (rows as List).isNotEmpty;
     } catch (e) {
       debugPrint('Service area check error: $e');
-      return true; // fail open — don't block a booking over a network hiccup
+      return true;
     }
   }
 
@@ -1268,10 +1003,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
               ),
             ]),
           ),
-          // Close (✕) — sits on the dialog card itself, top-right corner,
-          // not floating on the underlying page. Same effect as "Got it"
-          // (both just pop this dialog off the Navigator stack), just a
-          // more conventional place to look for a way to dismiss.
           Positioned(
             top: 12, right: 12,
             child: GestureDetector(
@@ -1287,27 +1018,9 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           ),
         ]),
       ),
-    // Fires when the dialog closes, however it closes — "Got it" tap,
-    // the new ✕ tap, OR tapping the barrier outside it. Used by the
-    // initial-load gate to pop this whole screen once the customer
-    // acknowledges the message, instead of leaving them stuck on a
-    // permanently blank loading state.
     ).then((_) => onDismiss?.call());
   }
 
-  // ── Pre-payment slot availability recheck ─────────────────────
-  // The customer may have picked their date/time several minutes ago
-  // (step 1) and only now, at the final confirm tap, is about to pay —
-  // plenty of time for someone else to have taken that slot in between.
-  // Previously this was only caught AFTER payment succeeded (inside
-  // _onPaymentSuccess -> try_claim_slot), meaning the customer paid
-  // first and only then found out, even though the payment was
-  // immediately auto-refunded. Checking here — right when "Choose
-  // Payment & Confirm" is tapped, before Razorpay ever opens — surfaces
-  // "Slot Just Filled Up!" immediately instead, with no pay-then-refund
-  // round trip. try_claim_slot's own atomic check still runs after
-  // payment as the final safety net for the rare case where the slot
-  // fills in the few seconds between this check and payment completing.
   Future<bool> _checkSlotStillAvailable() async {
     try {
       final scheduledAt = _isInstant ? DateTime.now().toUtc() : _buildScheduledAt();
@@ -1320,7 +1033,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return res['available'] == true;
     } catch (e) {
       debugPrint('check_slot_availability error: $e');
-      return true; // fail open — never block on a preview-check hiccup
+      return true;
     }
   }
 
@@ -1331,8 +1044,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return;
     }
 
-    // Re-verify BEFORE showing the confirm dialog / opening payment —
-    // see _checkSlotStillAvailable above for why this moved earlier.
     if (_isSchedule) {
       final stillAvailable = await _checkSlotStillAvailable();
       if (!mounted) return;
@@ -1457,7 +1168,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             const Text('How would you like to pay?',
                 style: TextStyle(color: Color(0xFF64748B), fontSize: 13)),
             const SizedBox(height: 20),
-            // Online Payment
             GestureDetector(
               onTap: () => Navigator.pop(ctx, 'online'),
               child: Container(
@@ -1490,7 +1200,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 ]),
               ),
             ),
-            // COD
             GestureDetector(
               onTap: () => Navigator.pop(ctx, 'cod'),
               child: Container(
@@ -1533,16 +1242,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-
-
-
-  // ── Razorpay: open payment for online bookings ────────────────
-  // ── Payment-first flow ──────────────────────────────────────────
-  // Razorpay opens FIRST, before any booking exists. Only once payment
-  // succeeds do we attempt try_claim_slot. If the slot is gone by then
-  // (someone else took it in the meantime), the payment is automatically
-  // refunded via the backend refund API — the customer is never left
-  // having paid for a slot they didn't get.
   Future<void> _confirmBookingWithPayment(String paymentMethod) async {
     if (_selectedAddressId.isEmpty) {
       _showSnack('Please select an address', isError: true); return;
@@ -1554,23 +1253,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (userId == null) { if (mounted) context.go('/login'); return; }
     _userId = userId;
 
-    // No booking exists yet — nothing to attach as 'booking_id'. A short
-    // reference tag is enough to identify this attempt in the Razorpay
-    // dashboard if support needs to look it up later.
     final attemptRef = 'attempt_${DateTime.now().millisecondsSinceEpoch}';
     _pendingAttemptRef = attemptRef;
 
-    // Create the Razorpay order server-side FIRST. This binds the checkout
-    // to a specific, server-verified amount — without this, a tampered
-    // client could open checkout for any amount and there'd be nothing
-    // tying the "success" callback to a real charge for the right total.
     String orderId;
     try {
       final orderResp = await http.post(
         Uri.parse('$_apiBaseUrl/api/payments/order'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'amount':   _finalAmount * 100, // paise — order route expects paise directly
+          'amount':   _finalAmount * 100,
           'currency': 'INR',
           'receipt':  attemptRef,
         }),
@@ -1595,22 +1287,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     if (!mounted) return;
     setState(() => _loading = false);
 
-    // Save a full draft of this booking attempt BEFORE opening Razorpay
-    // checkout. If the app is killed/backgrounded/loses network right
-    // after payment succeeds but before _onPaymentSuccess finishes, this
-    // draft is what the server-side webhook (/api/payments/webhook) uses
-    // to complete the booking on its own — otherwise a captured payment
-    // with no booking and no refund could silently happen, since none of
-    // that follow-up logic would ever get to run. Failure to save this
-    // draft is NON-FATAL — it never blocks the actual payment flow; it
-    // just means there'd be nothing for the webhook to recover with,
-    // same as before this safety net existed.
     final scheduledAtForDraft = _isInstant
         ? DateTime.now().toUtc()
         : _buildScheduledAt();
     final otpForDraft =
         (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
-    _pendingBookingOtp = otpForDraft; // reused in _onPaymentSuccess below
+    _pendingBookingOtp = otpForDraft;
     try {
       await _supabase.rpc('create_pending_payment_booking', params: {
         'p_attempt_ref':                attemptRef,
@@ -1640,14 +1322,13 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
       });
     } catch (e) {
-      // Non-fatal by design — see comment above. Log only.
       debugPrint('create_pending_payment_booking failed (non-fatal): $e');
     }
 
     final options = {
       'key':          _razorpayKey,
       'order_id':     orderId,
-      'amount':       _finalAmount * 100, // Razorpay expects paise
+      'amount':       _finalAmount * 100,
       'name':         'Cleenzo',
       'description':  (_service?['name'] as String? ?? 'Home Cleaning Service'),
       'prefill': {
@@ -1661,17 +1342,14 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       'theme': {
         'color': '#06B6D4',
       },
-      'method': {
+            'method': {
         'upi':          true,
         'netbanking':   true,
-        'card':         false,
-        'wallet':       false,
+        'card':         true,
+        'wallet':       true,
         'emi':          false,
         'cardless_emi': false,
         'paylater':     false,
-      },
-      'upi': {
-        'flow': 'intent',
       },
     };
 
@@ -1683,21 +1361,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ── Razorpay callbacks ────────────────────────────────────────
-
-  /// Payment succeeded — verify the signature server-side FIRST (proves the
-  /// callback is genuine and matches the order we created, not spoofed),
-  /// then attempt to claim the slot and create the booking. If claiming
-  /// fails (slot taken in the meantime), refund immediately since the
-  /// customer already paid.
   Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
     if (!mounted) return;
     setState(() => _loading = true);
 
     final paymentId = response.paymentId;
     if (paymentId == null) {
-      // Should never happen on a genuine success callback, but guard
-      // anyway — can't refund without a payment id, can't verify either.
       if (mounted) {
         setState(() => _loading = false);
         _showSnack(
@@ -1708,11 +1377,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       return;
     }
 
-    // Verify the signature server-side before trusting this callback at
-    // all. A missing/invalid signature means either an integration bug
-    // (order_id wasn't passed) or a tampered client — either way, do NOT
-    // create a booking from it. Still attempt a refund defensively, since
-    // Razorpay's own SDK did report success on the device.
     try {
       final verifyResp = await http.post(
         Uri.parse('$_apiBaseUrl/api/payments/verify'),
@@ -1741,9 +1405,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       }
     } catch (e) {
       debugPrint('Verify request error: $e');
-      // Verification call itself failed (network/server) — don't silently
-      // proceed to create a booking on an unverified payment. Refund and
-      // let the customer retry.
       await _refundPayment(paymentId, reason: 'verification_request_failed');
       if (mounted) {
         setState(() => _loading = false);
@@ -1757,8 +1418,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
     final userId = _userId;
     if (userId == null) {
-      // Shouldn't happen (userId was set before payment opened), but if
-      // it does we can't create the booking — refund to be safe.
       await _refundPayment(paymentId, reason: 'missing_user');
       if (mounted) {
         setState(() => _loading = false);
@@ -1772,23 +1431,10 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     final scheduledAt = _isInstant
         ? DateTime.now().toUtc()
         : _buildScheduledAt();
-    // Reuse the SAME otp already saved in the pending draft (set in
-    // _confirmBookingWithPayment) — falls back to generating one fresh
-    // only if that never got set (e.g. this payment flow started before
-    // this field existed).
     final otp = _pendingBookingOtp ??
         (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
 
     try {
-      // Goes through the SAME locked recovery function the server-side
-      // webhook also uses (complete_payment_booking_recovery), instead
-      // of calling try_claim_slot directly here. This is deliberate: if
-      // this app callback and the webhook ever fired at close to the
-      // same moment (e.g. slow network right as the app resumes), calling
-      // try_claim_slot independently in each place could create TWO
-      // separate bookings for one payment. Routing both through the same
-      // row-locked function means whichever gets there first wins, and
-      // the other cleanly sees 'already_completed' and does nothing.
       final recovery = await _supabase.rpc('complete_payment_booking_recovery', params: {
         'p_attempt_ref': _pendingAttemptRef,
         'p_payment_id':  paymentId,
@@ -1801,10 +1447,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       if (action == 'booking_created' || action == 'already_completed') {
         bookingId = recoveryResult['booking_id'] as String?;
       } else if (action == 'needs_refund') {
-        // The slot was genuinely gone by the time this ran — refund.
-        // (complete_payment_booking_recovery only marks this in the DB;
-        // it doesn't call Razorpay itself, since the DB function can't
-        // hold the Razorpay secret — that call happens here instead.)
         await _refundPayment(paymentId, reason: recoveryResult['reason']?.toString() ?? 'slot_full');
         if (!mounted) return;
         setState(() => _loading = false);
@@ -1817,9 +1459,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         }
         return;
       } else if (action == 'no_draft_found') {
-        // The draft save before payment silently failed (non-fatal by
-        // design) — fall back to the direct path so the customer isn't
-        // stuck just because that bookkeeping insert had a hiccup.
         final result = await _supabase.rpc('try_claim_slot', params: {
           'p_customer_id':          userId,
           'p_address_id':           _selectedAddressId,
@@ -1873,7 +1512,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           } catch (e) { debugPrint('booking_items skipped: $e'); }
         }
       } else {
-        // 'error' or any unexpected action — treat as a genuine failure.
         throw Exception('Recovery RPC returned unexpected action: $action');
       }
 
@@ -1883,7 +1521,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (!mounted) return;
 
-      // Follow-up writes — non-critical, same pattern as elsewhere.
       try {
         await _supabase.from('bookings').update({
           'payment_id':               paymentId,
@@ -1892,16 +1529,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       } catch (e) { debugPrint('post-booking update skipped: $e'); }
 
       setState(() => _loading = false);
-      // Clear the cart now that the booking is genuinely confirmed —
-      // previously this never happened at all, so cart items sat
-      // there indefinitely even after a successful order.
       CartService.instance.clear();
       Navigator.pushReplacement(context, MaterialPageRoute(
         builder: (_) => BookingDetailScreen(bookingId: bookingId!, isNew: true),
       ));
     } catch (e) {
-      // Booking creation itself errored (network/db) even though payment
-      // succeeded — refund, since the customer has nothing to show for it.
       debugPrint('Post-payment booking creation error: $e');
       await _refundPayment(paymentId, reason: 'booking_creation_error');
       if (!mounted) return;
@@ -1914,8 +1546,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   }
 
   void _onPaymentError(PaymentFailureResponse response) {
-    // No booking was ever created for a failed/cancelled payment attempt —
-    // nothing in the DB to clean up.
     if (mounted) setState(() => _loading = false);
     _showSnack('Payment failed: ${response.message ?? "Please try again"}',
         isError: true);
@@ -1925,12 +1555,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     _showSnack('External wallet: ${response.walletName}');
   }
 
-  // ── Refund — called whenever payment succeeded but no booking resulted ──
-  // Goes through the backend (Next.js API route), since the Razorpay
-  // secret key can never live in the Flutter app. See
-  // app/api/payments/refund/route.ts (to be added on the backend).
-  //
-  // TODO: replace with your actual deployed API base URL.
   static const _apiBaseUrl = 'https://gocleenzo-admin.vercel.app';
 
   Future<void> _refundPayment(String paymentId, {required String reason}) async {
@@ -1946,9 +1570,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (resp.statusCode != 200) {
         debugPrint('Refund API error (${resp.statusCode}): ${resp.body}');
-        // Don't hide this from the customer — if the automated refund
-        // call itself failed, they need a way to reach support with the
-        // payment ID so it can be refunded manually.
         if (mounted) {
           _showSnack(
               'Could not auto-refund. Please contact support with '
@@ -1967,7 +1588,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ── COD Confirm Booking — atomic via Postgres RPC ────────────
   Future<void> _confirmBooking() async {
     if (_selectedAddressId.isEmpty) {
       _showSnack('Please select an address', isError: true); return;
@@ -1990,7 +1610,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         (1000 + (DateTime.now().millisecondsSinceEpoch % 9000)).toString();
 
     try {
-      // ── Call atomic DB function — check + insert in one transaction
       final result = await _supabase.rpc('try_claim_slot', params: {
         'p_customer_id':          userId,
         'p_address_id':           _selectedAddressId,
@@ -2023,8 +1642,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         setState(() => _loading = false);
         final reason = res['reason'] as String? ?? 'error';
         if (reason == 'slot_full') {
-          // Scheduled: go back to time picker
-          // Instant: show no workers dialog (slot full = no free worker)
           if (_isInstant) {
             _showNoWorkersDialog();
           } else {
@@ -2041,18 +1658,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       final bookingId = res['booking_id'] as String;
 
-      // Save the customer-facing actual duration (unbuffered, unrounded) —
-      // separate from booking_duration_minutes which is the internal
-      // worker-slot-blocking value.
       try {
         await _supabase.from('bookings').update({
           'service_duration_minutes': _rawServiceDurationMins,
         }).eq('id', bookingId);
       } catch (e) { debugPrint('service_duration_minutes skipped: $e'); }
 
-      // ── Save cart items if any (outside the RPC — non-critical) ──
-      // Snapshot service_name so history stays intact even if the service
-      // is later renamed/removed from the catalog.
       if (widget.cartItems != null && widget.cartItems!.isNotEmpty) {
         try {
           await _supabase.from('booking_items').insert(
@@ -2069,7 +1680,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         } catch (e) { debugPrint('booking_items skipped: $e'); }
       }
 
-      // ── Save promo usage ──────────────────────────────────────
       if (_appliedPromoId.isNotEmpty && _userId != null) {
         try {
           await _supabase.from('promo_usage').insert({
@@ -2087,7 +1697,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (mounted) {
         setState(() => _loading = false);
-        // Same cart-clearing fix as the online-payment path above.
         CartService.instance.clear();
         Navigator.pushReplacement(context, MaterialPageRoute(
           builder: (_) => BookingDetailScreen(
@@ -2102,12 +1711,11 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ── Slot just filled dialog ───────────────────────────────────
   void _showSlotFullDialog() {
     HapticFeedback.heavyImpact();
     showDialog(
       context: context,
-      barrierDismissible: true, // back button closes it
+      barrierDismissible: true,
       builder: (ctx) => Dialog(
           backgroundColor: Colors.white,
           elevation: 0,
@@ -2135,7 +1743,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(color: _muted, fontSize: 13.5, height: 1.5)),
               const SizedBox(height: 20),
-              // Choose Another Time
               GestureDetector(
                 onTap: () {
                   Navigator.pop(ctx);
@@ -2165,7 +1772,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              // Cancel
               GestureDetector(
                 onTap: () => Navigator.pop(ctx),
                 child: Container(
@@ -2212,16 +1818,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
   // ── BUILD ────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
-    // While the initial address-serviceability check is running (or if
-    // it failed and this screen is about to be popped), show nothing but
-    // a plain loading spinner with a back button — never the actual
-    // date/address/notes content, even for a single frame. See
-    // _loadData(). No PopScope override here — the default Flutter
-    // routing behaviour is exactly what's wanted: if the "not
-    // serviceable" dialog is showing, the hardware/gesture back button
-    // closes IT first (dialogs are pushed as their own route via
-    // showDialog), and only a second back press (or the visible arrow
-    // below) would then leave this screen entirely.
     if (_initializing) {
       return const Scaffold(
         backgroundColor: _bg,
@@ -2232,10 +1828,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
 
     return PopScope(
-      // Only let the system pop the whole route when we're on step 1 —
-      // otherwise the hardware/gesture back button now does exactly what
-      // the on-screen ‹ arrow does (step back one wizard step), instead
-      // of silently discarding the customer's in-progress booking.
       canPop: _step <= 1,
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
@@ -2261,8 +1853,8 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
             left: 0, right: 0, bottom: 0,
             child: _buildBottomBar()),
       ]),
-      ),   // Scaffold
-    );  // PopScope
+      ),
+    );
   }
 
   Widget _buildHeader() {
@@ -2400,7 +1992,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     }
   }
 
-  // ── Date & Time step ─────────────────────────────────────────
   Widget _buildDateTimeStep() {
     final availableCount =
         _slotAvailability.values.where((v) => v == true).length;
@@ -2618,7 +2209,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
-  // ── Address step ─────────────────────────────────────────────
   Widget _buildAddressStep() {
     return Column(children: [
       if (_isInstant)
@@ -2715,12 +2305,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                   return GestureDetector(
                     onTap: () {
                       setState(() => _selectedAddressId = addr['id']);
-                      // The address determines which worker set is
-                      // eligible (see _resolveZoneRestrictedWorkerIds) —
-                      // re-check slot availability against the NEWLY
-                      // selected address so the picker stays accurate if
-                      // the customer switches addresses after already
-                      // having picked a date/time against the old one.
                       if (_isSchedule) {
                         _loadSlotAvailability(_selectedDate);
                       }
@@ -2819,28 +2403,23 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     ]);
   }
 
-  // ── Confirm step ─────────────────────────────────────────────
   Widget _buildConfirmStep() {
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
     final hasCart = widget.cartItems != null && widget.cartItems!.isNotEmpty;
 
     final rows = <Map<String, dynamic>>[
-      // Multi-service cart: one row per service so the price breakdown is
-      // visible, instead of a single combined "3 services" row. Each
-      // item's price is already correct (first-booking discount, if any,
-      // is baked in per-service by CartService) — no re-multiplying by
-      // quantity, and eligibility is checked per-item rather than
-      // assuming only the first item in the list could be discounted.
-      if (hasCart)
+            if (hasCart)
         for (int i = 0; i < widget.cartItems!.length; i++)
           () {
             final item = widget.cartItems![i];
             final qty  = (item['quantity'] as num?)?.toInt() ?? 1;
             final price = (item['price'] as num).toInt();
             final name  = (item['name'] as String?) ?? 'Service';
+            final serviceId = item['service_id'] as String?;
             final eligible = widget.isFirstBooking &&
-                CartService.firstBookingEligibleServices.contains(name);
+                serviceId != null &&
+                CartService.instance.firstBookingClaimServiceId == serviceId;
             return {
               'icon': Icons.cleaning_services_rounded,
               'label': name,
@@ -2868,14 +2447,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           'value': '${_selectedDate.day}/'
               '${_selectedDate.month}/${_selectedDate.year}'},
         {'icon': Icons.access_time_rounded, 'label': 'Time', 'value': _selectedTime},
-        // Shows the customer's actual selected duration (e.g. 3×30min
-        // service = 90 min, summed automatically from the cart) — NOT
-        // _serviceDurationMins, which is a separate internal value with a
-        // +10min buffer and hour-rounding applied on top, used only for
-        // reserving worker time slots. Showing that buffered figure here
-        // was the bug: a customer selecting 90 actual minutes would see
-        // "120 min" in their own booking summary, which looked wrong even
-        // though the underlying per-item math was already correct.
         {'icon': Icons.timelapse_rounded, 'label': 'Duration',
           'value': '~$_rawServiceDurationMins min'},
       ],
@@ -2888,7 +2459,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     ];
 
     return Column(children: [
-      // Note banner
       Container(
         margin: const EdgeInsets.only(bottom: 14),
         padding: const EdgeInsets.all(14),
@@ -3062,20 +2632,16 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           borderRadius: BorderRadius.circular(22),
           border: Border.all(color: _border)),
         child: Column(children: [
-          // Every cart item's price is already correct (first-booking
-          // discount, if eligible, baked in per-service) — just display it
-          // directly with a 🎉 badge on whichever items actually qualify,
-          // instead of the old logic that assumed only cart position 0
-          // could ever be discounted and separately double-multiplied by
-          // quantity when computing the displayed total.
-          if (hasCart) ...[
+                    if (hasCart) ...[
             for (final item in widget.cartItems!)
               () {
                 final qty   = (item['quantity'] as num?)?.toInt() ?? 1;
                 final name  = (item['name'] as String?) ?? 'Service';
                 final price = (item['price'] as num).toInt();
+                final serviceId = item['service_id'] as String?;
                 final eligible = widget.isFirstBooking &&
-                    CartService.firstBookingEligibleServices.contains(name);
+                    serviceId != null &&
+                    CartService.instance.firstBookingClaimServiceId == serviceId;
                 return _priceRow(
                   '$name${qty > 1 ? ' ×$qty' : ''}${eligible ? ' 🎉' : ''}',
                   '₹$price',
@@ -3220,8 +2786,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           child: GestureDetector(
             onTap: (canProceed && !_loading && !_checkingInstant)
                 ? () {
-                    // For instant: step 1 = address. When moving from step 1
-                    // to step 2 (confirm), run availability check first.
                     if (_isInstant && _step == 1 && !isLast) {
                       _checkInstantAndProceed();
                     } else if (isLast) {
@@ -3257,7 +2821,6 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
                           const Icon(Icons.payments_rounded,
                               color: Colors.white, size: 18),
                         if (isLast) const SizedBox(width: 8),
-                        // Show "Check Availability" on instant step 1 → 2
                         Text(
                           _isInstant && _step == 1 && !isLast
                               ? 'Check Availability'
@@ -3401,7 +2964,6 @@ class _PromoSheet extends StatelessWidget {
                             final isApplied = appliedId == p['id'].toString();
                             final minOrder  = p['min_order_amount'] != null
                                 ? (p['min_order_amount'] as num).toInt() : 0;
-                            // Block applying another code if one is already applied
                             final otherApplied = appliedId.isNotEmpty && !isApplied;
                             final canApply  = baseAmount >= minOrder && !otherApplied;
                             return GestureDetector(

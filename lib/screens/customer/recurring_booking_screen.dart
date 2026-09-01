@@ -252,6 +252,27 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     }
   }
 
+  // Same-style horizontal date strip as the regular Schedule Booking flow
+  // (booking_flow_screen.dart's _dates/_buildDateTimeStep) — 30 days
+  // starting today, so a package can still be started any day within
+  // roughly the same window the old date-picker dialog allowed (60 days),
+  // just as a scrollable strip instead of a separate calendar dialog.
+  List<DateTime> get _startDateOptions =>
+      List.generate(30, (i) => DateTime.now().add(Duration(days: i)));
+
+  void _pickStartDate(DateTime d) {
+    setState(() {
+      _startDate = d;
+      _availabilityChecked = false;
+      _conflicts = [];
+      _dayOverrides.clear();
+      _selectedTime = '';
+      _slotGrid = {};
+    });
+    HapticFeedback.selectionClick();
+    _loadSlotGrid();
+  }
+
   bool get _canProceedFromAddressStep => _selectedAddressId.isNotEmpty;
 
   bool get _canProceedFromDateTimeStep {
@@ -353,10 +374,12 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         'theme': {'color': '#06B6D4'},
         'method': {
           'upi': true, 'netbanking': true,
-          'card': false, 'wallet': false,
+          'card': true, 'wallet': true,
           'emi': false, 'cardless_emi': false, 'paylater': false,
         },
-        'upi': {'flow': 'intent'},
+        // No 'flow' override — lets Razorpay's checkout show ALL UPI
+        // options (QR code, UPI ID, app intent) instead of forcing
+        // straight into the app-chooser and hiding the QR tab.
       });
     } catch (e) {
       setState(() { _loading = false; _error = 'Could not open payment.'; });
@@ -717,42 +740,61 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         title: 'Start Date',
         sub: 'Your package runs for 7 consecutive days',
         child: Column(children: [
-          GestureDetector(
-            onTap: () async {
-              final now = DateTime.now();
-              final picked = await showDatePicker(
-                context: context,
-                initialDate: _startDate ?? now.add(const Duration(days: 1)),
-                firstDate: now,
-                lastDate: now.add(const Duration(days: 60)),
-              );
-              if (picked != null) {
-                setState(() {
-                  _startDate = picked;
-                  _availabilityChecked = false;
-                  _conflicts = [];
-                  _dayOverrides.clear();
-                  _selectedTime = '';
-                  _slotGrid = {};
-                });
-                _loadSlotGrid();
-              }
-            },
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(
-                color: _bg, borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: _border)),
-              child: Row(children: [
-                const Icon(Icons.calendar_month_rounded, color: _cyanDk, size: 20),
-                const SizedBox(width: 12),
-                Expanded(child: Text(
-                  _startDate == null ? 'Choose a start date' : _prettyDate(_startDate!),
-                  style: TextStyle(
-                    color: _startDate == null ? _faint : _ink,
-                    fontSize: 15, fontWeight: FontWeight.w700))),
-                const Icon(Icons.chevron_right_rounded, color: _faint),
-              ]))),
+          // Horizontal date-strip picker — same visual pattern as the
+          // regular Schedule Booking flow's date row, replacing the old
+          // "Choose a start date" button that opened a separate
+          // showDatePicker calendar dialog.
+          SizedBox(
+            height: 92,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _startDateOptions.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (_, i) {
+                final d = _startDateOptions[i];
+                final active = _startDate != null &&
+                    d.year == _startDate!.year &&
+                    d.month == _startDate!.month &&
+                    d.day == _startDate!.day;
+                return GestureDetector(
+                  onTap: () => _pickStartDate(d),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    width: 58,
+                    decoration: BoxDecoration(
+                      gradient: active
+                          ? const LinearGradient(colors: [_cyan, _cyanDk])
+                          : null,
+                      color: active ? null : _bg,
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: active ? _cyan : _border),
+                      boxShadow: active
+                          ? [BoxShadow(
+                              color: _cyan.withValues(alpha: 0.36),
+                              blurRadius: 12, offset: const Offset(0, 4))]
+                          : []),
+                    child: Column(mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                      Text(
+                        ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][d.weekday - 1],
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold,
+                            color: active ? const Color(0xFFDFFAFE) : _faint)),
+                      Text('${d.day}',
+                          style: TextStyle(fontSize: 22,
+                              fontWeight: FontWeight.w900,
+                              color: active ? Colors.white : _ink)),
+                      Text(i == 0 ? 'TODAY' : '·',
+                          style: TextStyle(fontSize: 8,
+                              fontWeight: FontWeight.w900,
+                              color: active
+                                  ? Colors.white
+                                  : (i == 0 ? _cyan : Colors.transparent))),
+                    ]),
+                  ),
+                );
+              },
+            ),
+          ),
           if (_startDate != null) ...[
             const SizedBox(height: 12),
             Container(

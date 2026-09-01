@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'review_popup.dart';
 
 class BookingDetailScreen extends StatefulWidget {
@@ -44,6 +45,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   static const _purpleBg = Color(0xFFEDE9FE);
   static const _purpleBg2 = Color(0xFFF5F3FF);
   static const _purpleBorder = Color(0xFFDDD6FE);
+
+  // ── Contact number shown in the worker row ─────────────────────
+  // ⚠️ PLACEHOLDER — replace with the real helpline number before
+  // shipping. Kept as a single constant so it's the one place to edit,
+  // and so the app-wide "which number does the customer see" question
+  // always has exactly one source of truth.
+  static const String _helplineNumber = 'XXXXXXXXXX';
 
   Map<String, dynamic>? _booking;
   bool _loading = true;
@@ -99,6 +107,9 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     _loadBooking();
     _subscribeRealtime();
 
+    // 30-second tick — also what keeps the phone-number visibility gate
+    // (30 minutes before scheduled time) re-evaluating live as the
+    // clock crosses that threshold, without needing a page refresh.
     _tickTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
@@ -258,6 +269,43 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final opensAt = sched.subtract(const Duration(minutes: 15));
     final diff = opensAt.difference(DateTime.now());
     return diff.isNegative ? null : diff;
+  }
+
+  /// Contact number visibility gate: true once we're within 30 minutes
+  /// of the scheduled time (or past it) — i.e. the SAME 30-minute rule
+  /// requested, independent of the 15-minute OTP window above (that's a
+  /// separate, narrower gate for entering the worker's OTP). No
+  /// scheduled_at at all (shouldn't normally happen) fails CLOSED —
+  /// the number stays hidden rather than guessing it's fine to show.
+  bool get _isPastContactWindow {
+    final sched = _scheduledAt;
+    if (sched == null) return false;
+    final opensAt = sched.subtract(const Duration(minutes: 30));
+    return !DateTime.now().isBefore(opensAt);
+  }
+
+  /// Combines both required conditions: a worker must actually be
+  /// assigned AND we must be within the 30-minute contact window.
+  /// Nothing about which number is shown lives in this getter — that's
+  /// handled entirely by _helplineNumber below, so this purely answers
+  /// "should ANY number be visible right now".
+  bool get _showContactNumber => _hasWorker && _isPastContactWindow;
+
+  Future<void> _callHelpline() async {
+    HapticFeedback.selectionClick();
+    final uri = Uri(scheme: 'tel', path: _helplineNumber);
+    try {
+      await launchUrl(uri);
+    } catch (e) {
+      debugPrint('launch tel: error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not open dialer. Number: $_helplineNumber'),
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ));
+      }
+    }
   }
 
   DateTime? get _workStartedAtLocal {
@@ -812,7 +860,6 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
     final worker = _booking?['worker'] as Map<String, dynamic>?;
     final fullName = worker?['full_name'] as String? ?? 'Professional';
     final displayName = _firstName(fullName);
-    final phone  = worker?['phone'] as String? ?? '';
     // Avatar initials still derived from the FULL name (so two workers
     // sharing a first name still get visually distinct initials) — only
     // the visible text label is trimmed to first name.
@@ -842,19 +889,32 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
           const Text('Verified Professional',
               style: TextStyle(color: _muted, fontSize: 11)),
         ])),
-        if (phone.isNotEmpty)
+        // Contact number — the WORKER's own phone is never shown here;
+        // this is always the helpline number, and only appears once a
+        // worker is assigned AND we're within 30 minutes of the
+        // scheduled time (or later). No "Worker"/"Helpline" label — just
+        // the bare number, tappable to dial. Outside that window, or if
+        // no worker is assigned, nothing is shown here at all (not even
+        // a disabled icon), since there's genuinely no number to offer
+        // yet.
+        if (_showContactNumber)
           GestureDetector(
-            onTap: () {
-              HapticFeedback.selectionClick();
-            },
+            onTap: _callHelpline,
             child: Container(
-              width: 38, height: 38,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
                 color: _cyanBg,
                 borderRadius: BorderRadius.circular(10),
                 border: Border.all(color: _cyanBg2)),
-              child: const Icon(Icons.phone_rounded,
-                  color: _cyanDk, size: 18))),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                const Icon(Icons.phone_rounded, color: _cyanDk, size: 16),
+                const SizedBox(width: 6),
+                Text(_helplineNumber,
+                    style: const TextStyle(color: _cyanDk,
+                        fontSize: 13, fontWeight: FontWeight.w800)),
+              ]),
+            ),
+          ),
       ]),
     );
   }
@@ -1581,10 +1641,14 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
       'theme':       {'color': '#7C3AED'},
       'method': {
         'upi': true, 'netbanking': true,
-        'card': false, 'wallet': false,
+        'card': true, 'wallet': true,
         'emi': false, 'cardless_emi': false, 'paylater': false,
       },
-      'upi': {'flow': 'intent'},
+      // No 'flow' override here — leaving it unset lets Razorpay's own
+      // checkout UI show ALL UPI options (QR code, UPI ID entry, AND
+      // app intent), instead of forcing straight into the app-chooser
+      // and hiding the QR tab entirely. Customer picks whichever they
+      // prefer inside Razorpay's screen.
     };
 
     try {

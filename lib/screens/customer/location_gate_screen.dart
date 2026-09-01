@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 
 class LocationGateScreen extends StatefulWidget {
   const LocationGateScreen({super.key});
@@ -13,11 +12,6 @@ class _LocationGateScreenState extends State<LocationGateScreen>
     with SingleTickerProviderStateMixin {
   bool    _locLoading = false;
   String? _error;
-
-  // Active service areas, loaded from the admin-managed `service_areas`
-  // table instead of being hardcoded. Shown as a "Currently serving" strip.
-  List<String> _servingAreas = [];
-  bool _areasLoading = true;
 
   late AnimationController _pulseCtrl;
   late Animation<double>   _pulseAnim;
@@ -31,7 +25,7 @@ class _LocationGateScreenState extends State<LocationGateScreen>
 
   @override
   void initState() {
-    super.initState();  
+    super.initState();
     _pulseCtrl = AnimationController(
         vsync: this,
         duration: const Duration(milliseconds: 1800))
@@ -39,37 +33,12 @@ class _LocationGateScreenState extends State<LocationGateScreen>
     _pulseAnim = Tween<double>(begin: 0.95, end: 1.05)
         .animate(CurvedAnimation(
             parent: _pulseCtrl, curve: Curves.easeInOut));
-    _loadServiceAreas();
   }
 
   @override
   void dispose() {
     _pulseCtrl.dispose();
     super.dispose();
-  }
-
-  Future<void> _loadServiceAreas() async {
-    try {
-      final rows = await Supabase.instance.client
-          .from('service_areas')
-          .select('area')
-          .eq('is_active', true)
-          .order('area');
-      final names = (rows as List)
-          .map((r) => (r['area'] as String?)?.trim())
-          .whereType<String>()
-          .where((s) => s.isNotEmpty)
-          .toList();
-      if (mounted) {
-        setState(() {
-          _servingAreas = names;
-          _areasLoading = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Load service areas error: $e');
-      if (mounted) setState(() => _areasLoading = false);
-    }
   }
 
   Future<void> _useMyLocation() async {
@@ -185,10 +154,7 @@ class _LocationGateScreenState extends State<LocationGateScreen>
                           height: 1.2)),
                   const SizedBox(height: 8),
                   Text(
-                    _servingAreas.isEmpty
-                        ? 'Find out if we serve your area'
-                        : 'We serve ${_servingAreas.take(3).join(', ')}'
-                          '${_servingAreas.length > 3 ? ' & more' : ''}',
+                    'Find out if we serve your area',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.75),
@@ -211,50 +177,6 @@ class _LocationGateScreenState extends State<LocationGateScreen>
           child: Padding(
             padding: EdgeInsets.fromLTRB(20, 28, 20, botPad + 20),
             child: Column(children: [
-
-              // Service area chips — dynamic, from admin-managed areas
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: _border),
-                  boxShadow: [BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.04),
-                      blurRadius: 10, offset: const Offset(0, 3))]),
-                child: Column(children: [
-                  Row(children: [
-                    Container(width: 6, height: 6,
-                      decoration: const BoxDecoration(
-                          color: Color(0xFF10B981),
-                          shape: BoxShape.circle)),
-                    const SizedBox(width: 8),
-                    const Text('Currently serving',
-                        style: TextStyle(color: Color(0xFF059669),
-                            fontSize: 11, fontWeight: FontWeight.w700)),
-                  ]),
-                  const SizedBox(height: 12),
-                  if (_areasLoading)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: SizedBox(
-                        width: 18, height: 18,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: _cyan)),
-                    )
-                  else if (_servingAreas.isEmpty)
-                    const Text('More areas coming soon!',
-                        style: TextStyle(color: _muted, fontSize: 12))
-                  else
-                    Wrap(
-                      spacing: 8, runSpacing: 8,
-                      alignment: WrapAlignment.center,
-                      children: _servingAreas
-                          .map((name) => _areaChip('📍', name))
-                          .toList(),
-                    ),
-                ]),
-              ),
 
               const Spacer(),
 
@@ -381,21 +303,6 @@ class _LocationGateScreenState extends State<LocationGateScreen>
       ]),
     );
   }
-
-  Widget _areaChip(String emoji, String label) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-    decoration: BoxDecoration(
-      color: const Color(0xFF00B1FC),
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: const Color(0xFF00B1FC))),
-    child: Row(mainAxisSize: MainAxisSize.min, children: [
-      Text(emoji, style: const TextStyle(fontSize: 14)),
-      const SizedBox(width: 5),
-      Text(label, style: const TextStyle(
-          color: Colors.black, fontSize: 11,
-          fontWeight: FontWeight.w700)),
-    ]),
-  );
 }
 
 class _WavePainter extends CustomPainter {

@@ -69,10 +69,6 @@ class CartItem {
     }
   }
 
-  // Includes 'name' so downstream screens (BookingFlowScreen summary,
-  // booking_items insert, My Bookings, Booking Detail) can show and store
-  // the actual service name — previously missing, which is why every
-  // multi-service booking fell back to the generic "Service" label.
   Map<String, dynamic> toBookingItem() => {
     'service_id':       serviceId,
     'name':             serviceName,
@@ -81,12 +77,6 @@ class CartItem {
     'duration_minutes': totalDuration,
   };
 
-  // ── Persistence (save/restore across app close) ──────────────
-  // Full serialization of everything needed to reconstruct this exact
-  // item — NOT the same as toBookingItem() above, which only includes
-  // what a booking record needs. This needs tiers/pricePerUnit/etc. too,
-  // since re-hydrating a CartItem after app restart requires every
-  // field the constructor takes.
   Map<String, dynamic> toJson() => {
     'serviceId':       serviceId,
     'serviceName':      serviceName,
@@ -114,38 +104,21 @@ class CartItem {
   );
 }
 
-/// Global singleton cart — all prices read from database, nothing hardcoded.
+/// Global singleton cart — all prices/types read from database, nothing
+/// hardcoded by service name anymore (see cart_type column / migration).
 class CartService extends ChangeNotifier {
   CartService._() {
-    // Fires once, the first time CartService.instance is ever accessed
-    // (e.g. from services_screen's State field). Loads whatever was
-    // saved from a previous session, so a customer who adds items,
-    // fully closes the app, and reopens it later finds their cart
-    // exactly as they left it.
     _loadPersisted();
   }
   static final CartService instance = CartService._();
 
   static const _prefsKey = 'cleenzo_cart_v1';
-
-  // ── Service type config (only behavior, no prices) ────────────
-  static const _tieredServices = {
-    'Bathroom Cleaning',
-    'Utensil Cleaning',
-    'Fan Cleaning',
-    'Sweeping & Mopping',
-    'Dusting & Wiping',
-    'Balcony Cleaning',
-    'Kitchen Cleaning',
-    'Refrigerator Cleaning',
-  };
+  static const _claimPrefsKey = 'cleenzo_cart_fb_claim_v1';
 
   /// Single source of truth for which services get the first-booking ₹25
-  /// discount. Public (was private + duplicated with a DIFFERENT, drifted
-  /// list in service_detail_screen.dart — that duplicate is now removed;
-  /// that screen reads this instead) so there's only ever one place this
-  /// can be edited, and the UI banner + actual price calculation can never
-  /// disagree about which services qualify again.
+  /// discount. This one is still a Dart-side allowlist (not yet moved to
+  /// the DB) — separate concern from cart_type, which controls
+  /// pricing/duration SHAPE, not first-booking eligibility.
   static const firstBookingEligibleServices = {
     'Bathroom Cleaning',
     'Utensil Cleaning',
@@ -156,26 +129,85 @@ class CartService extends ChangeNotifier {
     'Kitchen Cleaning',
   };
 
-  static const _hourlyServices  = {'Hourly Cleaning'};
   static const _noCartServices  = {'Full House Cleaning'};
   static const _hourlyMaxQty    = 4;  // max 4 hours
   static const int cartMaxMins  = 180;
 
-  // ── Pricing tiers — built from database values ────────────────
-  // Called from services_screen when building a cart item.
-  // base_price, price_30min, price_60min, price_90min all come from Supabase.
+  // ── cart_type-aware classification (reads the DB row) ──────────
   //
-  // First-booking discount model: only the FIRST unit of an eligible
-  // service is priced at firstBookingPrice (₹25). Every additional unit of
-  // that SAME service is charged at its flat REGULAR single-unit price
-  // (price_30min) — deliberately ignoring any bundle discount baked into
-  // the normal 60/90-min tier prices, so a first-time customer always
-  // gets a predictable "₹25 + (₹regular × extra units)" total. Each
-  // eligible service in a multi-service cart gets its OWN independent
-  // ₹25-for-the-first-unit treatment — that already falls out naturally
-  // from tiers being built per-service here and cart totals being summed
-  // across items, so a Bathroom Cleaning ×1 (₹25) + Utensil Cleaning ×2
-  // (₹25 + ₹regular) cart correctly totals both discounts added together.
+  // `svc` is the raw service map straight from Supabase (must include
+  // 'cart_type' and 'name' — 'name' is only used as a legacy fallback
+  // for any row that predates the migration and somehow has a null
+  // cart_type despite the backfill).
+  static CartItemType typeOfService(Map<String, dynamic> svc) {
+    final ct = (svc['cart_type'] as String?)?.trim();
+    switch (ct) {
+      case 'tiered': return CartItemType.tiered;
+      case 'hourly': return CartItemType.hourly;
+      case 'fixed':  return CartItemType.fixed;
+      default:
+        // Legacy fallback for a row with no cart_type set at all —
+        // matches the OLD hardcoded behavior so nothing silently
+        // breaks for a service the migration's backfill somehow missed.
+        final name = svc['name'] as String? ?? '';
+        if (name == 'Hourly Cleaning') return CartItemType.hourly;
+        return CartItemType.fixed;
+    }
+  }
+
+  static int maxQtyForService(Map<String, dynamic> svc) {
+    final t = typeOfService(svc);
+    if (t == CartItemType.hourly) return _hourlyMaxQty;
+    if (t == CartItemType.tiered) return 3;
+    return 1;
+  }
+
+  static int durationForService(Map<String, dynamic> svc) {
+    final t = typeOfService(svc);
+    if (t == CartItemType.hourly) return 60;
+    if (t == CartItemType.tiered) return 30; // first tier step
+    // fixed — real duration from the DB, falling back to 60.
+    return (svc['duration_minutes'] as num?)?.toInt() ?? 60;
+  }
+
+  // ── Legacy name-only helpers ────────────────────────────────────
+  // Kept ONLY for call sites that don't have the full service map handy
+  // (e.g. a bare service name string). Prefer the *Service variants
+  // above wherever the service row is available — these fall back to
+  // the OLD hardcoded sets and will drift from admin-panel changes to
+  // cart_type, same limitation as before this migration existed.
+  static const _legacyTieredServices = {
+    'Bathroom Cleaning', 'Utensil Cleaning', 'Fan Cleaning',
+    'Sweeping & Mopping', 'Dusting & Wiping', 'Balcony Cleaning',
+    'Kitchen Cleaning',
+  };
+  static const _legacyHourlyServices = {'Hourly Cleaning'};
+
+  static CartItemType typeOf(String name) {
+    if (_legacyTieredServices.contains(name)) return CartItemType.tiered;
+    if (_legacyHourlyServices.contains(name)) return CartItemType.hourly;
+    return CartItemType.fixed;
+  }
+
+  static int maxQtyFor(String name) {
+    if (_legacyHourlyServices.contains(name)) return _hourlyMaxQty;
+    if (_legacyTieredServices.contains(name)) return 3;
+    return 1;
+  }
+
+  static int durationFor(String name) {
+    if (_legacyHourlyServices.contains(name)) return 60;
+    if (_legacyTieredServices.contains(name)) return 30;
+    return 60; // fallback for fixed services
+  }
+
+  static bool isCartable(String name) => !_noCartServices.contains(name);
+
+  // Price fallback — only used if DB value is missing
+  static int defaultPriceFor(Map<String, dynamic> svc) =>
+      (svc['base_price'] as num?)?.toInt() ?? 0;
+
+  // ── Pricing tiers — built from database values ────────────────
   static List<ServiceTier> buildTiers(
     Map<String, dynamic> svc, {
     bool isFirstBooking = false,
@@ -188,17 +220,6 @@ class CartService extends ChangeNotifier {
     final p90      = (svc['price_90min'] as num?)?.toInt() ?? (base * 3);
 
     if (isFirstBooking && firstBookingEligibleServices.contains(name)) {
-      // First unit is the special ₹25 offer price. Every additional unit
-      // is priced at the flat REGULAR single-unit rate (p30) — not
-      // whatever bundle/incremental rate the normal 60/90-min tiers
-      // happen to be. This was previously computed as
-      // firstBookingPrice + (p60 − p30), which quietly inherited any
-      // bundle discount baked into price_60min/price_90min (e.g. Bathroom
-      // Cleaning ×2 coming out to ₹95 instead of the expected ₹104,
-      // because its DB-configured 60-min tier price was itself already
-      // discounted below 2×p30). "Regular calculation" for extra units
-      // now means exactly p30 added per unit, with no bundle discount
-      // applied on top of the first-unit offer.
       return [
         ServiceTier(30, firstBookingPrice),
         ServiceTier(60, firstBookingPrice + p30),
@@ -212,45 +233,30 @@ class CartService extends ChangeNotifier {
     ];
   }
 
-  // ── Static helpers ────────────────────────────────────────────
-  static bool isCartable(String name) => !_noCartServices.contains(name);
-
-  static CartItemType typeOf(String name) {
-    if (_tieredServices.contains(name)) return CartItemType.tiered;
-    if (_hourlyServices.contains(name)) return CartItemType.hourly;
-    return CartItemType.fixed;
-  }
-
-  static int maxQtyFor(String name) {
-    if (_hourlyServices.contains(name)) return _hourlyMaxQty;
-    if (_tieredServices.contains(name)) return 3;
-    return 1;
-  }
-
-  static int durationFor(String name) {
-    if (_hourlyServices.contains(name)) return 60;
-    if (_tieredServices.contains(name)) return 30;
-    return 60; // fallback for fixed services
-  }
-
-  // Price fallback — only used if DB value is missing
-  static int defaultPriceFor(Map<String, dynamic> svc) =>
-      (svc['base_price'] as num?)?.toInt() ?? 0;
-
   // ── State ──────────────────────────────────────────────────────
   final Map<String, CartItem> _items = {};
   bool _isFirstBooking = false;
+
+  String? _firstBookingClaimServiceId;
+  String? get firstBookingClaimServiceId => _firstBookingClaimServiceId;
 
   // ── Persistence ────────────────────────────────────────────────
   Future<void> _loadPersisted() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString(_prefsKey);
-      if (raw == null || raw.isEmpty) return;
-      final List<dynamic> list = jsonDecode(raw);
-      for (final entry in list) {
-        final item = CartItem.fromJson(entry as Map<String, dynamic>);
-        _items[item.serviceId] = item;
+      if (raw != null && raw.isNotEmpty) {
+        final List<dynamic> list = jsonDecode(raw);
+        for (final entry in list) {
+          final item = CartItem.fromJson(entry as Map<String, dynamic>);
+          _items[item.serviceId] = item;
+        }
+      }
+      _firstBookingClaimServiceId = prefs.getString(_claimPrefsKey);
+      if (_firstBookingClaimServiceId != null &&
+          !_items.containsKey(_firstBookingClaimServiceId)) {
+        _firstBookingClaimServiceId = null;
+        await prefs.remove(_claimPrefsKey);
       }
       if (_items.isNotEmpty) notifyListeners();
     } catch (e) {
@@ -258,17 +264,16 @@ class CartService extends ChangeNotifier {
     }
   }
 
-  /// Fire-and-forget — UI state already updates via notifyListeners() in
-  /// each mutation below; this just writes the same state to disk right
-  /// after, so a subsequent app close/reopen restores it. An empty cart
-  /// persists as an empty list, which is exactly what makes clear()
-  /// (called after a successful booking, or by the customer directly)
-  /// correctly wipe the saved cart too — nothing lingers after checkout.
   Future<void> _persist() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = jsonEncode(_items.values.map((i) => i.toJson()).toList());
       await prefs.setString(_prefsKey, raw);
+      if (_firstBookingClaimServiceId != null) {
+        await prefs.setString(_claimPrefsKey, _firstBookingClaimServiceId!);
+      } else {
+        await prefs.remove(_claimPrefsKey);
+      }
     } catch (e) {
       debugPrint('CartService: failed to persist cart (non-fatal): $e');
     }
@@ -277,6 +282,13 @@ class CartService extends ChangeNotifier {
   void setFirstBooking(bool v) {
     _isFirstBooking = v;
     notifyListeners();
+  }
+
+  bool isFirstBookingPriceFor(String serviceId, String serviceName) {
+    if (!_isFirstBooking) return false;
+    if (!firstBookingEligibleServices.contains(serviceName)) return false;
+    if (_firstBookingClaimServiceId == null) return true;
+    return _firstBookingClaimServiceId == serviceId;
   }
 
   List<CartItem> get items           => _items.values.toList();
@@ -329,16 +341,17 @@ class CartService extends ChangeNotifier {
 
   // ── Mutations ──────────────────────────────────────────────────
 
-  /// Returns null on success, -1 if at item max, or cap value if duration exceeded.
   int? increment(CartItem template) {
-    if (_items.containsKey(template.serviceId)) {
+    final isNewItem = !_items.containsKey(template.serviceId);
+
+    if (!isNewItem) {
       final item = _items[template.serviceId]!;
       if (item.quantity >= item.maxQty) return -1;
     }
     final cap = wouldExceedCap(template);
     if (cap != null) return cap;
 
-    if (_items.containsKey(template.serviceId)) {
+    if (!isNewItem) {
       _items[template.serviceId]!.quantity++;
     } else {
       _items[template.serviceId] = CartItem(
@@ -352,6 +365,11 @@ class CartService extends ChangeNotifier {
         maxQty:          template.maxQty,
         quantity:        1,
       );
+
+      if (_firstBookingClaimServiceId == null &&
+          isFirstBookingPriceFor(template.serviceId, template.serviceName)) {
+        _firstBookingClaimServiceId = template.serviceId;
+      }
     }
     notifyListeners();
     _persist();
@@ -365,6 +383,9 @@ class CartService extends ChangeNotifier {
       item.quantity--;
     } else {
       _items.remove(serviceId);
+      if (_firstBookingClaimServiceId == serviceId) {
+        _firstBookingClaimServiceId = null;
+      }
     }
     notifyListeners();
     _persist();
@@ -372,12 +393,16 @@ class CartService extends ChangeNotifier {
 
   void remove(String serviceId) {
     _items.remove(serviceId);
+    if (_firstBookingClaimServiceId == serviceId) {
+      _firstBookingClaimServiceId = null;
+    }
     notifyListeners();
     _persist();
   }
 
   void clear() {
     _items.clear();
+    _firstBookingClaimServiceId = null;
     notifyListeners();
     _persist();
   }

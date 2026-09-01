@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -156,15 +157,69 @@ class NotificationService {
   }
 
   // ── Save FCM token to Supabase ─────────────────────────────
+  //
+  // FIXED: on iOS, calling FirebaseMessaging.getToken() before Apple's
+  // own APNs (Apple Push Notification service) token has finished
+  // registering with the OS returns null SILENTLY — no exception, no
+  // error, `getToken()` just resolves to null. The original code called
+  // getToken() immediately after requestPermission(), which on a real
+  // device is almost always too early: APNs registration happens
+  // asynchronously in the background and can take anywhere from
+  // under a second to several seconds depending on network conditions.
+  // Since this whole call chain is wrapped in a non-fatal try/catch at
+  // the call site (login_screen.dart), a null token was never surfaced
+  // as an error anywhere — it just silently resulted in fcm_token never
+  // getting saved, which is exactly the symptom we were chasing
+  // (iOS customers showing fcm_token: null even after logging in).
+  //
+  // Fix: on iOS specifically, wait for getAPNSToken() to return non-null
+  // FIRST (polling with a short delay, up to a bounded number of
+  // attempts), and only THEN call getToken(). Android is unaffected —
+  // it has no APNs concept at all, so this whole wait is skipped there
+  // and behavior is identical to before.
   static Future<void> _saveToken() async {
     try {
+      if (Platform.isIOS) {
+        final apnsReady = await _waitForApnsToken();
+        if (!apnsReady) {
+          debugPrint(
+              'FCM token skipped: APNs token never became available '
+              '(iOS). Will retry on next app open or via onTokenRefresh.');
+          return;
+        }
+      }
+
       final token = await _messaging.getToken();
-      if (token == null) return;
+      if (token == null) {
+        debugPrint('FCM getToken() returned null even after APNs wait');
+        return;
+      }
       debugPrint('FCM Token: $token');
       await _saveTokenToSupabase(token);
     } catch (e) {
       debugPrint('Error getting FCM token: $e');
     }
+  }
+
+  /// Polls FirebaseMessaging.instance.getAPNSToken() until it returns a
+  /// non-null value, or gives up after [maxAttempts] tries. Returns true
+  /// once ready, false if it timed out. No-op concept on Android (this
+  /// is only ever called when Platform.isIOS is true — see _saveToken).
+  static Future<bool> _waitForApnsToken({
+    int maxAttempts = 10,
+    Duration delay = const Duration(milliseconds: 500),
+  }) async {
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      final apnsToken = await _messaging.getAPNSToken();
+      if (apnsToken != null) {
+        debugPrint('APNs token ready after $attempt attempt(s)');
+        return true;
+      }
+      await Future.delayed(delay);
+    }
+    debugPrint('APNs token still null after $maxAttempts attempts '
+        '(~${(maxAttempts * delay.inMilliseconds / 1000).toStringAsFixed(1)}s)');
+    return false;
   }
 
   static Future<void> _saveTokenToSupabase(String token) async {
