@@ -1,8 +1,12 @@
 name: cleenzo
 description: Cleenzo - Home Care In Minutes
 publish_to: 'none'
+<<<<<<< HEAD
 version: 1.4.6+28
 
+=======
+version: 1.4.5+27
+>>>>>>> ec630b6640820850642ee87de213712ec002fe25
 environment:
   sdk: '>=3.0.0 <4.0.0'
 
