@@ -178,8 +178,8 @@ class _ServicesScreenState extends State<ServicesScreen>
             .eq('id', userId).maybeSingle(),
         _supabase.from('services').select('*')
             .eq('is_active', true).order('category'),
-        _supabase.from('addresses')
-            .select('label,area,city,flat_no,building,full_address,is_default')
+                _supabase.from('addresses')
+            .select('label,area,city,flat_no,building,full_address,is_default,pincode')
             .eq('user_id', userId).eq('is_deleted', false)
             .order('is_default', ascending: false).limit(1).maybeSingle(),
         _supabase.from('bookings').select('id')

@@ -1529,6 +1529,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
       } catch (e) { debugPrint('post-booking update skipped: $e'); }
 
       setState(() => _loading = false);
+      // Booking now EXISTS — first-booking eligibility ends here,
+      // regardless of whether this booking later completes, cancels,
+      // or stays pending. Must run before clear() — clear() itself
+      // resets cart contents and the first-booking claim tracking, but
+      // does NOT reset _isFirstBooking on its own. Without this line,
+      // a customer who simply navigates back to Services (without a
+      // full app restart) would still see the ₹25 first-booking price
+      // for services they've already booked.
+      CartService.instance.setFirstBooking(false);
       CartService.instance.clear();
       Navigator.pushReplacement(context, MaterialPageRoute(
         builder: (_) => BookingDetailScreen(bookingId: bookingId!, isNew: true),
@@ -1697,6 +1706,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
       if (mounted) {
         setState(() => _loading = false);
+        // Booking now EXISTS — first-booking eligibility ends here,
+        // regardless of whether this booking later completes, cancels,
+        // or stays pending. Must run before clear() — clear() itself
+        // resets cart contents and the first-booking claim tracking, but
+        // does NOT reset _isFirstBooking on its own. Without this line,
+        // a customer who simply navigates back to Services (without a
+        // full app restart) would still see the ₹25 first-booking price
+        // for services they've already booked.
+        CartService.instance.setFirstBooking(false);
         CartService.instance.clear();
         Navigator.pushReplacement(context, MaterialPageRoute(
           builder: (_) => BookingDetailScreen(
