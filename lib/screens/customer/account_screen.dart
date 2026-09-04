@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../services/supabase_service.dart';
+import '../../widgets/NotificationOptInBanner.dart';
 
 class AccountScreen extends StatefulWidget {
   const AccountScreen({super.key});
@@ -456,6 +457,17 @@ class _AccountScreenState extends State<AccountScreen> {
                   _stat('🎟', '0', 'Coupons'),
                 ]),
               ),
+            ),
+
+            // ── Notification opt-in nudge ───────────────────────
+            // Only renders anything when the OS-level notification
+            // permission is currently denied — invisible otherwise.
+            // Sits right below the stats card, above the menu tiles,
+            // so it's one of the first things visible without being
+            // as prominent as the header itself.
+            Transform.translate(
+              offset: const Offset(0, -6),
+              child: const NotificationOptInBanner(),
             ),
 
             // ── Menu tiles ─────────────────────────────────────

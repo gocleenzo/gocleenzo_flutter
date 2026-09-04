@@ -2,6 +2,12 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// UPDATED 'completed' message — now checks payment_status and shows a
+// different message depending on whether the customer already paid
+// online (via Razorpay, at booking time) vs COD (still needs to pay
+// the worker in cash). Previously this ALWAYS said "Please pay ₹X to
+// your professional", even for bookings that were already fully paid
+// online — genuinely confusing/wrong for anyone who paid upfront.
 const NOTIFICATION_CONFIG = {
   pending: {
     title: "🧹 Booking Confirmed!",
@@ -17,7 +23,10 @@ const NOTIFICATION_CONFIG = {
   },
   completed: {
     title: "🎉 Service Complete!",
-    body: (d) => `Done! Please pay ₹${d.final_amount || ""} to your professional. Thank you!`,
+    body: (d) =>
+      d.payment_status === "paid"
+        ? `Done! Your service is complete. Thank you for choosing Cleenzo! 🌟`
+        : ``,
   },
   cancelled: {
     title: "❌ Booking Cancelled",
@@ -38,12 +47,10 @@ async function getFcmAccessToken(): Promise<string> {
   console.log("Using client email:", clientEmail);
   console.log("Project ID:", projectId);
 
-  // Normalize the private key — handle both \n and real newlines
   const pemKey = privateKey
     .replace(/\\n/g, "\n")
     .trim();
 
-  // Extract raw base64 content
   const keyBase64 = pemKey
     .replace(/-----BEGIN PRIVATE KEY-----/g, "")
     .replace(/-----END PRIVATE KEY-----/g, "")
@@ -51,14 +58,12 @@ async function getFcmAccessToken(): Promise<string> {
 
   console.log("Key base64 length:", keyBase64.length);
 
-  // Decode to bytes
   const binaryStr = atob(keyBase64);
   const bytes = new Uint8Array(binaryStr.length);
   for (let i = 0; i < binaryStr.length; i++) {
     bytes[i] = binaryStr.charCodeAt(i);
   }
 
-  // Import RSA private key
   const cryptoKey = await crypto.subtle.importKey(
     "pkcs8",
     bytes.buffer,
@@ -67,7 +72,6 @@ async function getFcmAccessToken(): Promise<string> {
     ["sign"]
   );
 
-  // Build JWT manually
   const now = Math.floor(Date.now() / 1000);
   const header  = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" }))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -87,7 +91,6 @@ async function getFcmAccessToken(): Promise<string> {
     new TextEncoder().encode(signingInput)
   );
 
-  // Convert signature to base64url
   const sigArr = new Uint8Array(sigBuffer);
   let sigBin = "";
   for (let i = 0; i < sigArr.length; i++) sigBin += String.fromCharCode(sigArr[i]);
@@ -96,7 +99,6 @@ async function getFcmAccessToken(): Promise<string> {
   const jwt = `${signingInput}.${signature}`;
   console.log("JWT created, length:", jwt.length);
 
-  // Exchange for access token
   const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -115,14 +117,15 @@ async function getFcmAccessToken(): Promise<string> {
   return tokenData.access_token;
 }
 
-// ── Send FCM push notification ────────────────────────────────
+// ── Send FCM push notification — returns whether the token was
+// reported as genuinely dead, so the caller can prune it. ────────
 async function sendFcmNotification(
   fcmToken: string,
   title: string,
   body: string,
   data: Record<string, string>,
   accessToken: string
-): Promise<void> {
+): Promise<{ ok: boolean; tokenInvalid: boolean }> {
   const projectId = Deno.env.get("FCM_PROJECT_ID");
   const url = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
 
@@ -151,7 +154,20 @@ async function sendFcmNotification(
 
   const resText = await res.text();
   console.log("FCM response:", res.status, resText);
-  if (!res.ok) throw new Error(`FCM send error ${res.status}: ${resText}`);
+
+  if (!res.ok) {
+    let tokenInvalid = false;
+    try {
+      const parsed = JSON.parse(resText);
+      const errorCode = parsed?.error?.details?.find(
+        (d: any) => d["@type"]?.includes("FcmError")
+      )?.errorCode;
+      tokenInvalid = errorCode === "UNREGISTERED" || errorCode === "INVALID_ARGUMENT";
+    } catch (_) { /* leave tokenInvalid false if we can't parse */ }
+    return { ok: false, tokenInvalid };
+  }
+
+  return { ok: true, tokenInvalid: false };
 }
 
 // ── Main handler ──────────────────────────────────────────────
@@ -182,35 +198,37 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")
     );
 
-    // Get customer FCM token
-    const { data: customer } = await supabase
-      .from("users")
-      .select("fcm_token, full_name")
-      .eq("id", customerId)
-      .maybeSingle();
+    // UPDATED — multi-device: fetch EVERY device token this customer
+    // has, from user_fcm_tokens, instead of the old single
+    // users.fcm_token column (which nothing else writes to anymore).
+    const { data: tokenRows } = await supabase
+      .from("user_fcm_tokens")
+      .select("id, token")
+      .eq("user_id", customerId);
 
-    if (!customer?.fcm_token) {
-      console.log("No FCM token for customer:", customerId);
+    if (!tokenRows || tokenRows.length === 0) {
+      console.log("No FCM tokens for customer:", customerId);
       return new Response("No FCM token", { status: 200 });
     }
-    console.log("Found FCM token for customer:", customerId);
+    console.log(`Found ${tokenRows.length} device token(s) for customer:`, customerId);
 
-    // Get booking details
+    // Get booking details — NOW also selects payment_status, needed
+    // for the 'completed' message to choose the right wording.
     const { data: booking } = await supabase
       .from("bookings")
-      .select("final_amount, services(name)")
+      .select("final_amount, payment_status, services(name)")
       .eq("id", bookingId)
       .maybeSingle();
 
     const templateData = {
-      booking_id:   bookingId,
-      status:       newStatus,
-      service_name: booking?.services?.name ?? "",
-      final_amount: String(booking?.final_amount ?? ""),
-      worker_name:  "",
+      booking_id:     bookingId,
+      status:         newStatus,
+      service_name:   booking?.services?.name ?? "",
+      final_amount:   String(booking?.final_amount ?? ""),
+      payment_status: booking?.payment_status ?? "",
+      worker_name:    "",
     };
 
-    // Get worker name if accepted
     if (newStatus === "accepted" && record.worker_id) {
       const { data: worker } = await supabase
         .from("users")
@@ -220,25 +238,32 @@ serve(async (req) => {
       templateData.worker_name = worker?.full_name ?? "";
     }
 
-    // Get FCM access token
     const accessToken = await getFcmAccessToken();
+    const title = config.title;
+    const body = config.body(templateData);
 
-    // Send notification
-    await sendFcmNotification(
-      customer.fcm_token,
-      config.title,
-      config.body(templateData),
-      templateData,
-      accessToken
-    );
+    // Send to every device, prune any FCM reports as genuinely dead.
+    let anySuccess = false;
+    const deadRowIds: string[] = [];
+    for (const row of tokenRows) {
+      const result = await sendFcmNotification(row.token, title, body, templateData, accessToken);
+      if (result.ok) anySuccess = true;
+      if (result.tokenInvalid) deadRowIds.push(row.id);
+    }
 
-    console.log("✅ Notification sent! customer:", customerId, "status:", newStatus);
+    if (deadRowIds.length > 0) {
+      await supabase.from("user_fcm_tokens").delete().in("id", deadRowIds);
+      console.log(`Pruned ${deadRowIds.length} dead token(s)`);
+    }
 
-    // Save to in-app notifications table
+    console.log("✅ Notification pass complete! customer:", customerId, "status:", newStatus,
+      "devices sent:", tokenRows.length - deadRowIds.length);
+
+    // Save to in-app notifications table — once, not once per device.
     await supabase.from("notifications").insert({
       user_id:    customerId,
-      title:      config.title,
-      body:       config.body(templateData),
+      title:      title,
+      body:       body,
       type:       "booking",
       booking_id: bookingId,
       is_read:    false,
@@ -246,7 +271,7 @@ serve(async (req) => {
       if (e) console.log("notifications insert skipped:", e.message);
     });
 
-    return new Response(JSON.stringify({ success: true }), {
+    return new Response(JSON.stringify({ success: anySuccess }), {
       headers: { "Content-Type": "application/json" }, status: 200,
     });
   } catch (err) {

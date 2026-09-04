@@ -1,23 +1,22 @@
-import 'dart:io' show Platform;
+﻿import 'dart:io' show Platform;
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../router.dart' show rootNavigatorKey;
 
 class NotificationService {
   static final _messaging = FirebaseMessaging.instance;
   static final _supabase  = Supabase.instance.client;
 
-  // Store router context for navigation on notification tap.
-  // Call NotificationService.setContext(context) from your root widget.
-  static BuildContext? _context;
-  static void setContext(BuildContext context) => _context = context;
+  static const _softAskShownKey = 'notif_soft_ask_shown_v1';
 
-  // Local notifications plugin
+  static void setContext(BuildContext context) {}
+
   static final _localNotifications = FlutterLocalNotificationsPlugin();
 
-  // High importance channel for Android
   static const _channel = AndroidNotificationChannel(
     'high_importance_channel',
     'High Importance Notifications',
@@ -27,9 +26,103 @@ class NotificationService {
     enableVibration: true,
   );
 
-  // ── Initialize ─────────────────────────────────────────────
   static Future<void> initialize() async {
-    // 1. Request FCM permission
+    await _setupLocalNotifications();
+
+    _messaging.onTokenRefresh.listen((newToken) {
+      debugPrint('FCM token refreshed');
+      _saveTokenToSupabase(newToken);
+    });
+
+    FirebaseMessaging.onMessage.listen((message) {
+      debugPrint('Foreground message: ${message.notification?.title}');
+      _showLocalNotification(message);
+    });
+
+    FirebaseMessaging.onMessageOpenedApp.listen((message) {
+      debugPrint('Notification tapped (background): ${message.data}');
+      _handleMessageTap(message.data);
+    });
+
+    final initial = await _messaging.getInitialMessage();
+    if (initial != null) {
+      debugPrint('App opened from notification: ${initial.data}');
+      await Future.delayed(const Duration(milliseconds: 800));
+      _handleMessageTap(initial.data);
+    }
+
+    final existing = await _messaging.getNotificationSettings();
+    if (existing.authorizationStatus == AuthorizationStatus.authorized ||
+        existing.authorizationStatus == AuthorizationStatus.provisional) {
+      await _saveToken();
+      return;
+    }
+    if (existing.authorizationStatus == AuthorizationStatus.denied) {
+      return;
+    }
+
+    await _maybeShowSoftAskThenRequestPermission();
+  }
+
+  static Future<void> _maybeShowSoftAskThenRequestPermission() async {
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyShown = prefs.getBool(_softAskShownKey) ?? false;
+    if (alreadyShown) return;
+
+    BuildContext? ctx;
+    for (var i = 0; i < 20; i++) {
+      ctx = rootNavigatorKey.currentContext;
+      if (ctx != null) break;
+      await Future.delayed(const Duration(milliseconds: 150));
+    }
+
+    await prefs.setBool(_softAskShownKey, true);
+
+    if (ctx == null) {
+      await _requestRealPermissionAndSaveToken();
+      return;
+    }
+
+    final allowed = await showDialog<bool>(
+      context: ctx,
+      barrierDismissible: false,
+      builder: (dialogCtx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          'Stay updated on your bookings',
+          style: TextStyle(fontWeight: FontWeight.w800, fontSize: 17),
+        ),
+        content: const Text(
+          'Turn on notifications to know the moment a cleaner is assigned, '
+          'on the way, or your cleaning is complete.',
+          style: TextStyle(fontSize: 14, height: 1.4),
+        ),
+        actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(false),
+            child: const Text('Not now'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00B1FC),
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+            child: const Text('Turn on notifications'),
+          ),
+        ],
+      ),
+    );
+
+    if (allowed == true) {
+      await _requestRealPermissionAndSaveToken();
+    }
+  }
+
+  static Future<void> _requestRealPermissionAndSaveToken() async {
     final settings = await _messaging.requestPermission(
       alert:       true,
       badge:       true,
@@ -37,47 +130,13 @@ class NotificationService {
       provisional: false,
     );
     debugPrint('Notification permission: ${settings.authorizationStatus}');
-
     if (settings.authorizationStatus == AuthorizationStatus.denied) {
       debugPrint('Notifications denied by user');
       return;
     }
-
-    // 2. Setup local notifications
-    await _setupLocalNotifications();
-
-    // 3. Get FCM token and save to Supabase
     await _saveToken();
-
-    // 4. Listen for token refresh
-    _messaging.onTokenRefresh.listen((newToken) {
-      debugPrint('FCM token refreshed');
-      _saveTokenToSupabase(newToken);
-    });
-
-    // 5. Handle foreground messages — show as local notification
-    FirebaseMessaging.onMessage.listen((message) {
-      debugPrint('Foreground message: ${message.notification?.title}');
-      _showLocalNotification(message);
-    });
-
-    // 6. Handle notification tap when app is in background
-    FirebaseMessaging.onMessageOpenedApp.listen((message) {
-      debugPrint('Notification tapped (background): ${message.data}');
-      _handleMessageTap(message.data);
-    });
-
-    // 7. Check if app was opened from a terminated notification
-    final initial = await _messaging.getInitialMessage();
-    if (initial != null) {
-      debugPrint('App opened from notification: ${initial.data}');
-      // Delay so router is ready before navigating
-      await Future.delayed(const Duration(milliseconds: 800));
-      _handleMessageTap(initial.data);
-    }
   }
 
-  // ── Setup local notifications ──────────────────────────────
   static Future<void> _setupLocalNotifications() async {
     final androidPlugin = _localNotifications
         .resolvePlatformSpecificImplementation<
@@ -107,9 +166,7 @@ class NotificationService {
     );
   }
 
-  // ── Show local notification ────────────────────────────────
-  static Future<void> _showLocalNotification(
-      RemoteMessage message) async {
+  static Future<void> _showLocalNotification(RemoteMessage message) async {
     final notification = message.notification;
     if (notification == null) return;
 
@@ -122,8 +179,7 @@ class NotificationService {
       playSound: true,
       enableVibration: true,
       icon: '@mipmap/ic_launcher',
-      largeIcon: const DrawableResourceAndroidBitmap(
-          '@mipmap/ic_launcher'),
+      largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
     );
 
     final details = NotificationDetails(android: androidDetails);
@@ -137,7 +193,6 @@ class NotificationService {
     );
   }
 
-  // ── Handle notification tap ────────────────────────────────
   static void _handleMessageTap(Map<String, dynamic> data) {
     final bookingId = data['booking_id'] as String?;
     if (bookingId == null || bookingId.isEmpty) return;
@@ -145,38 +200,16 @@ class NotificationService {
   }
 
   static void _navigateToBooking(String bookingId) {
-    final ctx = _context;
+    final ctx = rootNavigatorKey.currentContext;
     if (ctx == null) {
-      debugPrint('No context for navigation to booking $bookingId');
+      debugPrint(
+          'No router context available yet for navigation to booking '
+          '$bookingId');
       return;
     }
-    // Use Navigator directly since go_router's context push works here
-    Navigator.of(ctx, rootNavigator: true).pushNamed(
-      '/bookings/$bookingId',
-    );
+    GoRouter.of(ctx).push('/bookings/$bookingId');
   }
 
-  // ── Save FCM token to Supabase ─────────────────────────────
-  //
-  // FIXED: on iOS, calling FirebaseMessaging.getToken() before Apple's
-  // own APNs (Apple Push Notification service) token has finished
-  // registering with the OS returns null SILENTLY — no exception, no
-  // error, `getToken()` just resolves to null. The original code called
-  // getToken() immediately after requestPermission(), which on a real
-  // device is almost always too early: APNs registration happens
-  // asynchronously in the background and can take anywhere from
-  // under a second to several seconds depending on network conditions.
-  // Since this whole call chain is wrapped in a non-fatal try/catch at
-  // the call site (login_screen.dart), a null token was never surfaced
-  // as an error anywhere — it just silently resulted in fcm_token never
-  // getting saved, which is exactly the symptom we were chasing
-  // (iOS customers showing fcm_token: null even after logging in).
-  //
-  // Fix: on iOS specifically, wait for getAPNSToken() to return non-null
-  // FIRST (polling with a short delay, up to a bounded number of
-  // attempts), and only THEN call getToken(). Android is unaffected —
-  // it has no APNs concept at all, so this whole wait is skipped there
-  // and behavior is identical to before.
   static Future<void> _saveToken() async {
     try {
       if (Platform.isIOS) {
@@ -201,10 +234,6 @@ class NotificationService {
     }
   }
 
-  /// Polls FirebaseMessaging.instance.getAPNSToken() until it returns a
-  /// non-null value, or gives up after [maxAttempts] tries. Returns true
-  /// once ready, false if it timed out. No-op concept on Android (this
-  /// is only ever called when Platform.isIOS is true — see _saveToken).
   static Future<bool> _waitForApnsToken({
     int maxAttempts = 10,
     Duration delay = const Duration(milliseconds: 500),
@@ -217,54 +246,64 @@ class NotificationService {
       }
       await Future.delayed(delay);
     }
-    debugPrint('APNs token still null after $maxAttempts attempts '
-        '(~${(maxAttempts * delay.inMilliseconds / 1000).toStringAsFixed(1)}s)');
+    debugPrint('APNs token still null after $maxAttempts attempts');
     return false;
   }
 
+  // UPDATED: multi-device support. Instead of overwriting a single
+  // users.fcm_token column (which meant a second device's login
+  // silently killed the first device's notifications), this upserts
+  // a row into user_fcm_tokens keyed on the TOKEN itself. Every
+  // device this account is logged into keeps its own row and keeps
+  // receiving pushes independently.
   static Future<void> _saveTokenToSupabase(String token) async {
     try {
-      // Use cached userId since app uses Firebase Phone Auth +
-      // custom Supabase session — auth.currentUser is null in this setup.
       final user = _supabase.auth.currentUser;
       String? userId = user?.id;
 
-      // Fallback to cached userId for Firebase Phone Auth flow
       if (userId == null) {
         final prefs = await SharedPreferences.getInstance();
         userId = prefs.getString('app_user_id');
       }
 
       if (userId == null) return;
-      await _supabase.from('users').update({
-        'fcm_token': token,
-      }).eq('id', userId);
-      debugPrint('FCM token saved to Supabase for user: $userId');
+
+      await _supabase.from('user_fcm_tokens').upsert(
+        {
+          'user_id': userId,
+          'token': token,
+          'platform': Platform.isIOS ? 'ios' : 'android',
+          'updated_at': DateTime.now().toUtc().toIso8601String(),
+        },
+        onConflict: 'token',
+      );
+      debugPrint('FCM token saved (multi-device) for user: $userId');
     } catch (e) {
       debugPrint('Error saving FCM token: $e');
     }
   }
 
-  // ── Call this after login to save token ───────────────────
   static Future<void> saveTokenAfterLogin() async {
-    await _saveToken();
+    final settings = await _messaging.getNotificationSettings();
+    if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+        settings.authorizationStatus == AuthorizationStatus.provisional) {
+      await _saveToken();
+    }
   }
 
-  // ── Call this on logout to clear token ────────────────────
+  // UPDATED: only removes THIS device's own token row — signing out
+  // on Android must not affect the same account's iPhone token (or
+  // vice versa). Reads the current device's own token directly from
+  // FCM (cached locally, doesn't require re-requesting permission)
+  // rather than clearing anything user-wide.
   static Future<void> clearTokenOnLogout() async {
     try {
-      final user = _supabase.auth.currentUser;
-      String? userId = user?.id;
-      if (userId == null) {
-        final prefs = await SharedPreferences.getInstance();
-        userId = prefs.getString('app_user_id');
+      final token = await _messaging.getToken();
+      if (token != null) {
+        await _supabase.from('user_fcm_tokens').delete().eq('token', token);
+        debugPrint('FCM token cleared for this device only');
       }
-      if (userId == null) return;
-      await _supabase.from('users').update({
-        'fcm_token': null,
-      }).eq('id', userId);
       await _messaging.deleteToken();
-      debugPrint('FCM token cleared');
     } catch (e) {
       debugPrint('Error clearing FCM token: $e');
     }
