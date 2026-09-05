@@ -27,7 +27,17 @@ class NotificationService {
   );
 
   static Future<void> initialize() async {
-    await _setupLocalNotifications();
+    try {
+      await _setupLocalNotifications();
+    } catch (e) {
+      // Defensive — local-notification setup failing should never be
+      // able to take down the rest of the notification flow (FCM
+      // listeners, permission handling, token saving) the way the
+      // missing-iOS-settings bug above did. Local notifications (the
+      // foreground in-app banner) would be degraded, but everything
+      // else below still runs.
+      debugPrint('Local notifications setup failed (non-fatal): $e');
+    }
 
     _messaging.onTokenRefresh.listen((newToken) {
       debugPrint('FCM token refreshed');
@@ -145,8 +155,32 @@ class NotificationService {
 
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
-    const initSettings =
-        InitializationSettings(android: androidSettings);
+    // FIXED: flutter_local_notifications REQUIRES iOS settings when
+    // running on iOS — without this, .initialize() below throws
+    // "iOS settings must be set when targeting iOS platform" as an
+    // UNCAUGHT exception, which crashes the entire initialize() chain
+    // before it ever reaches the permission/token-saving code further
+    // down. This is why nothing related to notifications ever ran on
+    // iOS — not the soft-ask, not permission requests, not token
+    // saving — the whole thing died silently at this very first step
+    // every single time on iOS, release mode included (where the
+    // crash produces no visible error to the user at all).
+    //
+    // request*Permission are all false here deliberately — actual
+    // permission requesting is handled entirely by our own soft-ask
+    // flow via FirebaseMessaging.requestPermission() further down;
+    // letting this plugin ALSO request permission on init would risk
+    // firing the real OS prompt before our soft-ask dialog even has a
+    // chance to show.
+    const iosSettings = DarwinInitializationSettings(
+      requestAlertPermission: false,
+      requestBadgePermission: false,
+      requestSoundPermission: false,
+    );
+    const initSettings = InitializationSettings(
+      android: androidSettings,
+      iOS: iosSettings,
+    );
 
     await _localNotifications.initialize(
       initSettings,
