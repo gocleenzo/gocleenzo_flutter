@@ -84,6 +84,12 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   List<Map<String, dynamic>> _conflicts = [];
   bool _availabilityChecked = false;
   bool _allDaysAvailable = false;
+  // NEW: separately tracks whether the CURRENT set of day-overrides
+  // (once all conflicts have one picked) has actually been confirmed
+  // to work for a single worker — set by _verifyOverridesWork(),
+  // reset to null whenever any override changes.
+  bool? _overridesVerified;
+  bool _verifyingOverrides = false;
 
   List<Map<String, dynamic>> _addresses = [];
   String _selectedAddressId = '';
@@ -266,6 +272,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       _availabilityChecked = false;
       _conflicts = [];
       _dayOverrides.clear();
+      _overridesVerified = null;
       _selectedTime = '';
       _slotGrid = {};
     });
@@ -279,25 +286,68 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     if (_startDate == null || _selectedTime.isEmpty || !_availabilityChecked) {
       return false;
     }
-    // Every conflicting day must have an alternate time picked, always.
     final allConflictsResolved =
         _conflicts.every((c) => _dayOverrides.containsKey(c['day'] as int));
 
-    // _allDaysAvailable only reflects "one worker free at the STANDARD
-    // time across all 7 days" — it is ALWAYS false whenever ANY day has
-    // a conflict, even after that conflict is correctly resolved with an
-    // alternate time. Requiring it alongside resolved conflicts made
-    // this condition mathematically impossible to satisfy whenever a
-    // conflict existed at all — the actual bug behind Continue staying
-    // disabled even after picking a valid alternate time.
-    //
-    // Correct rule: proceed if EITHER (a) fully available at the
-    // standard time with zero conflicts, OR (b) there were specific
-    // per-day conflicts and every one of them now has an alternate time
-    // chosen. A genuine total failure (no worker covers anything, no
-    // conflicts list to even resolve) still correctly falls through to
-    // neither case and stays blocked.
-    return allConflictsResolved && (_allDaysAvailable || _conflicts.isNotEmpty);
+    if (!allConflictsResolved) return false;
+
+    // No conflicts at all — the original all-days-standard-time check
+    // already confirmed a single worker covers everything.
+    if (_conflicts.isEmpty) return _allDaysAvailable;
+
+    // Conflicts existed and were "resolved" with overrides — this is
+    // ONLY actually safe to proceed on once verify_recurring_package_
+    // with_overrides has confirmed a single worker can cover the
+    // resulting mixed schedule. This is the fix for payments
+    // succeeding and then failing/refunding every time for
+    // combinations that could never have worked (check_recurring_
+    // availability's own conflict list is built by checking each
+    // conflicting day INDEPENDENTLY — any worker, standard time only —
+    // it never verifies a SINGLE worker can cover the whole 7-day
+    // schedule once overrides are applied; only
+    // create_recurring_package used to check that, AFTER payment).
+    return _overridesVerified == true;
+  }
+
+  /// Runs once every conflicting day has an override picked — confirms
+  /// a SINGLE worker can actually cover the full 7-day schedule with
+  /// this exact mix of standard + override times, instead of trusting
+  /// "every conflict has some time picked" as if that were sufficient.
+  Future<void> _verifyOverridesWork() async {
+    if (_startDate == null || _selectedTime.isEmpty) return;
+    final unresolved = _conflicts.where(
+        (c) => !_dayOverrides.containsKey(c['day'] as int)).length;
+    if (unresolved > 0) {
+      // Not all conflicts resolved yet — nothing to verify.
+      setState(() => _overridesVerified = null);
+      return;
+    }
+    setState(() => _verifyingOverrides = true);
+    try {
+      final overrides = _dayOverrides.entries
+          .map((e) => {'day': e.key, 'time': e.value}).toList();
+      final result = await _supabase.rpc(
+          'verify_recurring_package_with_overrides', params: {
+        'p_address_id':     _selectedAddressId,
+        'p_start_date':     _dateStr(_startDate!),
+        'p_time':           _selectedTime,
+        'p_duration_mins':  widget.durationMins,
+        'p_day_overrides':  overrides,
+      });
+      if (!mounted) return;
+      final res = result as Map<String, dynamic>;
+      setState(() {
+        _overridesVerified = res['available'] == true;
+        _verifyingOverrides = false;
+      });
+    } catch (e) {
+      debugPrint('verify overrides error: $e');
+      if (mounted) {
+        // Fail closed — if we can't confirm it works, don't let the
+        // customer pay for a combination we're not sure about.
+        setState(() { _overridesVerified = false; _verifyingOverrides = false; });
+      }
+    }
   }
 
   // ── Payment ────────────────────────────────────────────────────
@@ -675,6 +725,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                       _availabilityChecked = false;
                       _conflicts = [];
                       _dayOverrides.clear();
+                      _overridesVerified = null;
                       _slotGrid = {};
                     });
                     if (_startDate != null) _loadSlotGrid();
@@ -868,6 +919,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                     _availabilityChecked = false;
                     _conflicts = [];
                     _dayOverrides.clear();
+                    _overridesVerified = null;
                   });
                   HapticFeedback.selectionClick();
                 },
@@ -925,62 +977,106 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   }
 
   Widget _buildConflictsCard() {
+    final allPicked = _conflicts.every((c) => _dayOverrides.containsKey(c['day'] as int));
     return _card(
       icon: Icons.event_busy_rounded,
       title: 'Some days need a different time',
       sub: 'Pick an alternate time for the days below',
-      child: Column(children: _conflicts.map((c) {
-        final day = c['day'] as int;
-        final date = DateTime.parse(c['date'] as String);
-        final chosen = _dayOverrides[day];
-        return Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: chosen != null ? const Color(0xFFECFDF5) : const Color(0xFFFFF7ED),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: chosen != null
-                ? const Color(0xFF6EE7B7) : const Color(0xFFFED7AA))),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Icon(chosen != null ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
-                  color: chosen != null ? _greenDk : _amber, size: 18),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Day $day · ${_prettyDate(date)}',
-                  style: TextStyle(
-                      color: chosen != null ? const Color(0xFF065F46) : const Color(0xFF92400E),
-                      fontWeight: FontWeight.w800, fontSize: 13))),
-              if (chosen != null)
-                Text(_pretty12h(chosen),
-                    style: const TextStyle(color: _greenDk, fontWeight: FontWeight.w900, fontSize: 13)),
-            ]),
-            const SizedBox(height: 8),
-            SizedBox(
-              height: 36,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: _timeSlots.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (_, i) {
-                  final t = _timeSlots[i];
-                  final active = chosen == t;
-                  return GestureDetector(
-                    onTap: () => setState(() => _dayOverrides[day] = t),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: active ? _cyanDk : Colors.white,
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: active ? _cyanDk : _border)),
-                      child: Text(_pretty12h(t),
-                          style: TextStyle(
-                            fontSize: 11, fontWeight: FontWeight.w700,
-                            color: active ? Colors.white : const Color(0xFF334155)))),
-                  );
-                })),
-          ]));
-      }).toList()),
+      child: Column(children: [
+        ..._conflicts.map((c) {
+          final day = c['day'] as int;
+          final date = DateTime.parse(c['date'] as String);
+          final chosen = _dayOverrides[day];
+          return Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: chosen != null ? const Color(0xFFECFDF5) : const Color(0xFFFFF7ED),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: chosen != null
+                  ? const Color(0xFF6EE7B7) : const Color(0xFFFED7AA))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Icon(chosen != null ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
+                    color: chosen != null ? _greenDk : _amber, size: 18),
+                const SizedBox(width: 8),
+                Expanded(child: Text('Day $day · ${_prettyDate(date)}',
+                    style: TextStyle(
+                        color: chosen != null ? const Color(0xFF065F46) : const Color(0xFF92400E),
+                        fontWeight: FontWeight.w800, fontSize: 13))),
+                if (chosen != null)
+                  Text(_pretty12h(chosen),
+                      style: const TextStyle(color: _greenDk, fontWeight: FontWeight.w900, fontSize: 13)),
+              ]),
+              const SizedBox(height: 8),
+              SizedBox(
+                height: 36,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _timeSlots.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) {
+                    final t = _timeSlots[i];
+                    final active = chosen == t;
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() => _dayOverrides[day] = t);
+                        _verifyOverridesWork();
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          color: active ? _cyanDk : Colors.white,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: active ? _cyanDk : _border)),
+                        child: Text(_pretty12h(t),
+                            style: TextStyle(
+                              fontSize: 11, fontWeight: FontWeight.w700,
+                              color: active ? Colors.white : const Color(0xFF334155)))),
+                    );
+                  })),
+            ]));
+        }),
+        if (allPicked) ...[
+          const SizedBox(height: 4),
+          if (_verifyingOverrides)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Row(children: [
+                SizedBox(width: 14, height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: _cyanDk)),
+                SizedBox(width: 8),
+                Text('Confirming a professional can cover this schedule…',
+                    style: TextStyle(color: _faint, fontSize: 11.5)),
+              ]),
+            )
+          else if (_overridesVerified == false)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFEF2F2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFECACA))),
+              child: const Text(
+                'No single professional can cover all 7 days with this '
+                'combination of times. Please try different alternate '
+                'times for the conflicting days above.',
+                style: TextStyle(color: Color(0xFFDC2626), fontSize: 12, height: 1.4)),
+            )
+          else if (_overridesVerified == true)
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF6EE7B7))),
+              child: const Text(
+                '✓ Confirmed — one professional can cover all 7 days with these times.',
+                style: TextStyle(color: Color(0xFF065F46), fontSize: 12, fontWeight: FontWeight.w700)),
+            ),
+        ],
+      ]),
     );
   }
 
@@ -1141,7 +1237,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     //      for all 7 days" (this now lives here instead of inline in the
     //      card, per product request)
     //   3. Checked and all 7 days confirmed available (with any needed
-    //      per-day overrides chosen) -> active "Continue"
+    //      per-day overrides chosen AND verified) -> active "Continue"
     final isCheckStep = _step == 2 &&
         _startDate != null && _selectedTime.isNotEmpty && !_availabilityChecked;
 
