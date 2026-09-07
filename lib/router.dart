@@ -1,5 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'screens/splash_screen.dart';
@@ -54,14 +55,63 @@ CustomTransitionPage<void> _zoomPage(Widget child, GoRouterState state) {
 /// bypassing Flutter's normal (broken-on-this-device) back dispatch.
 final rootNavigatorKey = GlobalKey<NavigatorState>();
 
+// ── FIX: random/frequent logout on Android force-close ──────────
+//
+// ROOT CAUSE: the router's redirect() function used to read
+// fb.FirebaseAuth.instance.currentUser SYNCHRONOUSLY, at whatever
+// instant navigation happened to occur — with no `refreshListenable`
+// tying the router to Firebase's actual auth-state stream at all.
+//
+// On Android specifically, when the OS fully kills the app's process
+// (a genuine force-close, not just backgrounding), Firebase has to
+// asynchronously restore the previously-signed-in session from disk
+// the next time the app launches. `currentUser` reads `null` for a
+// brief window during that restore — even though the real, valid
+// session is about to become available a moment later. If the splash
+// screen tried to navigate onward during that exact window, the old
+// redirect logic saw `currentUser == null`, concluded "not logged in",
+// and sent a perfectly legitimate, still-signed-in customer straight
+// to /login — discarding their session for no real reason. This
+// reproduces exactly on the "force-close, wait, reopen" pattern
+// reported, since a genuine process kill is what triggers Firebase's
+// disk-restore path at all (simple backgrounding never does).
+//
+// THE FIX, two parts:
+//   1. `_AuthChangeNotifier` below listens to Firebase's own
+//      `authStateChanges()` stream (not just reading `currentUser`
+//      once) and tells GoRouter to re-run its redirect logic every
+//      time that stream emits — including the FIRST emission after a
+//      cold start, which is exactly the restored-session event this
+//      bug was missing entirely.
+//   2. The redirect function itself now checks `_authInitialized` and
+//      returns `null` (i.e. "don't redirect anywhere yet, leave
+//      whatever's currently showing alone") until that first stream
+//      event has actually arrived — so the splash screen is never
+//      forced into a premature "not logged in" verdict based on a
+//      `currentUser` read that just hasn't caught up yet.
+bool _authInitialized = false;
+
+class _AuthChangeNotifier extends ChangeNotifier {
+  _AuthChangeNotifier() {
+    fb.FirebaseAuth.instance.authStateChanges().listen((user) {
+      _authInitialized = true;
+      if (kDebugMode) {
+        // ignore: avoid_print
+        print('[ROUTER] Firebase authStateChanges emitted: '
+            'uid=${user?.uid} (authInitialized=$_authInitialized)');
+      }
+      notifyListeners();
+    });
+  }
+}
+
+final _authNotifier = _AuthChangeNotifier();
+
 final router = GoRouter(
   navigatorKey: rootNavigatorKey,
   initialLocation: '/',
+  refreshListenable: _authNotifier,
   redirect: (context, state) {
-    final supaUser  = Supabase.instance.client.auth.currentUser;
-    final fireUser  = fb.FirebaseAuth.instance.currentUser;
-    final isLoggedIn = supaUser != null || fireUser != null;
-
     final loc = state.matchedLocation;
 
     final isAuth = ['/', '/login'].contains(loc);
@@ -73,6 +123,24 @@ final router = GoRouter(
       '/saved-addresses',
       '/notifications',
     ].contains(loc);
+
+    // Still waiting on Firebase's first authStateChanges() emission
+    // (i.e. the async session-restore-from-disk step hasn't finished
+    // yet, most likely right after a cold start following a force-
+    // close). Don't make ANY redirect decision yet — whatever screen
+    // is currently showing (normally the splash screen) stays exactly
+    // where it is until we actually know the real auth state. This is
+    // the fix: previously, skipping this wait is what let a valid but
+    // not-yet-restored session get misread as "logged out".
+    if (!_authInitialized) {
+      // ignore: avoid_print
+      print('[ROUTER] loc=$loc — auth not yet initialized, holding redirect');
+      return null;
+    }
+
+    final supaUser  = Supabase.instance.client.auth.currentUser;
+    final fireUser  = fb.FirebaseAuth.instance.currentUser;
+    final isLoggedIn = supaUser != null || fireUser != null;
 
     // ignore: avoid_print
     print('[ROUTER] loc=$loc supaUser=${supaUser?.id} fireUser=${fireUser?.uid} isLoggedIn=$isLoggedIn isAuth=$isAuth isLocationFlow=$isLocationFlow');

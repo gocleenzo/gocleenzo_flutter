@@ -51,7 +51,7 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
   // shipping. Kept as a single constant so it's the one place to edit,
   // and so the app-wide "which number does the customer see" question
   // always has exactly one source of truth.
-  static const String _helplineNumber = 'XXXXXXXXXX';
+  static const String _helplineNumber = '9702728298';
 
   Map<String, dynamic>? _booking;
   bool _loading = true;
@@ -1263,8 +1263,18 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
               '− ₹$discount', _muted, _greenDk),
         const Divider(color: _line, height: 20),
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          const Text('Cash Due to Worker',
-              style: TextStyle(fontSize: 15,
+          Text(
+              // FIXED: previously always said "Cash Due to Worker"
+              // regardless of how the booking was actually paid — even
+              // when payment_status was already 'paid' (online, via
+              // Razorpay), showing a confusing "Cash Due to Worker" +
+              // "Payment received ✓" combination together, since the
+              // label itself never checked _paymentStatus at all. Now
+              // it reflects reality: paid online shows "Amount Paid
+              // Online"; a genuinely-unpaid COD booking still shows
+              // "Cash Due to Worker" exactly as before.
+              _paymentStatus == 'paid' ? 'Amount Paid Online' : 'Cash Due to Worker',
+              style: const TextStyle(fontSize: 15,
                   fontWeight: FontWeight.w900, color: _ink)),
           Text('₹$final_',
               style: const TextStyle(fontSize: 26,
@@ -1281,8 +1291,13 @@ class _BookingDetailScreenState extends State<BookingDetailScreen>
             const Icon(Icons.payments_rounded, color: _cyanDk, size: 18),
             const SizedBox(width: 10),
             Expanded(child: Text(
+              // FIXED: same reasoning as the label above — "Payment
+              // received ✓" alone (with no mention of HOW) sat right
+              // below "Cash Due to Worker" and read like cash was
+              // collected on top of an online payment. Now explicitly
+              // says "Paid online" when that's what actually happened.
               _paymentStatus == 'paid'
-                  ? 'Payment received ✓'
+                  ? 'Paid online ✓ — no cash needed'
                   : 'Pay ₹$final_ cash to the worker after service',
               style: TextStyle(
                 color: _paymentStatus == 'paid' ? _greenDk : _muted,

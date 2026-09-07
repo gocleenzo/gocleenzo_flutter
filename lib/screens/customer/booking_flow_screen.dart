@@ -1459,7 +1459,7 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         }
         return;
       } else if (action == 'no_draft_found') {
-        final result = await _supabase.rpc('try_claim_slot', params: {
+                final result = await _supabase.rpc('try_claim_slot', params: {
           'p_customer_id':          userId,
           'p_address_id':           _selectedAddressId,
           'p_scheduled_at':         scheduledAt.toIso8601String(),
@@ -1479,6 +1479,12 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
           'p_is_first_booking':     widget.isFirstBooking,
           'p_estimated_arrival':    _isInstant ? 15 : null,
           'p_booking_duration_minutes': _serviceDurationMins,
+          // Kept consistent with complete_payment_booking_recovery's
+          // own call — harmless here since this fallback path only
+          // runs when NO draft row exists at all (action ==
+          // 'no_draft_found'), so there's nothing to self-exclude, but
+          // passing it keeps both call sites uniform.
+          'p_attempt_ref':          _pendingAttemptRef,
         });
         if (!mounted) return;
         final res = result as Map<String, dynamic>;

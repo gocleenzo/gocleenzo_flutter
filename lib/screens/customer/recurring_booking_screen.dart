@@ -84,12 +84,25 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   List<Map<String, dynamic>> _conflicts = [];
   bool _availabilityChecked = false;
   bool _allDaysAvailable = false;
-  // NEW: separately tracks whether the CURRENT set of day-overrides
-  // (once all conflicts have one picked) has actually been confirmed
-  // to work for a single worker — set by _verifyOverridesWork(),
-  // reset to null whenever any override changes.
+  // Separately tracks whether the CURRENT set of day-overrides (once all
+  // conflicts have one picked) has actually been confirmed to work for a
+  // single worker — set by _verifyOverridesWork(), reset to null
+  // whenever any override changes.
   bool? _overridesVerified;
   bool _verifyingOverrides = false;
+
+  // NEW: real per-day slot availability for each conflicting day, so the
+  // override picker can show which specific times are actually free on
+  // THAT day instead of presenting all 25 slots as equally pickable and
+  // only revealing a dead end after tapping "verify". Keyed by day
+  // number (1..7). This is a UX aid only, computed the same
+  // approximate way get_recurring_slot_grid already is — the real,
+  // authoritative gate remains _verifyOverridesWork() (a single worker
+  // covering the FULL mixed 7-day schedule), since a slot being free on
+  // one isolated day doesn't guarantee the SAME worker who covers the
+  // other 6 days is also free at that specific alternate time.
+  final Map<int, Map<String, bool>> _dayFreeSlots = {};
+  final Set<int> _loadingDaySlots = {};
 
   List<Map<String, dynamic>> _addresses = [];
   String _selectedAddressId = '';
@@ -178,6 +191,17 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     return '$h:$m $ampm';
   }
 
+  int _timeToMins(String t) {
+    final parts = t.split(':');
+    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+  }
+
+  DateTime _slotToDateTime(DateTime date, String hhmm) {
+    final parts = hhmm.split(':');
+    return DateTime(date.year, date.month, date.day,
+        int.parse(parts[0]), int.parse(parts[1]));
+  }
+
   /// Runs the server-side all-7-days availability check. Requires
   /// _selectedAddressId to already be set — this is guaranteed now since
   /// address selection is Step 1, always completed before this can run.
@@ -190,7 +214,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       setState(() => _error = 'Please select an address first.');
       return;
     }
-    setState(() { _checking = true; _error = null; _conflicts = []; });
+    setState(() { _checking = true; _error = null; _conflicts = []; _dayFreeSlots.clear(); });
     try {
       final result = await _supabase.rpc('check_recurring_availability', params: {
         'p_address_id':    _selectedAddressId,
@@ -214,6 +238,14 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                    'Try a different time or start date.';
         }
       });
+      // Kick off real per-day availability loading for every conflicting
+      // day, so the override picker can show which times are actually
+      // free on each specific day instead of a blind list of 25 slots.
+      for (final c in _conflicts) {
+        final day = c['day'] as int;
+        final date = DateTime.tryParse(c['date'] as String);
+        if (date != null) _loadDaySlotAvailability(day, date);
+      }
     } catch (e) {
       debugPrint('recurring availability error: $e');
       if (mounted) {
@@ -223,6 +255,144 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         });
       }
     }
+  }
+
+  /// Real per-day slot availability for one SPECIFIC conflicting date —
+  /// mirrors the same worker/schedule/booking-overlap logic the regular
+  /// booking flow already uses for its date/time step, scoped to a
+  /// single day instead of a rolling week. Purely a UX aid: greys out
+  /// slots that are genuinely occupied so the customer picks from times
+  /// that stand a real chance, but the actual pass/fail gate remains
+  /// _verifyOverridesWork() (which additionally confirms a SINGLE
+  /// worker covers the whole mixed 7-day schedule, not just this one
+  /// day in isolation).
+  Future<void> _loadDaySlotAvailability(int day, DateTime date) async {
+    if (_dayFreeSlots.containsKey(day) || _loadingDaySlots.contains(day)) return;
+    setState(() => _loadingDaySlots.add(day));
+    try {
+      final dateStr = _dateStr(date);
+
+      final workersData = await _supabase
+          .from('workers')
+          .select('user_id, is_available')
+          .eq('is_available', true);
+      final workers = (workersData as List).cast<Map<String, dynamic>>();
+      final workerIds = workers.map((w) => w['user_id'] as String).toList();
+
+      final holidaysData = await _supabase
+          .from('worker_holidays')
+          .select('worker_id')
+          .eq('holiday_date', dateStr);
+      final holidayIds = (holidaysData as List)
+          .map((h) => h['worker_id'].toString()).toSet();
+
+      final schedData = workerIds.isEmpty
+          ? []
+          : await _supabase
+              .from('worker_schedule_dates')
+              .select('worker_id, enabled, start_time, end_time, breaks')
+              .eq('date', dateStr)
+              .inFilter('worker_id', workerIds);
+      final schedByWorker = <String, Map<String, dynamic>>{};
+      for (final row in (schedData as List).cast<Map<String, dynamic>>()) {
+        schedByWorker[row['worker_id'] as String] = row;
+      }
+
+      final dayStartUtc = DateTime(date.year, date.month, date.day).toUtc();
+      final dayEndUtc = DateTime(date.year, date.month, date.day, 23, 59, 59).toUtc();
+      final bookingsData = await _supabase
+          .from('bookings')
+          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, services(duration_minutes)')
+          .inFilter('status', ['pending', 'accepted', 'in_progress'])
+          .inFilter('payment_status', ['cod', 'paid'])
+          .gte('scheduled_at', dayStartUtc.subtract(const Duration(hours: 6)).toIso8601String())
+          .lte('scheduled_at', dayEndUtc.toIso8601String());
+      final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
+
+      final durationMins = widget.durationMins;
+      final freeMap = <String, bool>{};
+
+      for (final slot in _timeSlots) {
+        final slotDt = _slotToDateTime(date, slot);
+        final slotMins = _timeToMins(slot);
+        final slotEndMins = slotMins + durationMins;
+        bool anyFree = false;
+
+        for (final w in workers) {
+          final workerId = w['user_id'] as String;
+          if (holidayIds.contains(workerId)) continue;
+
+          final sched = schedByWorker[workerId];
+          if (sched != null) {
+            if (sched['enabled'] != true) continue;
+            final startMins = _timeToMins((sched['start_time'] as String?) ?? '09:00');
+            final endMins = _timeToMins((sched['end_time'] as String?) ?? '17:00');
+            if (slotMins < startMins || slotEndMins > endMins) continue;
+            bool inBreak = false;
+            for (final b in ((sched['breaks'] as List?) ?? const [])) {
+              final bs = _timeToMins(b['from'] as String);
+              final be = _timeToMins(b['to'] as String);
+              if (bs < slotEndMins && be > slotMins) { inBreak = true; break; }
+            }
+            if (inBreak) continue;
+          } else {
+            // No schedule row for this date at all — same fallback the
+            // rest of the app uses: default working window 7 AM–7 PM.
+            if (slotMins < 420 || slotEndMins > 1140) continue;
+          }
+
+          if (!_isWorkerFreeForDaySlot(workerId, slotDt, durationMins, bookings)) continue;
+          anyFree = true;
+          break;
+        }
+        freeMap[slot] = anyFree;
+      }
+
+      if (mounted) {
+        setState(() {
+          _dayFreeSlots[day] = freeMap;
+          _loadingDaySlots.remove(day);
+        });
+      }
+    } catch (e) {
+      debugPrint('day slot availability error (day $day): $e');
+      // Non-fatal — the picker just shows all slots as plain/unmarked
+      // for this day if this fails, same graceful-degradation pattern
+      // as the weekly grid below. _verifyOverridesWork() still catches
+      // any real problem correctly regardless.
+      if (mounted) setState(() => _loadingDaySlots.remove(day));
+    }
+  }
+
+  bool _isWorkerFreeForDaySlot(String workerId, DateTime slotDt,
+      int durationMins, List<Map<String, dynamic>> bookings) {
+    final slotEnd = slotDt.add(Duration(minutes: durationMins));
+    const bufferMins = 30;
+
+    for (final booking in bookings) {
+      if (booking['worker_id'] != workerId) continue;
+
+      final workStartedAt = DateTime.tryParse(
+          booking['work_started_at']?.toString() ?? '')?.toLocal();
+      final scheduledAt = DateTime.tryParse(
+          booking['scheduled_at']?.toString() ?? '')?.toLocal();
+      final bStart = workStartedAt ?? scheduledAt;
+      if (bStart == null) continue;
+
+      final bDur = (booking['booking_duration_minutes'] as num?)?.toInt()
+          ?? (booking['services']?['duration_minutes'] as num?)?.toInt()
+          ?? durationMins;
+      final extraMins = (booking['extra_time_mins'] as num?)?.toInt() ?? 0;
+      final bEnd = bStart.add(Duration(minutes: bDur + extraMins));
+
+      final bEndBuffered = bEnd.add(const Duration(minutes: bufferMins));
+      final bStartBuffered = bStart.subtract(const Duration(minutes: bufferMins));
+
+      if (slotDt.isBefore(bEndBuffered) && slotEnd.isAfter(bStartBuffered)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /// Fetches real availability for every visible time slot in ONE call
@@ -273,6 +443,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       _conflicts = [];
       _dayOverrides.clear();
       _overridesVerified = null;
+      _dayFreeSlots.clear();
       _selectedTime = '';
       _slotGrid = {};
     });
@@ -726,6 +897,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                       _conflicts = [];
                       _dayOverrides.clear();
                       _overridesVerified = null;
+                      _dayFreeSlots.clear();
                       _slotGrid = {};
                     });
                     if (_startDate != null) _loadSlotGrid();
@@ -920,6 +1092,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                     _conflicts = [];
                     _dayOverrides.clear();
                     _overridesVerified = null;
+                    _dayFreeSlots.clear();
                   });
                   HapticFeedback.selectionClick();
                 },
@@ -981,12 +1154,15 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     return _card(
       icon: Icons.event_busy_rounded,
       title: 'Some days need a different time',
-      sub: 'Pick an alternate time for the days below',
+      sub: 'Greyed-out times are already taken that day — pick from what\'s free',
       child: Column(children: [
         ..._conflicts.map((c) {
           final day = c['day'] as int;
           final date = DateTime.parse(c['date'] as String);
           final chosen = _dayOverrides[day];
+          final daySlots = _dayFreeSlots[day];
+          final dayLoading = _loadingDaySlots.contains(day);
+
           return Container(
             margin: const EdgeInsets.only(bottom: 10),
             padding: const EdgeInsets.all(12),
@@ -1009,33 +1185,65 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                       style: const TextStyle(color: _greenDk, fontWeight: FontWeight.w900, fontSize: 13)),
               ]),
               const SizedBox(height: 8),
-              SizedBox(
-                height: 36,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _timeSlots.length,
-                  separatorBuilder: (_, __) => const SizedBox(width: 8),
-                  itemBuilder: (_, i) {
-                    final t = _timeSlots[i];
+
+              // Real per-day availability — replaces the old blind
+              // horizontal list of every time slot with a compact grid
+              // showing exactly which times are actually free THIS day,
+              // greying out ones that are genuinely taken so the
+              // customer isn't guessing.
+              if (dayLoading) ...[
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 10),
+                  child: Row(children: [
+                    SizedBox(width: 14, height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: _cyanDk)),
+                    SizedBox(width: 8),
+                    Text('Checking free times for this day…',
+                        style: TextStyle(color: _faint, fontSize: 11.5)),
+                  ]),
+                ),
+              ] else
+                GridView.count(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  crossAxisCount: 4,
+                  childAspectRatio: 1.9,
+                  crossAxisSpacing: 6, mainAxisSpacing: 6,
+                  children: _timeSlots.map((t) {
                     final active = chosen == t;
+                    // daySlots == null means the fetch hasn't resolved
+                    // (or failed) — fail OPEN visually (still tappable,
+                    // unmarked) so the customer isn't blocked just
+                    // because this UX aid couldn't load; the real gate
+                    // (_verifyOverridesWork) still catches any problem.
+                    final isFree = daySlots == null ? true : (daySlots[t] ?? false);
                     return GestureDetector(
-                      onTap: () {
+                      onTap: !isFree ? null : () {
                         setState(() => _dayOverrides[day] = t);
                         _verifyOverridesWork();
                       },
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
                         alignment: Alignment.center,
                         decoration: BoxDecoration(
-                          color: active ? _cyanDk : Colors.white,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: active ? _cyanDk : _border)),
+                          color: !isFree
+                              ? const Color(0xFFF1F5F9)
+                              : active ? _cyanDk : Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                              color: !isFree
+                                  ? const Color(0xFFE2E8F0)
+                                  : active ? _cyanDk : _border)),
                         child: Text(_pretty12h(t),
                             style: TextStyle(
-                              fontSize: 11, fontWeight: FontWeight.w700,
-                              color: active ? Colors.white : const Color(0xFF334155)))),
+                              fontSize: 10, fontWeight: FontWeight.w700,
+                              color: !isFree
+                                  ? const Color(0xFFCBD5E1)
+                                  : active ? Colors.white
+                                  : const Color(0xFF334155))),
+                      ),
                     );
-                  })),
+                  }).toList(),
+                ),
             ]));
         }),
         if (allPicked) ...[
