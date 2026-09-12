@@ -659,72 +659,58 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
+  // FIXED: previously re-implemented worker/booking overlap logic
+  // entirely client-side (fetching workers, holidays, schedules, and
+  // bookings separately and running its own _isWorkerFreeAtSlot loop).
+  // This was a THIRD independent copy of the same availability rule
+  // (alongside check_slot_availability and admin_get_area_slot_grid),
+  // and it drifted out of sync with the real, server-side answer — the
+  // customer app was showing slots as available (e.g. 11:30 AM, 5:30
+  // PM, 6:00 PM for a given day) that the admin panel's Slots page
+  // correctly showed as full, since only the server-side functions had
+  // received the buffer/duration-fallback fixes. Now calls the exact
+  // same admin_get_area_slot_grid() function the admin Slots page
+  // uses, so the two screens can never disagree again — one shared
+  // source of truth instead of two (or three) copies of the same logic.
   Future<void> _loadSlotAvailability(DateTime date) async {
     setState(() { _slotsLoading = true; _slotAvailability = {}; });
     try {
-      final workersData = await _supabase
-          .from('workers')
-          .select('user_id, is_available')
-          .eq('is_available', true);
-      var workers = (workersData as List).cast<Map<String, dynamic>>();
-
-      final eligibleIds = await _resolveZoneRestrictedWorkerIds();
-      if (eligibleIds != null) {
-        workers = workers
-            .where((w) => eligibleIds.contains(w['user_id']))
-            .toList();
-      }
-
+      final addr = _addresses.firstWhere(
+          (a) => a['id'] == _selectedAddressId, orElse: () => {});
+      final pincode = (addr['pincode'] as String?)?.trim() ?? '';
       final dateStr = '${date.year}-'
           '${date.month.toString().padLeft(2, '0')}-'
           '${date.day.toString().padLeft(2, '0')}';
-      final holidaysData = await _supabase
-          .from('worker_holidays')
-          .select('worker_id')
-          .eq('holiday_date', dateStr);
-      final holidayWorkerIds = (holidaysData as List)
-          .map((h) => h['worker_id'].toString()).toSet();
-
-      final dayStartUtc =
-          DateTime(date.year, date.month, date.day, 0, 0, 0).toUtc();
-      final dayEndUtc =
-          DateTime(date.year, date.month, date.day, 23, 59, 59).toUtc();
-
-      final bookingsData = await _supabase
-          .from('bookings')
-          .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, address_id, services(duration_minutes)')
-          .inFilter('status', ['accepted', 'in_progress', 'pending'])
-          .inFilter('payment_status', ['cod', 'paid'])
-          .gte('scheduled_at', dayStartUtc.subtract(const Duration(hours: 6)).toIso8601String())
-          .lte('scheduled_at', dayEndUtc.toIso8601String());
-      final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
-
-      final now      = DateTime.now();
-      final cutoff   = now.add(const Duration(minutes: _minNoticeMins));
       final durationMins = _serviceDurationMins;
       debugPrint('SLOT DEBUG (schedule): durationMins=$durationMins, cartItems=${widget.cartItems}, overrideDuration=${widget.overrideDuration}');
 
-      final workerIds = workers.map((w) => w['user_id'] as String).toList();
-      final scheduleLookup = await _fetchWorkerScheduleDates(workerIds);
+      final result = await _supabase.rpc('admin_get_area_slot_grid', params: {
+        'p_pincode':       pincode,
+        'p_date':          dateStr,
+        'p_duration_mins': durationMins,
+      });
+      final rows = (result as List).cast<Map<String, dynamic>>();
 
+      // The RPC returns 24-hour keys like '07:00' / '13:30' — convert
+      // to this screen's '07:00 AM' / '01:30 PM' format so lookups
+      // against _timeSlots and _selectedTime keep working unchanged.
+      final Map<String, bool> byTwentyFourHour = {
+        for (final row in rows)
+          row['time_slot'] as String: row['available'] as bool? ?? false,
+      };
+
+      final now    = DateTime.now();
+      final cutoff = now.add(const Duration(minutes: _minNoticeMins));
       final Map<String, bool> availability = {};
 
       for (final slot in _timeSlots) {
         final slotDt = _slotToDateTime(date, slot);
         if (slotDt.isBefore(cutoff)) { availability[slot] = false; continue; }
 
-        bool anyWorkerFree = false;
-        for (final worker in workers) {
-          final workerId = worker['user_id'] as String;
-          if (holidayWorkerIds.contains(workerId)) continue;
-          if (!_isWorkerScheduledForDate(workerId, slotDt, durationMins, scheduleLookup)) {
-            continue;
-          }
-          if (!_isWorkerFreeAtSlot(workerId, slotDt, durationMins, bookings, newAddressId: _selectedAddressId)) continue;
-          anyWorkerFree = true;
-          break;
-        }
-        availability[slot] = anyWorkerFree;
+        final hh = slotDt.hour.toString().padLeft(2, '0');
+        final mm = slotDt.minute.toString().padLeft(2, '0');
+        final key = '$hh:$mm';
+        availability[slot] = byTwentyFourHour[key] ?? false;
       }
 
       if (mounted) {
