@@ -1051,6 +1051,30 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
         _showSlotFullDialog();
         return;
       }
+    } else {
+      // FIXED: instant bookings previously only ran a real availability
+      // check ONCE, when moving from the date/time step into the
+      // address step. Everything after that — filling in the address,
+      // typing notes, browsing promos — had no re-check at all, so a
+      // worker who was free a few minutes ago could already be taken
+      // by the time the customer reaches "Confirm", and the customer
+      // wouldn't find out until AFTER paying (where the refund safety
+      // net would catch it, but that's a worse experience than
+      // catching it before payment). This mirrors the schedule-mode
+      // re-check above so BOTH booking types get a fresh, real check
+      // immediately before the payment method dialog opens.
+      setState(() => _loading = true);
+      final reason = await _checkInstantAvailabilityReason();
+      if (!mounted) return;
+      setState(() => _loading = false);
+      if (reason != null) {
+        if (reason == 'time_window') {
+          _showInstantTimeWindowDialog();
+        } else {
+          _showNoWorkersDialog();
+        }
+        return;
+      }
     }
 
     HapticFeedback.selectionClick();

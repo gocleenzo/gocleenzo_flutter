@@ -8,8 +8,10 @@ import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../../services/supabase_service.dart';
 
 /// Weekly recurring package booking — 7 consecutive days of the SAME
-/// service at the SAME time, handled by the SAME worker, paid in full
-/// upfront.
+/// service at the SAME time, paid in full upfront. Workers are assigned
+/// PER DAY by the admin team after booking (not pre-picked at checkout) —
+/// a customer's week can genuinely be covered by different professionals
+/// on different days, same as how a normal single booking is assigned.
 ///
 /// STEP ORDER (fixed): Address -> Date & Time -> Confirm. Address MUST
 /// come first because the availability check (check_recurring_availability)
@@ -78,29 +80,28 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   bool _slotGridLoading = false;
 
   // Per-day alternate times chosen by the customer for days where the
-  // standard time wasn't available: {dayNumber: 'HH:MM'}
+  // standard time had no capacity: {dayNumber: 'HH:MM'}
   final Map<int, String> _dayOverrides = {};
-  // Days (1..7) reported as conflicting by the availability check.
+  // Days (1..7) reported as having no capacity by the availability check.
   List<Map<String, dynamic>> _conflicts = [];
   bool _availabilityChecked = false;
   bool _allDaysAvailable = false;
-  // Separately tracks whether the CURRENT set of day-overrides (once all
-  // conflicts have one picked) has actually been confirmed to work for a
-  // single worker — set by _verifyOverridesWork(), reset to null
+  // Once every conflicting day has an override picked, this re-confirms
+  // the resulting mixed schedule still has capacity on every single day
+  // — a final server-side safety net before allowing payment, since a
+  // slot's capacity can shift between when the grid was first loaded
+  // and when the customer finishes picking overrides. Reset to null
   // whenever any override changes.
   bool? _overridesVerified;
   bool _verifyingOverrides = false;
 
-  // NEW: real per-day slot availability for each conflicting day, so the
-  // override picker can show which specific times are actually free on
-  // THAT day instead of presenting all 25 slots as equally pickable and
-  // only revealing a dead end after tapping "verify". Keyed by day
-  // number (1..7). This is a UX aid only, computed the same
-  // approximate way get_recurring_slot_grid already is — the real,
-  // authoritative gate remains _verifyOverridesWork() (a single worker
-  // covering the FULL mixed 7-day schedule), since a slot being free on
-  // one isolated day doesn't guarantee the SAME worker who covers the
-  // other 6 days is also free at that specific alternate time.
+  // Real per-day slot availability for each conflicting day, so the
+  // override picker can show which specific times actually have
+  // capacity on THAT day instead of presenting all 25 slots as equally
+  // pickable and only revealing a dead end after tapping "verify". Keyed
+  // by day number (1..7). This is a UX aid only — the authoritative gate
+  // remains _verifyOverridesWork(), which re-checks capacity for the
+  // whole resulting mixed 7-day schedule via the server.
   final Map<int, Map<String, bool>> _dayFreeSlots = {};
   final Set<int> _loadingDaySlots = {};
 
@@ -202,9 +203,10 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         int.parse(parts[0]), int.parse(parts[1]));
   }
 
-  /// Runs the server-side all-7-days availability check. Requires
-  /// _selectedAddressId to already be set — this is guaranteed now since
-  /// address selection is Step 1, always completed before this can run.
+  /// Runs the server-side per-day capacity check across all 7 days.
+  /// Requires _selectedAddressId to already be set — this is guaranteed
+  /// now since address selection is Step 1, always completed before
+  /// this can run.
   Future<void> _checkAvailability() async {
     if (_startDate == null || _selectedTime.isEmpty) return;
     if (_selectedAddressId.isEmpty) {
@@ -234,13 +236,13 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         if (res['reason'] == 'excluded_area') {
           _error = 'We don\'t serve this address yet.';
         } else if (!_allDaysAvailable && _conflicts.isEmpty) {
-          _error = 'No professional is free at this time on all 7 days. '
+          _error = 'No slots are free at this time on all 7 days. '
                    'Try a different time or start date.';
         }
       });
       // Kick off real per-day availability loading for every conflicting
-      // day, so the override picker can show which times are actually
-      // free on each specific day instead of a blind list of 25 slots.
+      // day, so the override picker can show which times actually have
+      // capacity on each specific day instead of a blind list of 25 slots.
       for (final c in _conflicts) {
         final day = c['day'] as int;
         final date = DateTime.tryParse(c['date'] as String);
@@ -262,10 +264,9 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   /// booking flow already uses for its date/time step, scoped to a
   /// single day instead of a rolling week. Purely a UX aid: greys out
   /// slots that are genuinely occupied so the customer picks from times
-  /// that stand a real chance, but the actual pass/fail gate remains
-  /// _verifyOverridesWork() (which additionally confirms a SINGLE
-  /// worker covers the whole mixed 7-day schedule, not just this one
-  /// day in isolation).
+  /// that stand a real chance. The authoritative gate remains
+  /// _verifyOverridesWork(), which re-confirms capacity for the whole
+  /// resulting mixed 7-day schedule via the server.
   Future<void> _loadDaySlotAvailability(int day, DateTime date) async {
     if (_dayFreeSlots.containsKey(day) || _loadingDaySlots.contains(day)) return;
     setState(() => _loadingDaySlots.add(day));
@@ -304,7 +305,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           .from('bookings')
           .select('worker_id, scheduled_at, work_started_at, extra_time_mins, booking_duration_minutes, services(duration_minutes)')
           .inFilter('status', ['pending', 'accepted', 'in_progress'])
-          .inFilter('payment_status', ['cod', 'paid'])
+          .inFilter('payment_status', ['cod', 'pending', 'paid'])
           .gte('scheduled_at', dayStartUtc.subtract(const Duration(hours: 6)).toIso8601String())
           .lte('scheduled_at', dayEndUtc.toIso8601String());
       final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
@@ -399,8 +400,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   /// (get_recurring_slot_grid), so the picker can grey out/mark slots
   /// before the customer commits to a pick — instead of only finding out
   /// after tapping "Check availability" once. Called whenever the start
-  /// date or address changes, since either changes which workers/days
-  /// are actually relevant.
+  /// date or address changes, since either changes which capacity is
+  /// actually relevant.
   Future<void> _loadSlotGrid() async {
     if (_startDate == null || _selectedAddressId.isEmpty) return;
     setState(() => _slotGridLoading = true);
@@ -463,27 +464,21 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     if (!allConflictsResolved) return false;
 
     // No conflicts at all — the original all-days-standard-time check
-    // already confirmed a single worker covers everything.
+    // already confirmed every day has capacity.
     if (_conflicts.isEmpty) return _allDaysAvailable;
 
     // Conflicts existed and were "resolved" with overrides — this is
     // ONLY actually safe to proceed on once verify_recurring_package_
-    // with_overrides has confirmed a single worker can cover the
-    // resulting mixed schedule. This is the fix for payments
-    // succeeding and then failing/refunding every time for
-    // combinations that could never have worked (check_recurring_
-    // availability's own conflict list is built by checking each
-    // conflicting day INDEPENDENTLY — any worker, standard time only —
-    // it never verifies a SINGLE worker can cover the whole 7-day
-    // schedule once overrides are applied; only
-    // create_recurring_package used to check that, AFTER payment).
+    // with_overrides has re-confirmed capacity for the resulting mixed
+    // schedule server-side, since capacity can shift between when the
+    // per-day picker loaded and when the customer finishes choosing.
     return _overridesVerified == true;
   }
 
-  /// Runs once every conflicting day has an override picked — confirms
-  /// a SINGLE worker can actually cover the full 7-day schedule with
-  /// this exact mix of standard + override times, instead of trusting
-  /// "every conflict has some time picked" as if that were sufficient.
+  /// Runs once every conflicting day has an override picked — re-confirms
+  /// server-side that the resulting mixed 7-day schedule still has
+  /// capacity on every day, instead of trusting "every conflict has some
+  /// time picked" as if that alone were sufficient.
   Future<void> _verifyOverridesWork() async {
     if (_startDate == null || _selectedTime.isEmpty) return;
     final unresolved = _conflicts.where(
@@ -696,6 +691,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           'p_payment_id':           paymentId,
           'p_day_overrides':        overrides,
           'p_special_instructions': _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
+          'p_attempt_ref':          _pendingAttemptRef,
         });
         if (!mounted) return;
         final res = result as Map<String, dynamic>;
@@ -778,8 +774,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: _ink)),
             const SizedBox(height: 10),
-            Text('All 7 visits are booked with the same professional, '
-                 'starting ${_prettyDate(_startDate!)}.',
+            Text('All 7 visits are booked, starting ${_prettyDate(_startDate!)}. '
+                 'We\'ll assign a professional for each visit.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: _muted, fontSize: 13.5, height: 1.5)),
             const SizedBox(height: 20),
@@ -869,7 +865,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         icon: Icons.location_on_rounded,
         title: 'Service Address',
         sub: 'Same address for all 7 visits — pick this first, '
-             'so we can check the same professional\'s availability',
+             'so we can check real availability',
         child: _addressesLoading
             ? const Padding(padding: EdgeInsets.symmetric(vertical: 30),
                 child: Center(child: CircularProgressIndicator(color: _cyanDk, strokeWidth: 2.4)))
@@ -891,8 +887,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                     setState(() {
                       _selectedAddressId = addr['id'];
                       // Changing address invalidates any prior availability
-                      // check — different address means a different worker
-                      // pool entirely.
+                      // check — different address means different local
+                      // capacity entirely.
                       _availabilityChecked = false;
                       _conflicts = [];
                       _dayOverrides.clear();
@@ -1137,7 +1133,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
               Text('All 7 days available!',
                   style: TextStyle(color: Color(0xFF065F46), fontWeight: FontWeight.w900, fontSize: 14)),
               SizedBox(height: 2),
-              Text('The same professional will handle every visit.',
+              Text('A professional will be assigned for each visit.',
                   style: TextStyle(color: Color(0xFF059669), fontSize: 11.5)),
             ])),
           ])),
@@ -1154,7 +1150,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     return _card(
       icon: Icons.event_busy_rounded,
       title: 'Some days need a different time',
-      sub: 'Greyed-out times are already taken that day — pick from what\'s free',
+      sub: 'Greyed-out times are already full that day — pick from what\'s free',
       child: Column(children: [
         ..._conflicts.map((c) {
           final day = c['day'] as int;
@@ -1188,8 +1184,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
 
               // Real per-day availability — replaces the old blind
               // horizontal list of every time slot with a compact grid
-              // showing exactly which times are actually free THIS day,
-              // greying out ones that are genuinely taken so the
+              // showing exactly which times actually have capacity THIS
+              // day, greying out ones that are genuinely full so the
               // customer isn't guessing.
               if (dayLoading) ...[
                 const Padding(
@@ -1255,7 +1251,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                 SizedBox(width: 14, height: 14,
                     child: CircularProgressIndicator(strokeWidth: 2, color: _cyanDk)),
                 SizedBox(width: 8),
-                Text('Confirming a professional can cover this schedule…',
+                Text('Confirming this schedule works…',
                     style: TextStyle(color: _faint, fontSize: 11.5)),
               ]),
             )
@@ -1267,9 +1263,9 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFFFECACA))),
               child: const Text(
-                'No single professional can cover all 7 days with this '
-                'combination of times. Please try different alternate '
-                'times for the conflicting days above.',
+                'This combination of times isn\'t available on all 7 days. '
+                'Please try different alternate times for the conflicting '
+                'days above.',
                 style: TextStyle(color: Color(0xFFDC2626), fontSize: 12, height: 1.4)),
             )
           else if (_overridesVerified == true)
@@ -1280,7 +1276,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: const Color(0xFF6EE7B7))),
               child: const Text(
-                '✓ Confirmed — one professional can cover all 7 days with these times.',
+                '✓ Confirmed — all 7 days are available with these times.',
                 style: TextStyle(color: Color(0xFF065F46), fontSize: 12, fontWeight: FontWeight.w700)),
             ),
         ],
@@ -1295,7 +1291,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       _card(
         icon: Icons.repeat_rounded,
         title: 'Your 7 Visits',
-        sub: 'Same professional, every day',
+        sub: 'A professional is assigned for each visit',
         child: Column(children: List.generate(7, (i) {
           final day = i + 1;
           final date = _startDate!.add(Duration(days: i));
@@ -1361,7 +1357,9 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
             SizedBox(height: 3),
             Text('The full package is paid upfront. If you cancel any single '
                  'day, that visit is forfeited and cannot be refunded or '
-                 'rescheduled — the remaining visits continue as normal.\n\n'
+                 'rescheduled — the remaining visits continue as normal. A '
+                 'professional is assigned separately for each visit and '
+                 'may vary from day to day.\n\n'
                  'Our professionals do not carry cleaning equipment or '
                  'supplies. Please keep the required equipment available.',
                 style: TextStyle(color: Color(0xFFB45309), fontSize: 12, height: 1.45)),
