@@ -92,5 +92,26 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!--
+	  Razorpay UPI Intent flow (iOS) — without this, tapping UPI at
+	  checkout on iOS always falls back to manual VPA/UPI-ID entry,
+	  since iOS requires an app to explicitly declare which other apps'
+	  URL schemes it's allowed to query/open (canOpenURL) before it can
+	  detect whether GPay/PhonePe/Paytm are installed and deep-link
+	  straight into them — this is the iOS-side equivalent of what
+	  Android gets for free via package-manager queries. Razorpay's iOS
+	  Standard SDK currently supports exactly these three PSP apps for
+	  the intent flow (per Razorpay's own docs) — no other UPI app can
+	  be intent-launched on iOS even with this in place, which is a
+	  platform/SDK limitation, not something fixable from this app's side.
+	  "tez" is Google Pay's registered iOS URL scheme (historical name
+	  from Google Pay's original "Tez" branding in India).
+	-->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>tez</string>
+		<string>phonepe</string>
+		<string>paytmmp</string>
+	</array>
 </dict>
 </plist>

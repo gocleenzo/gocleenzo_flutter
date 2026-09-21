@@ -9,6 +9,7 @@ import 'firebase_options.dart';
 import 'router.dart';
 import 'utils/theme.dart';
 import 'services/notification_service.dart';
+import 'services/supabase_service.dart';
 
 const _supabaseUrl     = 'https://hxrqgqhlbdconvgmmhgu.supabase.co';
 const _supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh4cnFncWhsYmRjb252Z21taGd1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2ODIwMjQsImV4cCI6MjA5NTI1ODAyNH0.mHaAtk4e_vPysJ-6MBdYgZNirgp8bj3iabwkDmjxfFw';
@@ -98,6 +99,19 @@ Future<void> main() async {
     url: _supabaseUrl,
     publishableKey: _supabaseAnonKey,
   );
+
+  // FIXED: this is the root-cause fix for "some customers get logged
+  // out every time they close and reopen the app." SupabaseService's
+  // in-memory _cachedUserId is wiped to null on every cold start (all
+  // static variables die when the app process is killed), but the
+  // real, persisted login lives in SharedPreferences on disk.
+  // Hydrating it here — before runApp(), before ANY screen's
+  // build/initState can possibly run — guarantees every part of the
+  // app sees the correct logged-in state from the very first frame,
+  // regardless of which screen the router happens to land on first or
+  // how fast the device is. See the long comment on
+  // SupabaseService.hydrateCachedUserId() for the full explanation.
+  await SupabaseService.hydrateCachedUserId();
 
   runApp(const ProviderScope(child: CleenzoApp()));
 }

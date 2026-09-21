@@ -11,6 +11,59 @@ class SupabaseService {
   // Cached app user id (set after Firebase login via edge function)
   static String? _cachedUserId;
 
+  // FIXED: this is the actual root cause of "some customers get logged
+  // out every time they close and reopen the app." _cachedUserId is a
+  // static in-memory variable — Flutter wipes it back to null on EVERY
+  // cold start, since the whole Dart process (and every static
+  // variable in it) is destroyed when the app is closed. The real,
+  // persisted login lives in SharedPreferences on disk. The safe
+  // getter, loadCachedUserId(), correctly falls back to reading that
+  // disk value — but the synchronous currentUserId getter below does
+  // NOT; it only ever reads the in-memory variable. On a fresh cold
+  // start, before anything has explicitly awaited loadCachedUserId(),
+  // _cachedUserId is still null, so ANY screen that checks
+  // currentUserId that early (a splash screen, an early route guard, a
+  // widget's initState running before its first async call resolves)
+  // sees "not logged in" and sends a genuinely logged-in customer back
+  // to the login screen — even though their real session is sitting
+  // right there on disk. This only shows up on SOME customers'
+  // devices because it's a timing race: it depends on exactly which
+  // screen runs first, how fast that device is, and whether that
+  // screen's code path happens to await the safe async getter before
+  // rendering or not.
+  //
+  // THE FIX: hydrate _cachedUserId from disk ONCE, as early as
+  // possible in the app's lifecycle — before runApp() is even called.
+  // Call this from main(), like:
+  //
+  //   Future<void> main() async {
+  //     WidgetsFlutterBinding.ensureInitialized();
+  //     await Supabase.initialize(...);
+  //     await SupabaseService.hydrateCachedUserId();   // <-- add this
+  //     runApp(const MyApp());
+  //   }
+  //
+  // Once this has run, the in-memory value is populated for the rest
+  // of the app's life (until sign-out), so EVERY screen's synchronous
+  // currentUserId check — no matter which one runs first, no matter
+  // how fast the device is — sees the correct, already-loaded value
+  // instead of racing against an async disk read that hasn't finished
+  // yet. This fixes the bug for every screen at once, without needing
+  // to hunt down and fix every individual call site that might be
+  // using the synchronous getter too early.
+  static bool _hydrated = false;
+
+  static Future<void> hydrateCachedUserId() async {
+    if (_hydrated) return;
+    _hydrated = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _cachedUserId = prefs.getString('app_user_id');
+    } catch (e) {
+      debugPrint('hydrateCachedUserId: failed to read SharedPreferences: $e');
+    }
+  }
+
   /// Call this right after a successful Firebase login + edge function
   /// response, passing the `user_id` returned from the `firebase-auth`
   /// edge function. Persists it so it survives app restarts.
@@ -73,6 +126,13 @@ class SupabaseService {
 
   /// Unified current user id — works whether the session came from
   /// Supabase auth (legacy) or Firebase auth (current flow).
+  ///
+  /// SAFE to use synchronously from anywhere in the app ONLY because
+  /// hydrateCachedUserId() is now called once at app startup (see
+  /// main()), guaranteeing _cachedUserId is already populated from
+  /// disk by the time any screen's build/initState runs. If you ever
+  /// remove that startup call, this getter goes back to being unsafe
+  /// on a cold start — see the long comment above _hydrated for why.
   static String? get currentUserId {
     final supaUser = _client.auth.currentUser;
     if (supaUser != null) return supaUser.id;
