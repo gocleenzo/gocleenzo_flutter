@@ -590,13 +590,34 @@ class _ServicesScreenState extends State<ServicesScreen>
     // screen, since the service is fixed to Hourly Cleaning already).
     final isHourly = name == 'Hourly Cleaning';
 
+    // FIXED: this is the root cause of "admin changes the price but the
+    // main/home screen still shows a stuck ₹999 cut from ₹1599." Any
+    // BHK-priced service (Full House Cleaning today, potentially others
+    // later) is NOT of CartItemType.tiered, so the price logic below
+    // used to fall straight through to base_price/original_price — two
+    // columns the admin's BHK price editor deliberately never touches
+    // (it only writes price_1bhk/2bhk/3bhk for these services), so they
+    // were permanently stuck at whatever they were before BHK pricing
+    // existed. The service detail screen already read price_1bhk
+    // correctly, which is exactly why "it changes in details but not on
+    // the main screen." Now shows the real 1 BHK starting price instead,
+    // with a "From" prefix since it's genuinely a starting-at price once
+    // BHK size is picked on the detail page — and skips the
+    // original_price strikethrough entirely for these services, since
+    // that field isn't meaningfully tied to any specific BHK tier.
+    final isBhkPriced = svc['price_1bhk'] != null ||
+        svc['price_2bhk'] != null || svc['price_3bhk'] != null;
+    final bhkStartingPrice = (svc['price_1bhk'] as num?)?.toInt();
+
     // Display price — from cart item if in cart, else base
-    final originalPrice = (svc['original_price'] as num?)?.toInt();
+    final originalPrice = isBhkPriced ? null : (svc['original_price'] as num?)?.toInt();
     final displayPrice = inCart && cartItem != null
         ? cartItem.totalPrice
-        : (itemType == CartItemType.tiered
-            ? (CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).isNotEmpty ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).first.price : basePrice)
-            : basePrice);
+        : isBhkPriced
+            ? (bhkStartingPrice ?? basePrice)
+            : (itemType == CartItemType.tiered
+                ? (CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).isNotEmpty ? CartService.buildTiers(svc, isFirstBooking: _isFirstBooking).first.price : basePrice)
+                : basePrice);
 
     // Duration label — hidden for Full House (BHK based, no single duration)
     // Fixed-type services read their real duration_minutes from the
@@ -744,6 +765,11 @@ class _ServicesScreenState extends State<ServicesScreen>
           Row(children: [
             Expanded(
               child: Row(children: [
+                if (isBhkPriced && !inCart) ...[
+                  Text('From ',
+                      style: TextStyle(color: _faint,
+                          fontSize: 10.5 * s, fontWeight: FontWeight.w600)),
+                ],
                 Text(
                   '₹$displayPrice',
                   style: TextStyle(
@@ -1107,9 +1133,6 @@ class _CartSheet extends StatelessWidget {
     );
   }
 }
-
-
-// Proxy widget to launch BookingFlowScreen — keeps services_screen
 
 // ── Top Header Bar ────────────────────────────────────────────────
 class _TopHeaderBar extends StatefulWidget {

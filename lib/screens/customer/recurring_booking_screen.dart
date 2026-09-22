@@ -20,6 +20,17 @@ import '../../services/supabase_service.dart';
 /// _selectedAddressId was still empty, which was always the case before
 /// this fix since address selection used to be step 2.
 ///
+/// NEW: daily VISIT DURATION is now customer-selectable (1-4 hours),
+/// not fixed. `pricePerVisit` is interpreted as the PER-HOUR rate (the
+/// price for a single 1-hour visit) — the actual per-visit price scales
+/// linearly with the chosen duration (e.g. 2 hours = 2x the per-hour
+/// rate), computed by `_pricePerVisit` below. `widget.durationMins` is
+/// only used to seed the initial selection (converted to whole hours,
+/// clamped to the 1-4 range) — every actual availability check, price
+/// calculation, and package-creation call uses `_durationMins`
+/// (`_selectedHours * 60`) from then on, never the original widget
+/// value directly.
+///
 /// Note: the first-booking ₹25 offer does NOT apply to packages — the
 /// full per-visit price is always charged (product decision).
 class RecurringBookingScreen extends StatefulWidget {
@@ -63,6 +74,13 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     '15:00','15:30','16:00','16:30','17:00','17:30','18:00','18:30','19:00',
   ];
 
+  // NEW: how many hours long each of the 7 daily visits is. 1-4 hours,
+  // customer-selectable in the Date & Time step. Seeded from the
+  // service's default duration (converted to whole hours) so a normal
+  // "Hourly Cleaning" service still defaults to exactly 1 hour, same
+  // as before this feature existed.
+  late int _selectedHours;
+
   // 1 = address, 2 = date+time (availability check), 3 = confirm
   int _step = 1;
   bool _loading = false;
@@ -72,10 +90,10 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   DateTime? _startDate;
   String _selectedTime = '';
   // Slot -> 'full' | 'partial' | 'none', fetched once whenever the start
-  // date or address changes, so the time grid can show real availability
-  // (matching the same greyed-out-slots pattern the regular booking flow
-  // already uses) instead of showing all 25 slots as equally pickable
-  // and only revealing problems after commit.
+  // date, address, OR DURATION changes, so the time grid can show real
+  // availability (matching the same greyed-out-slots pattern the
+  // regular booking flow already uses) instead of showing all 25 slots
+  // as equally pickable and only revealing problems after commit.
   Map<String, String> _slotGrid = {};
   bool _slotGridLoading = false;
 
@@ -92,7 +110,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   // slot's capacity can shift between when the grid was first loaded
   // and when the customer finishes picking overrides. Reset to null
   // whenever any override changes.
-  bool? _overridesVerified;
+  bool? _overridesVerified
+  ;
   bool _verifyingOverrides = false;
 
   // Real per-day slot availability for each conflicting day, so the
@@ -128,12 +147,24 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   // a normal single booking, not treated as a special case.
   static const _platformFee = 10;
 
-  int get _packageSubtotal => widget.pricePerVisit * 7;
+  // NEW: actual duration used everywhere in this screen — availability
+  // checks, package creation, and the confirm-step summary. Never use
+  // widget.durationMins directly anywhere below this point.
+  int get _durationMins => _selectedHours * 60;
+
+  // NEW: the real per-visit price at the currently selected duration.
+  // widget.pricePerVisit is the PER-HOUR rate; this scales it linearly
+  // by the number of hours chosen (2 hours = 2x rate, etc.), per
+  // product decision.
+  int get _pricePerVisit => widget.pricePerVisit * _selectedHours;
+
+  int get _packageSubtotal => _pricePerVisit * 7;
   int get _totalAmount => _packageSubtotal + _platformFee;
 
   @override
   void initState() {
     super.initState();
+    _selectedHours = (widget.durationMins / 60).round().clamp(1, 4);
     _razorpay = Razorpay();
     _razorpay.on(Razorpay.EVENT_PAYMENT_SUCCESS, _onPaymentSuccess);
     _razorpay.on(Razorpay.EVENT_PAYMENT_ERROR, _onPaymentError);
@@ -222,7 +253,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         'p_address_id':    _selectedAddressId,
         'p_start_date':    _dateStr(_startDate!),
         'p_time':          _selectedTime,
-        'p_duration_mins': widget.durationMins,
+        'p_duration_mins': _durationMins,
       });
       debugPrint('RECURRING DEBUG: $result');
       final res = result as Map<String, dynamic>;
@@ -310,7 +341,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           .lte('scheduled_at', dayEndUtc.toIso8601String());
       final bookings = (bookingsData as List).cast<Map<String, dynamic>>();
 
-      final durationMins = widget.durationMins;
+      final durationMins = _durationMins;
       final freeMap = <String, bool>{};
 
       for (final slot in _timeSlots) {
@@ -400,8 +431,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
   /// (get_recurring_slot_grid), so the picker can grey out/mark slots
   /// before the customer commits to a pick — instead of only finding out
   /// after tapping "Check availability" once. Called whenever the start
-  /// date or address changes, since either changes which capacity is
-  /// actually relevant.
+  /// date, address, OR DURATION changes, since any of the three changes
+  /// which capacity is actually relevant.
   Future<void> _loadSlotGrid() async {
     if (_startDate == null || _selectedAddressId.isEmpty) return;
     setState(() => _slotGridLoading = true);
@@ -409,7 +440,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
       final result = await _supabase.rpc('get_recurring_slot_grid', params: {
         'p_address_id':    _selectedAddressId,
         'p_start_date':    _dateStr(_startDate!),
-        'p_duration_mins': widget.durationMins,
+        'p_duration_mins': _durationMins,
       });
       if (!mounted) return;
       final list = result as List;
@@ -450,6 +481,28 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     });
     HapticFeedback.selectionClick();
     _loadSlotGrid();
+  }
+
+  // NEW: changing the visit duration invalidates everything downstream
+  // the same way changing the start date does — a different duration
+  // means a different set of workers can actually cover the slot, so
+  // the grid, any chosen time, and any per-day overrides all need to be
+  // re-evaluated from scratch rather than silently kept around against
+  // stale data.
+  void _pickDuration(int hours) {
+    if (hours == _selectedHours) return;
+    setState(() {
+      _selectedHours = hours;
+      _availabilityChecked = false;
+      _conflicts = [];
+      _dayOverrides.clear();
+      _overridesVerified = null;
+      _dayFreeSlots.clear();
+      _selectedTime = '';
+      _slotGrid = {};
+    });
+    HapticFeedback.selectionClick();
+    if (_startDate != null) _loadSlotGrid();
   }
 
   bool get _canProceedFromAddressStep => _selectedAddressId.isNotEmpty;
@@ -497,7 +550,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         'p_address_id':     _selectedAddressId,
         'p_start_date':     _dateStr(_startDate!),
         'p_time':           _selectedTime,
-        'p_duration_mins':  widget.durationMins,
+        'p_duration_mins':  _durationMins,
         'p_day_overrides':  overrides,
       });
       if (!mounted) return;
@@ -568,8 +621,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         'p_service_id':            widget.serviceId,
         'p_start_date':            _dateStr(_startDate!),
         'p_time_of_day':           _selectedTime,
-        'p_duration_mins':         widget.durationMins,
-        'p_price_per_visit':       widget.pricePerVisit,
+        'p_duration_mins':         _durationMins,
+        'p_price_per_visit':       _pricePerVisit,
         'p_total_amount':          _totalAmount,
         'p_day_overrides':         overrides,
         'p_special_instructions':  _notesCtrl.text.isEmpty ? null : _notesCtrl.text,
@@ -584,7 +637,7 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         'order_id': orderId,
         'amount': _totalAmount * 100,
         'name': 'Cleenzo',
-        'description': 'Weekly Package — ${widget.serviceName} (7 visits)',
+        'description': 'Weekly Package — ${widget.serviceName} (7 visits, $_selectedHours hr${_selectedHours > 1 ? 's' : ''}/visit)',
         'prefill': {'contact': _userPhone ?? '', 'email': _userEmail ?? ''},
         'notes': {'attempt_ref': attemptRef, 'customer_id': _userId ?? '', 'type': 'recurring_package'},
         'theme': {'color': '#06B6D4'},
@@ -685,8 +738,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           'p_service_id':           widget.serviceId,
           'p_start_date':           _dateStr(_startDate!),
           'p_time':                 _selectedTime,
-          'p_duration_mins':        widget.durationMins,
-          'p_price_per_visit':      widget.pricePerVisit,
+          'p_duration_mins':        _durationMins,
+          'p_price_per_visit':      _pricePerVisit,
           'p_total_amount':         _totalAmount,
           'p_payment_id':           paymentId,
           'p_day_overrides':        overrides,
@@ -852,7 +905,8 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
             child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
               Text('₹$_totalAmount',
                   style: const TextStyle(color: _cyanDk, fontSize: 18, fontWeight: FontWeight.w900)),
-              const Text('7 visits', style: TextStyle(color: _cyanDk, fontSize: 9.5, fontWeight: FontWeight.w700)),
+              Text('7 × ${_selectedHours}hr visit${_selectedHours > 1 ? 's' : ''}',
+                  style: const TextStyle(color: _cyanDk, fontSize: 9.5, fontWeight: FontWeight.w700)),
             ])),
         ]),
       )),
@@ -1031,6 +1085,48 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
           ],
         ]),
       ),
+      const SizedBox(height: 14),
+
+      // NEW: visit duration selector — 1 to 4 hours, per-visit price
+      // shown on each option so the customer can see the cost impact
+      // before committing. Placed right after Start Date and before
+      // Daily Time, since duration must be settled before the time
+      // grid below can show accurate availability (a 4-hour slot needs
+      // a much bigger free window than a 1-hour one).
+      _card(
+        icon: Icons.timelapse_rounded,
+        title: 'Visit Duration',
+        sub: 'How long should each of the 7 visits be?',
+        child: Row(children: List.generate(4, (i) {
+          final hours = i + 1;
+          final active = _selectedHours == hours;
+          final price = widget.pricePerVisit * hours;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => _pickDuration(hours),
+              child: Container(
+                margin: EdgeInsets.only(right: hours < 4 ? 8 : 0),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                decoration: BoxDecoration(
+                  gradient: active ? const LinearGradient(colors: [_cyan, _cyanDk]) : null,
+                  color: active ? null : _bg,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: active ? _cyan : _border)),
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Text('${hours}hr',
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w900,
+                          color: active ? Colors.white : _ink)),
+                  const SizedBox(height: 2),
+                  Text('₹$price',
+                      style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700,
+                          color: active ? const Color(0xFFDFFAFE) : _faint)),
+                ]),
+              ),
+            ),
+          );
+        })),
+      ),
+
       const SizedBox(height: 14),
       _card(
         icon: Icons.access_time_rounded,
@@ -1328,8 +1424,9 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
         child: Column(children: [
           _row('Service', widget.serviceName),
           _row('Address', addr.isNotEmpty ? '${addr['area']}, ${addr['city']}' : '—'),
-          _row('Duration', '~${widget.durationMins} min per visit'),
-          _row('Price per visit', '₹${widget.pricePerVisit}'),
+          _row('Duration', '$_selectedHours hr${_selectedHours > 1 ? 's' : ''} per visit'),
+          _row('Rate', '₹${widget.pricePerVisit}/hr'),
+          _row('Price per visit', '₹$_pricePerVisit'),
           _row('Visits', '7'),
           _row('Subtotal', '₹$_packageSubtotal'),
           _row('Platform Fee', '₹$_platformFee'),
