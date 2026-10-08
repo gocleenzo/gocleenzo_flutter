@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import '../../services/supabase_service.dart';
 import '../../services/cart_service.dart';
+import '../../services/coverage_service.dart';
 import 'booking_detail_screen.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 
@@ -255,12 +256,15 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
 
     if (_addresses.isNotEmpty && !await _isSelectedAddressServiceable()) {
       if (!mounted) return;
+      final onlyOneAddress = _addresses.length == 1;
       _showAreaNotServiceableDialog(onDismiss: () {
-        if (mounted && Navigator.of(context).canPop()) {
+        // With other saved addresses, stay here so the customer can pick
+        // one we serve; with only this one, go back.
+        if (onlyOneAddress && mounted && Navigator.of(context).canPop()) {
           Navigator.of(context).pop();
         }
       });
-      return;
+      if (onlyOneAddress) return;
     }
 
     if (!widget.isFirstBooking) _loadPromos();
@@ -890,120 +894,40 @@ class _BookingFlowScreenState extends State<BookingFlowScreen> {
     );
   }
 
-  Future<bool> _isInExcludedZone() async {
-    final addr = _addresses.firstWhere(
-        (a) => a['id'] == _selectedAddressId, orElse: () => {});
-    final lat = (addr['latitude'] as num?)?.toDouble();
-    final lng = (addr['longitude'] as num?)?.toDouble();
-    if (lat == null || lng == null) return false;
-
-    try {
-      final zoneId = await _supabase.rpc('find_zone_for_point', params: {
-        'p_lat': lat,
-        'p_lng': lng,
-      });
-      if (zoneId == null) return false;
-
-      final row = await _supabase
-          .from('service_zones')
-          .select('is_exclusion')
-          .eq('id', zoneId)
-          .eq('is_active', true)
-          .maybeSingle();
-      return row != null && row['is_exclusion'] == true;
-    } catch (e) {
-      debugPrint('Exclusion zone check error: $e');
-      return false;
-    }
-  }
+  // UPDATED: one server-side rule for "can this address book?" —
+  // check_serviceable (Whole pincode / Only inside zones / Blocked,
+  // drawn Service Zones, and 🚫 Excluded zones). Same rule the database
+  // enforces when the booking is created, so the app and server can
+  // never disagree. Replaces the old pincode-only + exclusion check.
+  CoverageResult? _lastCoverage;
 
   Future<bool> _isSelectedAddressServiceable() async {
-    if (await _isInExcludedZone()) return false;
-
     final addr = _addresses.firstWhere(
         (a) => a['id'] == _selectedAddressId, orElse: () => {});
-    final pincode = (addr['pincode'] as String?)?.trim() ?? '';
-    if (pincode.isEmpty) return true;
-
-    try {
-      final rows = await _supabase
-          .from('service_areas')
-          .select('pincode')
-          .eq('is_active', true)
-          .eq('pincode', pincode);
-      return (rows as List).isNotEmpty;
-    } catch (e) {
-      debugPrint('Service area check error: $e');
-      return true;
-    }
+    if (addr.isEmpty) return true;
+    final r = await CoverageService.check(
+      lat: (addr['latitude'] as num?)?.toDouble(),
+      lng: (addr['longitude'] as num?)?.toDouble(),
+      pincode: (addr['pincode'] as String?)?.trim(),
+    );
+    _lastCoverage = r;
+    return r.ok;
   }
 
+  // Shows "We don't serve this area yet" with a 🔔 Notify me button.
   void _showAreaNotServiceableDialog({VoidCallback? onDismiss}) {
     HapticFeedback.heavyImpact();
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.white,
-        elevation: 0,
-        insetPadding: const EdgeInsets.symmetric(horizontal: 32),
-        shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(24)),
-        child: Stack(children: [
-          Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Container(
-                width: 72, height: 72,
-                decoration: const BoxDecoration(
-                    color: Color(0xFFFEF2F2), shape: BoxShape.circle),
-                child: const Center(
-                    child: Text('😔', style: TextStyle(fontSize: 36))),
-              ),
-              const SizedBox(height: 20),
-              const Text('Not Available in This Area Yet',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900,
-                      color: _ink)),
-              const SizedBox(height: 10),
-              const Text(
-                'We don\'t serve this address yet. You can still browse '
-                'services, but booking isn\'t available for this location. '
-                'We\'re expanding soon!',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: _muted, fontSize: 13, height: 1.5),
-              ),
-              const SizedBox(height: 20),
-              GestureDetector(
-                onTap: () => Navigator.pop(ctx),
-                child: Container(
-                  width: double.infinity, height: 48,
-                  decoration: BoxDecoration(
-                      color: _bg, borderRadius: BorderRadius.circular(14)),
-                  child: const Center(
-                    child: Text('Got it',
-                        style: TextStyle(fontWeight: FontWeight.w800,
-                            color: _muted, fontSize: 14)),
-                  ),
-                ),
-              ),
-            ]),
-          ),
-          Positioned(
-            top: 12, right: 12,
-            child: GestureDetector(
-              onTap: () => Navigator.pop(ctx),
-              child: Container(
-                width: 32, height: 32,
-                decoration: BoxDecoration(
-                    color: _bg, shape: BoxShape.circle),
-                child: const Icon(Icons.close_rounded,
-                    color: _muted, size: 18),
-              ),
-            ),
-          ),
-        ]),
-      ),
+    final addr = _addresses.firstWhere(
+        (a) => a['id'] == _selectedAddressId, orElse: () => {});
+    CoverageService.showNotServiceableSheet(
+      context,
+      result: _lastCoverage ??
+          const CoverageResult(ok: false, reason: 'not_serviceable', message: ''),
+      lat: (addr['latitude'] as num?)?.toDouble(),
+      lng: (addr['longitude'] as num?)?.toDouble(),
+      pincode: (addr['pincode'] as String?)?.trim(),
+      fullAddress: addr['full_address'] as String?,
+      area: addr['area'] as String?,
     ).then((_) => onDismiss?.call());
   }
 

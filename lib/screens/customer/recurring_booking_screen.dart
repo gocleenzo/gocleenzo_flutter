@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:http/http.dart' as http;
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 import '../../services/supabase_service.dart';
+import '../../services/coverage_service.dart';
 
 /// Weekly recurring package booking — 7 consecutive days of the SAME
 /// service at the SAME time, paid in full upfront. Workers are assigned
@@ -569,11 +570,32 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     }
   }
 
+  /// NEW: "can this address book?" — same server rule as everywhere
+  /// else (check_serviceable). Shows the "We don't serve this area yet"
+  /// sheet with 🔔 Notify me when it can't. Used before leaving the
+  /// address step and again right before payment.
+  Future<bool> _ensureAddressServiceable() async {
+    final addr = _addresses.firstWhere(
+        (a) => a['id'] == _selectedAddressId, orElse: () => {});
+    if (addr.isEmpty) return false;
+    return CoverageService.ensureServiceable(
+      context,
+      lat: (addr['latitude'] as num?)?.toDouble(),
+      lng: (addr['longitude'] as num?)?.toDouble(),
+      pincode: (addr['pincode'] as String?)?.trim(),
+      fullAddress: addr['full_address'] as String?,
+      area: addr['area'] as String?,
+    );
+  }
+
   // ── Payment ────────────────────────────────────────────────────
   Future<void> _startPayment() async {
     if (_selectedAddressId.isEmpty) {
       setState(() => _error = 'Please select an address'); return;
     }
+    // never take money for an address we don't serve
+    if (!await _ensureAddressServiceable()) return;
+    if (!mounted) return;
     setState(() { _loading = true; _error = null; });
 
     final attemptRef = 'pkg_${DateTime.now().millisecondsSinceEpoch}';
@@ -1591,7 +1613,18 @@ class _RecurringBookingScreenState extends State<RecurringBookingScreen> {
     } else {
       label = 'Continue';
       leadingIcon = null;
-      onTap = (canProceed && !_loading) ? () => setState(() => _step++) : null;
+      onTap = (canProceed && !_loading)
+          ? () async {
+              if (_step == 1) {
+                setState(() => _loading = true);
+                final ok = await _ensureAddressServiceable();
+                if (!mounted) return;
+                setState(() => _loading = false);
+                if (!ok) return;
+              }
+              setState(() => _step++);
+            }
+          : null;
     }
 
     final busy = isCheckStep ? _checking : _loading;

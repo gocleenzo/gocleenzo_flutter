@@ -5,8 +5,7 @@ import 'package:geocoding/geocoding.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../../services/supabase_service.dart';
-import 'geofence_service.dart';
+import '../../services/coverage_service.dart';
 
 class LocationPickerScreen extends StatefulWidget {
   final double? initialLat;
@@ -82,7 +81,15 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   bool   _notifyLoading    = false;
   bool   _notifyDone       = false;
 
-  // Active service ZONES (polygons), fetched ONCE (not per pin-drag) from
+  // UPDATED: serviceability now comes from the server rule
+  // (check_serviceable — Whole pincode / Only inside zones / Blocked,
+  // drawn zones and 🚫 Excluded zones), the SAME rule used by the
+  // address screen and at booking, so all three always agree. The old
+  // local check only knew about Excluded zones.
+  bool _coverageChecking = false;
+  int  _coverageSeq = 0;
+
+  // (old, no longer used for the decision) Active service ZONES, fetched ONCE from
   // the admin-managed `service_zones` table. This REPLACES the old
   // pincode-based `_activePincodes` set — a pincode is a big, fixed
   // government boundary that can't distinguish a well-mapped society from
@@ -91,7 +98,6 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   // are actually meant to be served, and the same "point inside shape?"
   // check is done locally against this cached list every time the pin
   // settles — same pattern as before, just a richer shape than a flat set.
-  List<ServiceZone> _activeZones = [];
   bool _areasLoaded = false;
 
   // Pin bounce animation
@@ -124,23 +130,28 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
   static const _amber  = Color(0xFFD97706);
   static const _amberLt= Color(0xFFFFFBEB);
 
-  /// Polygon-based match — replaces the old flat pincode-set lookup.
-  /// Checks whether [point] falls inside ANY admin-drawn service zone.
-  /// Fails open (returns true) if no zones are configured, same
-  /// behaviour as before when `_activePincodes` was empty — so a fresh
-  /// install with nothing drawn yet doesn't block every customer.
-  bool _checkServiceable(LatLng point) =>
-      GeofenceService.isServiceable(point, _activeZones);
+  /// Asks the server whether [point] (+ current pincode) can book.
+  /// Only the latest request wins, so a quick series of drags never
+  /// shows a stale answer. If the check fails (no internet), it stays
+  /// "serviceable" — booking is still checked again by the server.
+  Future<void> _refreshCoverage(LatLng point) async {
+    final seq = ++_coverageSeq;
+    if (mounted) setState(() => _coverageChecking = true);
+    final r = await CoverageService.check(
+      lat: point.latitude,
+      lng: point.longitude,
+      pincode: _pincode.isEmpty ? null : _pincode,
+    );
+    if (!mounted || seq != _coverageSeq) return;
+    setState(() {
+      _isServiceable = r.ok;
+      _coverageChecking = false;
+      if (!r.ok) _notifyDone = false;
+    });
+  }
 
   Future<void> _loadActiveAreas() async {
-    try {
-      _activeZones = await GeofenceService.loadActiveZones();
-    } catch (e) {
-      debugPrint('Load active zones error: $e');
-      _activeZones = [];
-    } finally {
-      _areasLoaded = true;
-    }
+    _areasLoaded = true; // nothing to preload — the server decides
   }
 
   @override
@@ -177,12 +188,7 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
       // exactly the "map shows something different" bug. _detectAndMove()
       // (the GPS path) already did this correctly; this branch didn't.
       if (mounted) {
-        setState(() {
-          // Serviceability is coordinate-based now, so it can be
-          // computed immediately — no need to wait on reverse geocoding
-          // just to know if this pin can be booked.
-          _isServiceable = _checkServiceable(_pin);
-        });
+        _refreshCoverage(_pin);
         debugPrint('[LOCPICKER] animating camera to _pin=$_pin');
         _suppressNextCameraIdle = true;
         _mapController?.animateCamera(
@@ -212,10 +218,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           locationSettings: const LocationSettings(
               accuracy: LocationAccuracy.high));
       final latlng = LatLng(pos.latitude, pos.longitude);
-      setState(() {
-        _pin = latlng;
-        _isServiceable = _checkServiceable(latlng);
-      });
+      setState(() => _pin = latlng);
+      _refreshCoverage(latlng);
       _mapController?.animateCamera(
           CameraUpdate.newLatLngZoom(latlng, 16));
       await _reverseGeocode(latlng);
@@ -242,12 +246,10 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           _city        = city;
           _pincode     = pincode;
           _fullAddress = full;
-          // Serviceability is decided by polygon, checked against the
-          // exact coordinate — pincode here is purely for display now.
-          _isServiceable = _checkServiceable(latlng);
           _pinMoving   = false;
           _geocoding   = false;
         });
+        _refreshCoverage(latlng);
 
         // Bounce pin
         _bounceCtrl.forward(from: 0)
@@ -256,58 +258,46 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
         // No placemark resolved for text display, but we can still know
         // whether this exact point is servable from the polygon alone.
         setState(() {
-          _isServiceable = _checkServiceable(latlng);
           _pinMoving = false;
           _geocoding = false;
         });
+        _refreshCoverage(latlng);
       }
     } catch (_) {
       if (mounted) {
         setState(() {
-          _isServiceable = _checkServiceable(latlng);
           _geocoding = false;
           _pinMoving = false;
         });
+        _refreshCoverage(latlng);
       }
     }
   }
 
+  // UPDATED: saves to coverage_requests (via request_coverage), which
+  // shows up as an orange demand pin on the admin Coverage map.
   Future<void> _notifyMe() async {
     if (_notifyDone) return;
     setState(() => _notifyLoading = true);
     HapticFeedback.mediumImpact();
-
-    try {
-      final userId = await SupabaseService.loadCachedUserId() ??
-          SupabaseService.currentUserId;
-      String? phone;
-      if (userId != null) {
-        final profile = await _supabase
-            .from('users')
-            .select('phone')
-            .eq('id', userId)
-            .maybeSingle();
-        phone = profile?['phone'] as String?;
-      }
-
-      await _supabase.from('launch_interest').upsert({
-        'phone':   phone ?? '',
-        'area':    _area,
-        'pincode': _pincode,
-        'lat':     _pin.latitude,
-        'lng':     _pin.longitude,
-      });
-
-      if (mounted) {
-        setState(() {
-          _notifyLoading = false;
-          _notifyDone    = true;
-        });
-        HapticFeedback.heavyImpact();
-      }
-    } catch (e) {
-      debugPrint('Notify me error: $e');
-      if (mounted) setState(() => _notifyLoading = false);
+    final ok = await CoverageService.notifyMe(
+      lat: _pin.latitude,
+      lng: _pin.longitude,
+      pincode: _pincode.isEmpty ? null : _pincode,
+      fullAddress: _fullAddress.isEmpty ? null : _fullAddress,
+      area: _area.isEmpty ? null : _area,
+    );
+    if (!mounted) return;
+    setState(() {
+      _notifyLoading = false;
+      _notifyDone = ok;
+    });
+    if (ok) {
+      HapticFeedback.heavyImpact();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not save. Please try again.')),
+      );
     }
   }
 
@@ -689,8 +679,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
                     color: Color(0xFF10B981),
                     shape: BoxShape.circle)),
               const SizedBox(width: 5),
-              const Text('Service available here',
-                  style: TextStyle(
+              Text(_coverageChecking ? 'Checking…' : 'Cleenzo serves this area',
+                  style: const TextStyle(
                       color: Color(0xFF059669),
                       fontSize: 10,
                       fontWeight: FontWeight.w700)),
@@ -795,8 +785,8 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
                 decoration: const BoxDecoration(
                     color: _red, shape: BoxShape.circle)),
               const SizedBox(width: 5),
-              const Text('Not bookable yet',
-                  style: TextStyle(color: _red,
+              Text(_coverageChecking ? 'Checking…' : 'Service not available here yet',
+                  style: const TextStyle(color: _red,
                       fontSize: 10,
                       fontWeight: FontWeight.w700)),
             ])),
@@ -831,14 +821,14 @@ class _LocationPickerScreenState extends State<LocationPickerScreen>
           Expanded(child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-            const Text('Launching here soon!',
+            const Text("We don't serve this location yet",
                 style: TextStyle(color: _amber,
                     fontSize: 12, fontWeight: FontWeight.w800)),
             const SizedBox(height: 2),
             Text(
-              'You can still save this address — you just won\'t be able to '
-              'book a service here until we launch in '
-              '${_area.isNotEmpty ? _area : 'your area'}.',
+              'You can save this address, but bookings can\'t be made here '
+              'until we start in ${_area.isNotEmpty ? _area : 'your area'}. '
+              'Tap Notify Me and we\'ll tell you when we do.',
               style: const TextStyle(
                   color: _muted, fontSize: 11, height: 1.4)),
           ])),

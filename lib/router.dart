@@ -120,6 +120,7 @@ final router = GoRouter(
       '/location-search',
       '/location-picker',
       '/address-confirm',
+      '/address-confirm-edit',
       '/saved-addresses',
       '/notifications',
     ].contains(loc);
@@ -218,6 +219,36 @@ final router = GoRouter(
           pincode:      e['pincode']      as String,
           fullAddress:  e['full_address'] as String,
           isOnboarding: e['isOnboarding'] as bool? ?? false,
+        );
+      },
+    ),
+
+    // ── Edit an EXISTING address's pin location ──────────────
+    // NEW: pushed from saved_addresses_screen.dart's "Edit Location"
+    // icon on each address card. Same AddressConfirmScreen as above,
+    // but with editAddressId set so it UPDATEs that address in place
+    // instead of creating a new one. Note the extra map's keys here
+    // are camelCase ('fullAddress', 'flatNo') — matching exactly what
+    // _editLocation() in saved_addresses_screen.dart sends — NOT the
+    // snake_case keys the /address-confirm route above expects; these
+    // are two independently-defined routes, each just needs its own
+    // push call and builder to agree with each other.
+    GoRoute(
+      path: '/address-confirm-edit',
+      builder: (_, state) {
+        final e = state.extra as Map<String, dynamic>;
+        return AddressConfirmScreen(
+          lat:             e['lat']         as double,
+          lng:             e['lng']         as double,
+          area:            e['area']        as String,
+          city:            e['city']        as String,
+          pincode:         e['pincode']     as String,
+          fullAddress:     e['fullAddress'] as String,
+          editAddressId:   e['id']          as String,
+          initialLabel:    e['label']       as String?,
+          initialFlatNo:   e['flatNo']      as String?,
+          initialBuilding: e['building']    as String?,
+          initialLandmark: e['landmark']    as String?,
         );
       },
     ),

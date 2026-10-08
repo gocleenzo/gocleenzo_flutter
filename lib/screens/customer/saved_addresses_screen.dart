@@ -66,6 +66,40 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
     }
   }
 
+  // NEW: opens AddressConfirmScreen in edit mode — the SAME
+  // draggable-pin map + reverse-geocoding screen used for new
+  // addresses, but pre-filled with this address's existing data and
+  // wired to UPDATE it in place (keeping its id and booking history)
+  // instead of creating a new row. Lets a customer whose saved address
+  // has the wrong pin location fix it directly, rather than needing to
+  // delete and re-add it (which would also lose its booking history).
+  Future<void> _editLocation(Map<String, dynamic> addr) async {
+    HapticFeedback.selectionClick();
+    final lat = (addr['latitude'] as num?)?.toDouble();
+    final lng = (addr['longitude'] as num?)?.toDouble();
+    if (lat == null || lng == null) {
+      _snack('This address has no saved location to edit.', isError: true);
+      return;
+    }
+    final result = await context.push('/address-confirm-edit', extra: {
+      'id': addr['id'].toString(),
+      'lat': lat,
+      'lng': lng,
+      'area': addr['area']?.toString() ?? '',
+      'city': addr['city']?.toString() ?? '',
+      'pincode': addr['pincode']?.toString() ?? '',
+      'fullAddress': addr['full_address']?.toString() ?? '',
+      'label': addr['label']?.toString() ?? 'Home',
+      'flatNo': addr['flat_no']?.toString(),
+      'building': addr['building']?.toString(),
+      'landmark': addr['landmark']?.toString(),
+    });
+    if (result == true) {
+      _snack('Location updated ✓');
+      _load();
+    }
+  }
+
   Future<void> _setDefault(String id) async {
     final userId = await _getUserId();
     if (userId == null) return;
@@ -478,6 +512,24 @@ class _SavedAddressesScreenState extends State<SavedAddressesScreen> {
                         color: _faint, fontSize: 11)),
               ],
             ])),
+            // NEW: quick access to "Edit Location" right from the
+            // header row, as an icon button — separate from the
+            // bottom action row (Set Default / Delete) since this one
+            // opens a whole different screen (the map), not an
+            // instant in-place action.
+            GestureDetector(
+              onTap: () => _editLocation(addr),
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF8FAFC),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: _border),
+                ),
+                child: const Icon(Icons.edit_location_alt_rounded,
+                    color: _cyanDk, size: 17),
+              ),
+            ),
           ]),
         ),
 
